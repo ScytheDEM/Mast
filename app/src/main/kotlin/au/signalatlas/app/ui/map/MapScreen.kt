@@ -51,7 +51,6 @@ import androidx.compose.material3.adaptive.layout.calculateThreePaneScaffoldValu
 import androidx.compose.material3.adaptive.layout.rememberPaneExpansionState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -109,7 +108,6 @@ fun MapScreen(
     var showNearby by rememberSaveable { mutableStateOf(false) }
     var showBands by rememberSaveable { mutableStateOf(false) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
-    var centreOnFix by remember { mutableStateOf(false) }
     var rationaleFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var afterGrant by remember { mutableStateOf<(() -> Unit)?>(null) }
 
@@ -128,13 +126,6 @@ fun MapScreen(
     LifecycleStartEffect(state.locationGranted, state.locationEnabled) {
         if (state.locationGranted) location.start()
         onStopOrDispose { location.stop() }
-    }
-    LaunchedEffect(centreOnFix, state.location) {
-        val fix = state.location
-        if (centreOnFix && fix != null) {
-            centreOnFix = false
-            camera.animateTo(fix.first, fix.second, SITE_ZOOM)
-        }
     }
 
     val deniedMessage = stringResource(R.string.location_denied)
@@ -177,19 +168,26 @@ fun MapScreen(
     val onMyLocation = {
         withLocation {
             location.refresh()
-            val fix = state.location
-            when {
+            if (!location.enabled.value) {
                 // Location services off: no fix will come, so say so instead of waiting forever.
-                !location.enabled.value -> scope.launch {
+                scope.launch {
                     val r = snackbar.showSnackbar(locationOffMessage, actionLabel = locationSettingsLabel, withDismissAction = true)
                     if (r == SnackbarResult.ActionPerformed) openLocationSettings()
                 }
-                fix != null -> camera.animateTo(fix.first, fix.second, SITE_ZOOM)
-                else -> centreOnFix = true
+            } else {
+                // Only a fix from the last couple of minutes centres at once; otherwise ask for a new one.
+                location.freshFix()?.let { (lat, lon) -> camera.animateTo(lat, lon, SITE_ZOOM) }
+                scope.launch {
+                    val fix = location.currentFix() ?: return@launch
+                    camera.animateTo(fix.first, fix.second, SITE_ZOOM)
+                }
             }
         }
     }
-    val onNearby = { withLocation { }; showNearby = true }
+    val onNearby = {
+        withLocation { scope.launch { location.currentFix() } }
+        showNearby = true
+    }
     val openSite = { s: SiteSummary ->
         searchExpanded = false
         camera.animateTo(s.lat, s.lon, SITE_ZOOM)

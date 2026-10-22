@@ -5,23 +5,35 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
-import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.Looper
+import android.os.SystemClock
+import androidx.core.location.LocationListenerCompat
 import androidx.core.location.LocationManagerCompat
+import androidx.core.location.LocationRequestCompat
 import au.signalatlas.app.data.LocationSource
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 
 /**
- * Location through the platform [LocationManager] only (no Play Services): the freshest last
- * known fix from the fused, GPS and network providers, then updates from the first enabled of
- * network / GPS / fused between [start] and [stop] (the screen's started state).
+ * Location through the platform [LocationManager] only (no Play Services).
+ *
+ * [last] only ever holds a fresh fix: a last-known fix older than [MAX_FIX_AGE_MS] (e.g. an
+ * emulator's or a phone's position from another city hours ago) is ignored. Between [start] and
+ * [stop] (the screen's started state) it follows high-accuracy updates from the fused provider
+ * (API 31+), else GPS, else network. [currentFix] asks for one new fix (the "My location" button).
  * [enabled] reports whether location services are on; [refresh] re-reads it (e.g. on resume).
  */
-class DeviceLocationSource(context: Context) : LocationSource {
+class DeviceLocationSource(
+    context: Context,
+    /** Monotonic clock in nanoseconds, comparable with [Location.getElapsedRealtimeNanos]. */
+    private val nowNanos: () -> Long = SystemClock::elapsedRealtimeNanos,
+) : LocationSource {
     private val context = context.applicationContext
     private val manager = this.context.getSystemService(LocationManager::class.java)
     private val _last = MutableStateFlow<Pair<Double, Double>?>(null)
@@ -30,8 +42,12 @@ class DeviceLocationSource(context: Context) : LocationSource {
     override val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
     private var listening = false
-    private val listener = object : LocationListener {
-        override fun onLocationChanged(location: Location) = publish(location)
+    /** Monotonic time of the fix in [last], for [freshFix]. */
+    @Volatile private var lastAtNanos = 0L
+    private val listener = object : LocationListenerCompat {
+        override fun onLocationChanged(location: Location) {
+            if (isFresh(location)) publish(location)
+        }
         override fun onProviderEnabled(provider: String) = refresh()
         override fun onProviderDisabled(provider: String) = refresh()
     }
@@ -51,18 +67,18 @@ class DeviceLocationSource(context: Context) : LocationSource {
         refresh()
         if (listening || manager == null || !hasPermission() || !_enabled.value) return
         try {
-            val providers = manager.allProviders.filter { manager.isProviderEnabled(it) }
-            listOfNotNull(fusedProvider(), LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-                .filter { it in providers }
-                .mapNotNull { manager.getLastKnownLocation(it) }
+            val providers = enabledProviders()
+            providers.mapNotNull { manager.getLastKnownLocation(it) }
+                .filter { isFresh(it) }
                 .maxByOrNull { it.elapsedRealtimeNanos }
                 ?.let(::publish)
-            // Network first (cheap). Without it, GPS: a BALANCED fused request alone never powers GPS,
-            // so on a device with no network provider it would wait for a fix forever.
-            val provider = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER, fusedProvider())
-                .firstOrNull { it != null && it in providers }
-                ?: return
-            manager.requestLocationUpdates(provider, UPDATE_INTERVAL_MS, UPDATE_DISTANCE_M, listener, Looper.getMainLooper())
+            val provider = providers.firstOrNull() ?: return
+            // High accuracy: a balanced fused request may never power GPS, and network fixes are coarse.
+            val request = LocationRequestCompat.Builder(UPDATE_INTERVAL_MS)
+                .setQuality(LocationRequestCompat.QUALITY_HIGH_ACCURACY)
+                .setMinUpdateDistanceMeters(UPDATE_DISTANCE_M)
+                .build()
+            LocationManagerCompat.requestLocationUpdates(manager, provider, request, listener, Looper.getMainLooper())
             listening = true
         } catch (e: SecurityException) {
             // Permission revoked between the check and the call.
@@ -73,9 +89,65 @@ class DeviceLocationSource(context: Context) : LocationSource {
 
     fun stop() {
         if (!listening) return
-        manager?.removeUpdates(listener)
+        manager?.let { LocationManagerCompat.removeUpdates(it, listener) }
         listening = false
     }
+
+    /** The fix in [last] if it is at most [MAX_FIX_AGE_MS] old, else null. */
+    fun freshFix(): Pair<Double, Double>? =
+        _last.value?.takeIf { nowNanos() - lastAtNanos <= MAX_FIX_AGE_MS * 1_000_000 }
+
+    /**
+     * Waits (at most [timeoutMs]) for one new fix from the best enabled provider, publishes and
+     * returns it; null without permission, with location off, or on timeout. A cached fix older
+     * than [MAX_FIX_AGE_MS] is never the answer (unlike `getCurrentLocation`, which may return one).
+     */
+    @SuppressLint("MissingPermission") // checked by hasPermission()
+    suspend fun currentFix(timeoutMs: Long = CURRENT_FIX_TIMEOUT_MS): Pair<Double, Double>? {
+        refresh()
+        val m = manager
+        if (m == null || !hasPermission() || !_enabled.value) return null
+        val provider = enabledProviders().firstOrNull() ?: return null
+        val location = withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine<Location?> { cont ->
+                val once = object : LocationListenerCompat {
+                    override fun onLocationChanged(location: Location) {
+                        if (!isFresh(location) || !cont.isActive) return
+                        LocationManagerCompat.removeUpdates(m, this)
+                        cont.resume(location)
+                    }
+                    override fun onProviderDisabled(provider: String) {
+                        refresh()
+                        LocationManagerCompat.removeUpdates(m, this)
+                        if (cont.isActive) cont.resume(null)
+                    }
+                }
+                cont.invokeOnCancellation { LocationManagerCompat.removeUpdates(m, once) }
+                try {
+                    val request = LocationRequestCompat.Builder(CURRENT_FIX_INTERVAL_MS)
+                        .setQuality(LocationRequestCompat.QUALITY_HIGH_ACCURACY)
+                        .build()
+                    LocationManagerCompat.requestLocationUpdates(m, provider, request, once, Looper.getMainLooper())
+                } catch (e: SecurityException) {
+                    cont.resume(null) // permission revoked between the check and the call
+                } catch (e: IllegalArgumentException) {
+                    cont.resume(null) // provider disappeared
+                }
+            }
+        } ?: return null
+        publish(location)
+        return location.latitude to location.longitude
+    }
+
+    /** Fused (API 31+), GPS, network: those that exist and are enabled, best first. */
+    private fun enabledProviders(): List<String> {
+        val m = manager ?: return emptyList()
+        val enabled = m.allProviders.filter { m.isProviderEnabled(it) }
+        return listOfNotNull(fusedProvider(), LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { it in enabled }
+    }
+
+    private fun isFresh(location: Location) = nowNanos() - location.elapsedRealtimeNanos <= MAX_FIX_AGE_MS * 1_000_000
 
     private fun isLocationOn(): Boolean = manager != null && LocationManagerCompat.isLocationEnabled(manager)
 
@@ -83,11 +155,16 @@ class DeviceLocationSource(context: Context) : LocationSource {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) LocationManager.FUSED_PROVIDER else null
 
     private fun publish(location: Location) {
+        lastAtNanos = location.elapsedRealtimeNanos
         _last.value = location.latitude to location.longitude
     }
 
-    private companion object {
-        const val UPDATE_INTERVAL_MS = 10_000L
-        const val UPDATE_DISTANCE_M = 25f
+    companion object {
+        /** Older last-known fixes are never used for centring or Nearby. */
+        const val MAX_FIX_AGE_MS = 2 * 60_000L
+        const val CURRENT_FIX_TIMEOUT_MS = 30_000L
+        private const val UPDATE_INTERVAL_MS = 10_000L
+        private const val CURRENT_FIX_INTERVAL_MS = 1_000L
+        private const val UPDATE_DISTANCE_M = 25f
     }
 }
