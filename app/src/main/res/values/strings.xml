@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Signal Atlas</string>
+
+    <!-- First run -->
+    <string name="firstrun_title">Download tower data</string>
+    <string name="firstrun_body">Signal Atlas builds its tower database from the ACMA register on your phone (about 68 MB). After that, it works offline.</string>
+    <string name="firstrun_download">Download now</string>
+    <string name="try_again">Try again</string>
+    <string name="offline_message">You\'re offline. Connect to the internet to download tower data.</string>
+
+    <!-- Mobile data confirmation -->
+    <string name="metered_title">Use mobile data for %1$s?</string>
+    <string name="metered_body">You\'re not on Wi-Fi, so the download will use your mobile data.</string>
+    <string name="metered_confirm">Use mobile data</string>
+    <string name="metered_wait">Wait for Wi-Fi</string>
+    <string name="size_default">about 68 MB</string>
+    <string name="size_about_mb">about %1$d MB</string>
+
+    <!-- Update progress -->
+    <string name="phase_waiting">Waiting for a network…</string>
+    <string name="phase_starting">Starting…</string>
+    <string name="phase_download">Downloading · %1$d%%</string>
+    <string name="phase_building">Building tower database · %1$d%%</string>
+
+    <!-- Map -->
+    <string name="search_hint">Search sites, postcodes or IDs</string>
+    <string name="search_no_results">No matching sites</string>
+    <string name="more_options">More options</string>
+    <string name="menu_tower_data">Tower data</string>
+    <string name="clear">Clear</string>
+    <string name="close">Close</string>
+    <string name="back">Back</string>
+    <string name="tech_4g">4G</string>
+    <string name="tech_5g">5G</string>
+    <string name="filter_bands">Bands</string>
+    <string name="filter_bands_count">Bands · %1$d</string>
+    <string name="fab_my_location">My location</string>
+    <string name="fab_nearby">Nearby</string>
+
+    <string name="network_telstra">Telstra</string>
+    <string name="network_optus">Optus</string>
+    <string name="network_tpg">TPG</string>
+    <string name="network_optus_tpg_jv">Optus–TPG</string>
+    <string name="network_nbn">NBN</string>
+
+    <!-- Bands sheet -->
+    <string name="bands_title">Bands</string>
+    <string name="bands_all">All bands</string>
+    <string name="bands_lte">4G (LTE)</string>
+    <string name="bands_nr">5G (NR)</string>
+    <string name="done">Done</string>
+
+    <!-- Update chip -->
+    <string name="chip_update_available">Tower data update available</string>
+    <string name="chip_update_failed">Tower data update failed</string>
+
+    <!-- Location -->
+    <string name="location_rationale_title">Use your location?</string>
+    <string name="location_rationale_body">Signal Atlas uses your location to centre the map and list the towers nearest you. It never leaves your phone.</string>
+    <string name="location_continue">Continue</string>
+    <string name="not_now">Not now</string>
+    <string name="location_denied">Location is off for Signal Atlas. You can turn it on in Settings.</string>
+    <string name="settings">Settings</string>
+
+    <!-- Nearby -->
+    <string name="nearby_title">Nearby towers</string>
+    <string name="nearby_finding">Finding your location…</string>
+    <string name="nearby_empty">No towers match your filters near you.</string>
+    <string name="nearby_no_permission">Allow location to see the towers nearest you.</string>
+    <string name="nearby_allow">Allow location</string>
+    <string name="distance_m">%1$d m</string>
+    <string name="distance_km_1dp">%1$.1f km</string>
+    <string name="distance_km">%1$d km</string>
+
+    <!-- Site sheet -->
+    <string name="site_id">Site %1$d</string>
+    <string name="site_elevation">%1$s m above sea level</string>
+    <string name="sector_omni">Omni</string>
+    <string name="sector_azimuth">%1$s°</string>
+    <string name="sector_height">Height %1$s m</string>
+    <string name="sector_antenna">Antenna %1$s</string>
+    <string name="sector_licence">Licence %1$s</string>
+    <string name="sector_tilt">Tilt %1$s°</string>
+
+    <!-- Updates -->
+    <string name="updates_title">Tower data</string>
+    <string name="updates_data_date">Data date</string>
+    <string name="updates_sites">Sites</string>
+    <string name="updates_sectors">Sectors</string>
+    <string name="updates_carriers">Carriers</string>
+    <string name="updates_check">Check for updates</string>
+    <string name="updates_update_now">Update now</string>
+    <string name="updates_source">Source: ACMA Register of Radiocommunications Licences. Updates download automatically once a week on Wi-Fi while charging.</string>
+    <string name="status_unknown">Not checked yet</string>
+    <string name="status_checking">Checking for updates…</string>
+    <string name="status_up_to_date">Up to date</string>
+    <string name="status_available">New data available (%1$s)</string>
+    <string name="status_offline">Offline. Can\'t reach ACMA right now.</string>
+    <string name="no_data">No tower data yet</string>
+</resources>

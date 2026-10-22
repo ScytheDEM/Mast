@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The clean_dark map background. -->
+    <color name="window_background">#1C1D1F</color>
+</resources>
