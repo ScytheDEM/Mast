@@ -15,9 +15,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import au.signalatlas.app.R
-import au.signalatlas.core.update.TowerUpdateWorker
 import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateStatus
+import au.signalatlas.core.update.UpdateWork
 
 /** Shown under the filter chips while an update is available, running or has failed. */
 @Composable
@@ -68,7 +68,7 @@ fun UpdateStatus.showsChip(): Boolean =
 
 /** Weight of each worker phase in one overall 0..1 progress (download dominates on mobile). */
 private val PHASES: List<Pair<String, Float>> = listOf(
-    TowerUpdateWorker.PHASE_DOWNLOAD to 0.55f,
+    UpdateWork.PHASE_DOWNLOAD to 0.55f,
     "client" to 0.02f,
     "licence" to 0.03f,
     "devices" to 0.25f,
@@ -95,8 +95,8 @@ fun runningLabel(status: UpdateStatus.Running): String {
     return when (status.phase) {
         UpdateManager.PHASE_WAITING -> stringResource(R.string.phase_waiting)
         UpdateManager.PHASE_WAITING_WIFI -> stringResource(R.string.phase_waiting_wifi)
-        TowerUpdateWorker.PHASE_STARTING -> stringResource(R.string.phase_starting)
-        TowerUpdateWorker.PHASE_DOWNLOAD -> stringResource(R.string.phase_download, percent)
+        UpdateWork.PHASE_STARTING -> stringResource(R.string.phase_starting)
+        UpdateWork.PHASE_DOWNLOAD -> stringResource(R.string.phase_download, percent)
         else -> stringResource(R.string.phase_building, percent)
     }
 }

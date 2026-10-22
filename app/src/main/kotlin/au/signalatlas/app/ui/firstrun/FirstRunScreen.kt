@@ -38,8 +38,8 @@ import au.signalatlas.app.ui.updates.NetworkKind
 import au.signalatlas.app.ui.updates.WaitingActions
 import au.signalatlas.app.ui.updates.downloadSizeLabel
 import au.signalatlas.app.ui.updates.rememberDownloadGate
-import au.signalatlas.core.update.TowerUpdateWorker
 import au.signalatlas.core.update.UpdateStatus
+import au.signalatlas.core.update.UpdateWork
 
 /** Replaces the map until a tower DB is installed. */
 @Composable
@@ -128,7 +128,7 @@ private fun WaitingPanel(running: UpdateStatus.Running?, onDownload: (Boolean) -
 @Composable
 private fun ProgressPanel(running: UpdateStatus.Running?) {
     Column(Modifier.widthIn(max = 320.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        val indeterminate = running == null || running.phase == TowerUpdateWorker.PHASE_STARTING
+        val indeterminate = running == null || running.phase == UpdateWork.PHASE_STARTING
         if (indeterminate) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         } else {

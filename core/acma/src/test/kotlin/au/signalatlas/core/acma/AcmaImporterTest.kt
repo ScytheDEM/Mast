@@ -285,6 +285,51 @@ class AcmaImporterTest {
     }
 
     @Test
+    fun cancelDuringDeviceDetailsStopsAndDeletesTheFile() {
+        val out = File(tmp.root, "towers.db")
+        var phase = ""
+        assertThrows(ImportCancelledException::class.java) {
+            AcmaImporter().import(
+                fixture, out, "s", "e",
+                progress = { p, _ -> phase = p },
+                cancel = { phase == "devices" },
+            )
+        }
+        assertThat(phase).isEqualTo("devices")
+        assertThat(out.exists()).isFalse()
+    }
+
+    @Test
+    fun cancelBetweenFinaliseStepsStopsAndDeletesTheFile() {
+        val out = File(tmp.root, "towers.db")
+        val logged = mutableListOf<String>()
+        assertThrows(ImportCancelledException::class.java) {
+            AcmaImporter(log = { logged += it }).import(
+                fixture, out, "s", "e",
+                // Passes the poll at finalise entry; requested once the index step is done.
+                cancel = { logged.any { it.startsWith("phase=finalise.indexes ") } },
+            )
+        }
+        assertThat(logged.map { it.substringBefore(" ") })
+            .containsExactly("phase=client", "phase=licence", "phase=devices", "phase=sites", "phase=antennas",
+                "phase=finalise.eirp", "phase=finalise.indexes").inOrder()
+        assertThat(out.exists()).isFalse()
+    }
+
+    @Test
+    fun logsElapsedTimePerPhaseAndTotal() {
+        val logged = mutableListOf<String>()
+        AcmaImporter(log = { logged += it }).import(fixture, File(tmp.root, "towers.db"), "s", "e")
+        val line = Regex("""^phase=([a-z.]+) ms=(\d+)$""")
+        assertThat(logged.all { line.matches(it) }).isTrue()
+        assertThat(logged.map { line.matchEntire(it)!!.groupValues[1] }).containsExactly(
+            "client", "licence", "devices", "sites", "antennas",
+            "finalise.eirp", "finalise.indexes", "finalise.prune", "finalise.renumber", "finalise.summary",
+            "finalise.report", "finalise", "total",
+        ).inOrder()
+    }
+
+    @Test
     fun progressCoversPhasesInOrderAndIsMonotonic() {
         val seen = mutableListOf<Pair<String, Float>>()
         AcmaImporter().import(fixture, File(tmp.root, "towers.db"), "s", "e", progress = { p, f -> seen += p to f })

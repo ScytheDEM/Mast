@@ -44,4 +44,23 @@ class TowerRepositoryTest {
         assertThat(old.siteDetail(site)).isNull() // closed, and does not throw
         assertThat(env.repo.store.value!!.siteDetail(site)).isNotNull()
     }
+
+    @Test fun refreshReloadsOnlyWhenTheInstalledFileChanged() {
+        env = UpdateTestEnv(tmp.root, repoScope = closer)
+        env.seed("202610010000")
+        val first = checkNotNull(env.repo.store.value)
+        runBlocking { env.repo.refresh() }
+        assertThat(env.repo.store.value).isSameInstanceAs(first)
+
+        env.installOnly("202610221934") // installed, but nobody reloaded
+        runBlocking { env.repo.refresh() }
+        assertThat(env.repo.store.value!!.meta.extractStamp).isEqualTo("202610221934")
+    }
+
+    @Test fun refreshInAFreshProcessOpensTheInstalledDb() {
+        env = UpdateTestEnv(tmp.root, repoScope = closer)
+        env.installOnly("202610221934")
+        runBlocking { env.repo.refresh() }
+        assertThat(env.repo.store.value!!.meta.extractStamp).isEqualTo("202610221934")
+    }
 }

@@ -31,8 +31,15 @@ class ImportCancelledException : Exception("ACMA import cancelled")
  * sector keys are held in memory (in a primitive open-addressing table); everything else goes
  * straight into SQLite.
  */
-class AcmaImporter(private val driver: SQLiteDriver = BundledSQLiteDriver()) {
-    /** Builds a complete schema-v1 DB at [out] (overwritten). [cancel] is polled every 10 000 rows. */
+class AcmaImporter(
+    private val driver: SQLiteDriver = BundledSQLiteDriver(),
+    /** Receives one `phase=<name> ms=<elapsed>` line per phase and finalise step, then `phase=total`. */
+    private val log: (String) -> Unit = {},
+) {
+    /**
+     * Builds a complete schema-v1 DB at [out] (overwritten). [cancel] is polled every 10 000 rows
+     * and between the finalise steps.
+     */
     fun import(
         zip: File,
         out: File,
@@ -46,7 +53,7 @@ class AcmaImporter(private val driver: SQLiteDriver = BundledSQLiteDriver()) {
             return ZipFile(zip).use { zf ->
                 val conn = driver.open(out.path)
                 try {
-                    ImportRun(zf, conn, progress, cancel).run(extractStamp, zipEtag)
+                    ImportRun(zf, conn, progress, cancel, log).run(extractStamp, zipEtag)
                 } finally {
                     conn.close()
                 }
@@ -71,6 +78,7 @@ private class ImportRun(
     private val conn: SQLiteConnection,
     private val progress: (String, Float) -> Unit,
     private val cancel: () -> Boolean,
+    private val log: (String) -> Unit,
 ) {
     private val networkByClient = HashMap<Int, Network>()
     private val networkByLicence = HashMap<String, Network>()
@@ -90,19 +98,34 @@ private class ImportRun(
     private var skippedMalformed = 0
 
     fun run(extractStamp: String, zipEtag: String): ImportReport {
+        val started = System.nanoTime()
         conn.execSQL("PRAGMA journal_mode=OFF")
         conn.execSQL("PRAGMA synchronous=OFF")
         for (sql in TowerDbSchema.TABLES) conn.execSQL(sql)
 
-        readClients()
-        readLicences()
-        readDevices()
-        readSites()
-        readAntennas()
-        val report = finalise()
+        timed("client") { readClients() }
+        timed("licence") { readLicences() }
+        timed("devices") { readDevices() }
+        timed("sites") { readSites() }
+        timed("antennas") { readAntennas() }
+        val report = timed(PHASE_FINALISE) { finalise() }
         writeMeta(report, extractStamp, zipEtag)
         progress(PHASE_FINALISE, 1f)
+        log("phase=total ms=${elapsedMs(started)}")
         return report
+    }
+
+    private inline fun <T> timed(phase: String, block: () -> T): T {
+        val started = System.nanoTime()
+        return block().also { log("phase=$phase ms=${elapsedMs(started)}") }
+    }
+
+    private fun elapsedMs(startedNanos: Long) = (System.nanoTime() - startedNanos) / 1_000_000
+
+    /** One finalise step: cancellable before it starts, timed as `finalise.<name>`. */
+    private inline fun <T> step(name: String, block: () -> T): T {
+        if (cancel()) throw ImportCancelledException()
+        return timed("$PHASE_FINALISE.$name", block)
     }
 
     private fun readClients() = scan("client.csv", "client") { r ->
@@ -329,12 +352,34 @@ private class ImportRun(
         }
     }
 
+    /**
+     * Runs in one transaction; a cancel between steps throws [ImportCancelledException] and the
+     * caller deletes the half-built file, so the open transaction never needs a rollback.
+     */
     private fun finalise(): ImportReport {
         if (cancel()) throw ImportCancelledException()
         progress(PHASE_FINALISE, 0f)
         conn.execSQL("BEGIN")
 
         // Rule 5: derived EIRP = transmitter power + antenna gain - feeder loss.
+        step("eirp") { updateDerivedEirp() }
+        progress(PHASE_FINALISE, 0.1f)
+
+        step("indexes") { for (sql in TowerDbSchema.INDEXES) conn.execSQL(sql) }
+        progress(PHASE_FINALISE, 0.4f)
+
+        step("prune") { prune() }
+        step("renumber") { renumberSectors() }
+        progress(PHASE_FINALISE, 0.6f)
+
+        step("summary") { fillSiteSummary() }
+        conn.execSQL("COMMIT")
+        progress(PHASE_FINALISE, 0.9f)
+
+        return step("report") { report() }
+    }
+
+    private fun updateDerivedEirp() {
         conn.prepare("UPDATE carrier SET eirp_dbm = ? WHERE sdd_id = ?").use { st ->
             for (i in 0 until pending.size) {
                 val antenna = pending.antenna[i]
@@ -345,11 +390,9 @@ private class ImportRun(
                 st.step()
             }
         }
-        progress(PHASE_FINALISE, 0.1f)
+    }
 
-        for (sql in TowerDbSchema.INDEXES) conn.execSQL(sql)
-        progress(PHASE_FINALISE, 0.4f)
-
+    private fun prune() {
         // Rule 7 (second half): devices on missing or out-of-bounds sites, then emptied sectors.
         val onBadSite = "sector_id IN (SELECT id FROM sector WHERE site_id NOT IN (SELECT id FROM site))"
         skippedBadSite += conn.longQuery("SELECT COUNT(*) FROM carrier WHERE $onBadSite").toInt()
@@ -358,13 +401,9 @@ private class ImportRun(
         conn.execSQL("DELETE FROM site WHERE NOT EXISTS (SELECT 1 FROM sector WHERE sector.site_id = site.id)")
         // Rule 8: antennas referenced by a kept sector.
         conn.execSQL("DELETE FROM antenna WHERE id NOT IN (SELECT antenna_id FROM sector WHERE antenna_id IS NOT NULL)")
-        renumberSectors()
-        progress(PHASE_FINALISE, 0.6f)
+    }
 
-        fillSiteSummary()
-        conn.execSQL("COMMIT")
-        progress(PHASE_FINALISE, 0.9f)
-
+    private fun report(): ImportReport {
         val byNetwork = sortedMapOf<String, Int>()
         conn.prepare(
             "SELECT s.network, COUNT(*) FROM carrier c JOIN sector s ON s.id = c.sector_id GROUP BY s.network",

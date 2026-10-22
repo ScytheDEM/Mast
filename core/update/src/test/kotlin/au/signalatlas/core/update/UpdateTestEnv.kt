@@ -19,11 +19,14 @@ import okhttp3.OkHttpClient
 import okio.Buffer
 import org.robolectric.Shadows.shadowOf
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /** A fake ACMA (stamp + zip over mockwebserver3) plus a real installer/repository in [root]. */
 class UpdateTestEnv(
@@ -42,9 +45,21 @@ class UpdateTestEnv(
     val etag get() = "\"zip-${zipBytes.contentHashCode()}\""
 
     val workDir = File(root, "towers")
-    val installer = DbInstaller(workDir, DbValidator(minSites = minSites))
+    /** Called with every importer timing line (`phase=<name> ms=<n>`), on the importing thread. */
+    @Volatile var onImportLog: (String) -> Unit = {}
+    /** Called just before [installer] renames a candidate into place. */
+    @Volatile var beforeInstallMove: () -> Unit = {}
+    /** How many candidates [installer] has renamed into place. */
+    val installs = AtomicInteger()
+    val installer = DbInstaller(workDir, DbValidator(minSites = minSites)) { from, to ->
+        if (from.fileName.toString().endsWith(".building")) {
+            beforeInstallMove()
+            installs.incrementAndGet()
+        }
+        Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    }
     val repo = TowerRepository(installer, repoScope)
-    val importer = AcmaImporter()
+    val importer = AcmaImporter(log = { onImportLog(it) })
     val notifications = UpdateNotifications(context)
     val zip = File(workDir, "download/spectra_rrl.zip")
 
@@ -77,10 +92,15 @@ class UpdateTestEnv(
 
     /** Installs the fixture as the live DB with [stamp] (whatever [installer]'s minimum) and opens it through [repo]. */
     fun seed(stamp: String) {
-        val building = File(workDir, "seed.building")
-        importer.import(zipFileOf(fixture), building, stamp, "\"seed\"")
-        check(DbInstaller(workDir, DbValidator(minSites = 1)).install(building) == Validation.Ok)
+        installOnly(stamp)
         runBlocking { repo.start() }
+    }
+
+    /** Installs the fixture as the live DB with [stamp] without telling [repo] (as a worker stopped before its reload). */
+    fun installOnly(stamp: String) {
+        val building = File(workDir, "seed.building")
+        AcmaImporter().import(zipFileOf(fixture), building, stamp, "\"seed\"")
+        check(DbInstaller(workDir, DbValidator(minSites = 1)).install(building) == Validation.Ok)
     }
 
     private fun zipFileOf(bytes: ByteArray): File =

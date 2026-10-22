@@ -41,6 +41,13 @@ class AcmaRemote(
         sidecarOf(dest).delete()
     }
 
+    /** True when [dest] holds the whole file for [info] (right ETag and length). */
+    fun isComplete(info: RemoteInfo, dest: File): Boolean =
+        dest.isFile && dest.length() == info.sizeBytes && downloadedEtag(dest) == info.etag
+
+    /** The ETag the bytes in [dest] belong to, or null if unknown. */
+    fun downloadedEtag(dest: File): String? = sidecarOf(dest).takeIf { it.isFile }?.readText()
+
     /** Fetches the extract stamp (GET) and the zip's ETag and size (HEAD). */
     suspend fun info(): RemoteInfo {
         val stamp = call(Request.Builder().url(stampUrl).get().build()) { response ->

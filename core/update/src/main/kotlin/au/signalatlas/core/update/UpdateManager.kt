@@ -5,8 +5,6 @@ import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -34,7 +32,13 @@ sealed interface UpdateStatus {
 }
 
 /**
- * Ties the update check and the scheduled/manual [TowerUpdateWorker] runs into one [status].
+ * Ties the update check and the scheduled/manual update runs into one [status].
+ *
+ * Unique work (each run is [AcmaDownloadWorker] then [AcmaImportWorker], see [UpdateWork]):
+ * - [MANUAL_WORK]: "Update now", the chain download -> import (REPLACE; [cancelManual] cancels both).
+ * - [PERIODIC_WORK]: the weekly download; it enqueues its import as [AUTO_WORK] (KEEP).
+ * - [AUTO_WORK]: every other automatic run: the stale-data chain download -> import, and the
+ *   periodic run's import. KEEP everywhere, so at most one automatic chain is pending.
  *
  * [status] is shared in [scope] for as long as that scope lives (the app's scope in production),
  * so every collector reads the same upstream instead of starting its own WorkManager queries.
@@ -49,7 +53,7 @@ class UpdateManager(
 ) {
     companion object {
         const val PERIODIC_WORK = "acma-periodic"
-        const val STALE_WORK = "acma-stale"
+        const val AUTO_WORK = "acma-auto"
         const val MANUAL_WORK = "acma-manual"
         /** [UpdateStatus.Running] phase of a manual update queued until any network is available. */
         const val PHASE_WAITING = "waiting"
@@ -74,8 +78,8 @@ class UpdateManager(
         repo.store,
         workManager.getWorkInfosForUniqueWorkFlow(MANUAL_WORK),
         workManager.getWorkInfosForUniqueWorkFlow(PERIODIC_WORK),
-        workManager.getWorkInfosForUniqueWorkFlow(STALE_WORK),
-    ) { check, store, manual, periodic, stale -> derive(check, store, manual, periodic + stale) }
+        workManager.getWorkInfosForUniqueWorkFlow(AUTO_WORK),
+    ) { check, store, manual, periodic, auto -> derive(check, store, manual, periodic + auto) }
         .stateIn(scope, SharingStarted.Eagerly, UpdateStatus.Unknown)
 
     /**
@@ -112,36 +116,40 @@ class UpdateManager(
         workManager.enqueueUniquePeriodicWork(
             PERIODIC_WORK,
             ExistingPeriodicWorkPolicy.KEEP,
-            PeriodicWorkRequestBuilder<TowerUpdateWorker>(UpdatePolicy.PERIOD)
+            PeriodicWorkRequestBuilder<AcmaDownloadWorker>(UpdatePolicy.PERIOD)
                 .setConstraints(UpdatePolicy.periodicConstraints())
+                .setInputData(workDataOf(UpdateWork.KEY_THEN_IMPORT to true))
+                .addTag(UpdateWork.TAG_DOWNLOAD)
                 .build(),
         )
         if (UpdatePolicy.isStale(repo.store.value?.meta?.importedAt, clock.instant())) {
-            workManager.enqueueUniqueWork(
-                STALE_WORK,
-                ExistingWorkPolicy.KEEP,
-                OneTimeWorkRequestBuilder<TowerUpdateWorker>()
-                    .setConstraints(UpdatePolicy.staleConstraints())
-                    .build(),
-            )
+            workManager
+                .beginUniqueWork(
+                    AUTO_WORK,
+                    ExistingWorkPolicy.KEEP,
+                    UpdateWork.downloadRequest(UpdatePolicy.staleConstraints(), expedited = false),
+                )
+                .then(UpdateWork.importRequest(expedited = false))
+                .enqueue()
         }
     }
 
-    /** "Update now": downloads even if the stamps match; on any network only if [allowMetered]. */
+    /**
+     * "Update now": downloads even if the stamps match; on any network only if [allowMetered].
+     * Remembers the live stamp now, so a run that finds the DB updated meanwhile does not redo it.
+     */
     fun updateNow(allowMetered: Boolean) {
-        workManager.enqueueUniqueWork(
-            MANUAL_WORK,
-            ExistingWorkPolicy.REPLACE,
-            OneTimeWorkRequestBuilder<TowerUpdateWorker>()
-                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(if (allowMetered) NetworkType.CONNECTED else NetworkType.UNMETERED)
-                        .build(),
-                )
-                .setInputData(workDataOf(TowerUpdateWorker.KEY_FORCE to true))
-                .build(),
+        val input = workDataOf(
+            UpdateWork.KEY_FORCE to true,
+            UpdateWork.KEY_BASE_STAMP to (repo.store.value?.meta?.extractStamp ?: ""),
         )
+        val network = Constraints.Builder()
+            .setRequiredNetworkType(if (allowMetered) NetworkType.CONNECTED else NetworkType.UNMETERED)
+            .build()
+        workManager
+            .beginUniqueWork(MANUAL_WORK, ExistingWorkPolicy.REPLACE, UpdateWork.downloadRequest(network, expedited = true, input))
+            .then(UpdateWork.importRequest(expedited = true))
+            .enqueue()
     }
 
     /** Cancels a queued or running manual update ("Cancel" while waiting). */
@@ -150,15 +158,14 @@ class UpdateManager(
     }
 
     private fun derive(check: Check, store: TowerStore?, manual: List<WorkInfo>, automatic: List<WorkInfo>): UpdateStatus {
-        (manual + automatic).firstOrNull { it.state == WorkInfo.State.RUNNING }?.let { running ->
-            return UpdateStatus.Running(
-                running.progress.getString(TowerUpdateWorker.KEY_PHASE) ?: TowerUpdateWorker.PHASE_STARTING,
-                running.progress.getFloat(TowerUpdateWorker.KEY_FRACTION, 0f),
-            )
-        }
-        manual.firstOrNull { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }?.let { queued ->
+        runningStatus(manual + automatic)?.let { return it }
+        manual.firstOrNull { UpdateWork.TAG_DOWNLOAD in it.tags && it.state.isPending() }?.let { queued ->
             val wifiOnly = queued.constraints.requiredNetworkType == NetworkType.UNMETERED
             return UpdateStatus.Running(if (wifiOnly) PHASE_WAITING_WIFI else PHASE_WAITING, 0f)
+        }
+        // Downloaded, import about to start: still one run in progress, not "update available".
+        if ((manual + automatic).any { UpdateWork.TAG_IMPORT in it.tags && it.state == WorkInfo.State.ENQUEUED }) {
+            return UpdateStatus.Running(UpdateWork.PHASE_STARTING, 0f)
         }
         val liveStamp = store?.meta?.extractStamp
         val checked = when (check) {
@@ -174,11 +181,29 @@ class UpdateManager(
             }
         }
         if (checked is UpdateStatus.UpToDate) return checked
-        val failed = manual.firstOrNull { it.state == WorkInfo.State.FAILED }
-        return if (failed != null) {
-            UpdateStatus.Failed(failed.outputData.getString(TowerUpdateWorker.KEY_ERROR) ?: "Update failed")
+        // A failed download also fails its import (without a message): report the one that says why.
+        val failed = manual.filter { it.state == WorkInfo.State.FAILED }
+        return if (failed.isNotEmpty()) {
+            UpdateStatus.Failed(failed.firstNotNullOfOrNull { it.outputData.getString(UpdateWork.KEY_ERROR) } ?: "Update failed")
         } else {
             checked
         }
     }
+
+    private fun WorkInfo.State.isPending() = this == WorkInfo.State.ENQUEUED || this == WorkInfo.State.BLOCKED
+}
+
+/**
+ * The run in progress among [works], or null if none is RUNNING. Several can be RUNNING while only
+ * one holds the update lock (the others report [UpdateWork.PHASE_QUEUED]), so the one making
+ * progress wins; a run that has not reported a real phase yet shows as starting.
+ */
+internal fun runningStatus(works: List<WorkInfo>): UpdateStatus.Running? {
+    val running = works.filter { it.state == WorkInfo.State.RUNNING }
+    fun WorkInfo.phase(): String? = progress.getString(UpdateWork.KEY_PHASE)
+    val idle = setOf(null, UpdateWork.PHASE_QUEUED, UpdateWork.PHASE_STARTING)
+    val work = running.firstOrNull { it.phase() !in idle } ?: running.firstOrNull() ?: return null
+    val phase = work.phase()?.takeUnless { it == UpdateWork.PHASE_QUEUED } ?: UpdateWork.PHASE_STARTING
+    val fraction = if (phase == UpdateWork.PHASE_STARTING) 0f else work.progress.getFloat(UpdateWork.KEY_FRACTION, 0f)
+    return UpdateStatus.Running(phase, fraction)
 }

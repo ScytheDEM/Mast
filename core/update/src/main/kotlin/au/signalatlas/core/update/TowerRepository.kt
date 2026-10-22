@@ -13,6 +13,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.attribute.BasicFileAttributes
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 
@@ -34,6 +36,8 @@ class TowerRepository(
 
     private val mutex = Mutex()
     private var started = false
+    /** Which file the published store was opened from (null = none), see [identity]. */
+    private var openedFrom: String? = null
     /** Replaced stores still inside their grace period. */
     private val retiring = mutableSetOf<TowerStore>()
 
@@ -43,10 +47,24 @@ class TowerRepository(
             if (started) return
             withContext(Dispatchers.IO) {
                 installer.recover()
-                if (installer.live.isFile) _store.value = opener(installer.live)
+                val id = identity(installer.live)
+                if (id != null) {
+                    _store.value = opener(installer.live)
+                    openedFrom = id
+                }
             }
             started = true
         }
+    }
+
+    /**
+     * [start]s, then reloads if the installed `towers.db` is not the file the published store was
+     * opened from (e.g. another worker installed it but was stopped before its reload).
+     */
+    suspend fun refresh() {
+        start()
+        val stale = mutex.withLock { withContext(Dispatchers.IO) { identity(installer.live) } != openedFrom }
+        if (stale) reload()
     }
 
     /**
@@ -55,9 +73,13 @@ class TowerRepository(
      */
     suspend fun reload() {
         mutex.withLock {
-            val fresh = withContext(Dispatchers.IO) { if (installer.live.isFile) opener(installer.live) else null }
+            val (fresh, id) = withContext(Dispatchers.IO) {
+                val id = identity(installer.live)
+                (if (id != null) opener(installer.live) else null) to id
+            }
             val old = _store.value
             _store.value = fresh
+            openedFrom = id
             started = true
             if (old != null) retire(old)
         }
@@ -68,6 +90,14 @@ class TowerRepository(
         val toClose = synchronized(retiring) { retiring.toList().also { retiring.clear() } } + listOfNotNull(_store.value)
         _store.value = null
         toClose.forEach { it.close() }
+    }
+
+    /** Inode (where the platform reports one), mtime and size; null when [f] is missing. */
+    private fun identity(f: File): String? = try {
+        val a = Files.readAttributes(f.toPath(), BasicFileAttributes::class.java)
+        if (a.isRegularFile) "${a.fileKey()}/${a.lastModifiedTime().toMillis()}/${a.size()}" else null
+    } catch (e: java.io.IOException) {
+        null
     }
 
     private fun retire(old: TowerStore) {

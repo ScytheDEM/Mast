@@ -129,13 +129,23 @@ class UpdateManagerTest {
             .isEqualTo(UpdateStatus.UpToDate("202610221934"))
     }
 
+    private fun works(name: String) = workManager.getWorkInfosForUniqueWork(name).get()
+    private fun List<WorkInfo>.download() = single { UpdateWork.TAG_DOWNLOAD in it.tags }
+    private fun List<WorkInfo>.import() = single { UpdateWork.TAG_IMPORT in it.tags }
+
     @Test fun schedulePeriodicEnqueuesWeeklyWorkAndStaleWorkWhenNoData() {
         manager.schedulePeriodic()
         val periodic = workManager.getWorkInfosForUniqueWork(UpdateManager.PERIODIC_WORK).get().single()
         assertThat(periodic.constraints).isEqualTo(UpdatePolicy.periodicConstraints())
         assertThat(periodic.periodicityInfo!!.repeatIntervalMillis).isEqualTo(Duration.ofDays(7).toMillis())
-        val stale = workManager.getWorkInfosForUniqueWork(UpdateManager.STALE_WORK).get().single()
-        assertThat(stale.constraints).isEqualTo(UpdatePolicy.staleConstraints())
+        assertThat(periodic.tags).contains(UpdateWork.TAG_DOWNLOAD)
+        // The stale chain: download on Wi-Fi, then an import with no network constraint.
+        val stale = works(UpdateManager.AUTO_WORK)
+        assertThat(stale).hasSize(2)
+        assertThat(stale.download().constraints).isEqualTo(UpdatePolicy.staleConstraints())
+        assertThat(stale.import().constraints.requiredNetworkType).isEqualTo(NetworkType.NOT_REQUIRED)
+        assertThat(stale.import().constraints.requiresStorageNotLow()).isTrue()
+        assertThat(stale.import().state).isEqualTo(WorkInfo.State.BLOCKED)
 
         // KEEP: scheduling again does not replace the existing periodic work.
         manager.schedulePeriodic()
@@ -148,17 +158,18 @@ class UpdateManagerTest {
         clock.now = Instant.now()
         manager.schedulePeriodic()
         assertThat(workManager.getWorkInfosForUniqueWork(UpdateManager.PERIODIC_WORK).get()).hasSize(1)
-        assertThat(workManager.getWorkInfosForUniqueWork(UpdateManager.STALE_WORK).get()).isEmpty()
+        assertThat(workManager.getWorkInfosForUniqueWork(UpdateManager.AUTO_WORK).get()).isEmpty()
     }
 
     @Test fun updateNowUsesTheRequestedNetworkAndForces() {
         manager.updateNow(allowMetered = false)
-        val wifi = workManager.getWorkInfosForUniqueWork(UpdateManager.MANUAL_WORK).get().single()
+        val wifi = works(UpdateManager.MANUAL_WORK).download()
         assertThat(wifi.constraints.requiredNetworkType).isEqualTo(NetworkType.UNMETERED)
+        // Only the download needs a network; the import keeps going through network changes.
+        assertThat(works(UpdateManager.MANUAL_WORK).import().constraints.requiredNetworkType).isEqualTo(NetworkType.NOT_REQUIRED)
 
         manager.updateNow(allowMetered = true)
-        val any = workManager.getWorkInfosForUniqueWork(UpdateManager.MANUAL_WORK).get()
-            .single { !it.state.isFinished }
+        val any = works(UpdateManager.MANUAL_WORK).filter { !it.state.isFinished }.download()
         assertThat(any.id).isNotEqualTo(wifi.id) // REPLACE
         assertThat(any.constraints.requiredNetworkType).isEqualTo(NetworkType.CONNECTED)
         // Waiting for its network shows as a not-yet-started run.
@@ -176,19 +187,28 @@ class UpdateManagerTest {
         manager.updateNow(allowMetered = false)
         env.await({ manager.status.value }) { it is UpdateStatus.Running }
         manager.cancelManual()
-        val info = env.await({ workManager.getWorkInfosForUniqueWork(UpdateManager.MANUAL_WORK).get().single() }) { it.state.isFinished }
-        assertThat(info.state).isEqualTo(WorkInfo.State.CANCELLED)
+        val infos = env.await({ works(UpdateManager.MANUAL_WORK) }) { all -> all.all { it.state.isFinished } }
+        assertThat(infos.map { it.state }).containsExactly(WorkInfo.State.CANCELLED, WorkInfo.State.CANCELLED)
         assertThat(env.await({ manager.status.value }) { it !is UpdateStatus.Running }).isNotInstanceOf(UpdateStatus.Running::class.java)
+    }
+
+    private fun runManualChain() {
+        val chain = works(UpdateManager.MANUAL_WORK)
+        val driver = WorkManagerTestInitHelper.getTestDriver(env.context)!!
+        driver.setAllConstraintsMet(chain.download().id)
+        env.await({ workManager.getWorkInfoById(chain.download().id).get()!!.state }) { it.isFinished }
+        driver.setAllConstraintsMet(chain.import().id)
+        env.await({ works(UpdateManager.MANUAL_WORK) }) { all -> all.all { it.state.isFinished } }
     }
 
     @Test fun manualRunInstallsAndEndsUpToDate() {
         env.seed("202610221934")
         manager.updateNow(allowMetered = true)
-        val id = workManager.getWorkInfosForUniqueWork(UpdateManager.MANUAL_WORK).get().single().id
-        WorkManagerTestInitHelper.getTestDriver(env.context)!!.setAllConstraintsMet(id)
-        env.await({ workManager.getWorkInfoById(id).get()!!.state }) { it.isFinished }
-        assertThat(workManager.getWorkInfoById(id).get()!!.state).isEqualTo(WorkInfo.State.SUCCEEDED)
+        runManualChain()
+        assertThat(works(UpdateManager.MANUAL_WORK).map { it.state })
+            .containsExactly(WorkInfo.State.SUCCEEDED, WorkInfo.State.SUCCEEDED)
         assertThat(env.zipRequests()).isEqualTo(1) // force = true
+        assertThat(env.installs.get()).isEqualTo(1)
         check()
         assertThat(settledStatus()).isEqualTo(UpdateStatus.UpToDate("202610221934"))
     }
@@ -198,10 +218,32 @@ class UpdateManagerTest {
         env.zipBytes = ByteArray(4096) { it.toByte() }
         check()
         manager.updateNow(allowMetered = true)
-        val id = workManager.getWorkInfosForUniqueWork(UpdateManager.MANUAL_WORK).get().single().id
-        WorkManagerTestInitHelper.getTestDriver(env.context)!!.setAllConstraintsMet(id)
+        runManualChain()
         val s = env.await({ manager.status.value }) { it is UpdateStatus.Failed }
         assertThat((s as UpdateStatus.Failed).message).isNotEmpty()
         assertThat(env.repo.store.value!!.meta.extractStamp).isEqualTo("202610010000")
+    }
+
+    @Test fun periodicDownloadEnqueuesItsImportAsAutomaticWork() {
+        env.seed("202610010000")
+        manager.schedulePeriodic()
+        val periodic = works(UpdateManager.PERIODIC_WORK).single()
+        WorkManagerTestInitHelper.getTestDriver(env.context)!!.setAllConstraintsMet(periodic.id)
+        val import = env.await({ works(UpdateManager.AUTO_WORK).filter { UpdateWork.TAG_IMPORT in it.tags } }) { it.isNotEmpty() }
+        // One import, fed by the periodic download (no second download).
+        assertThat(import).hasSize(1)
+        assertThat(env.zipRequests()).isEqualTo(1)
+    }
+
+    @Test fun downloadedImportAboutToStartShowsAsRunning() {
+        env.seed("202610010000")
+        check()
+        manager.updateNow(allowMetered = true)
+        val chain = works(UpdateManager.MANUAL_WORK)
+        WorkManagerTestInitHelper.getTestDriver(env.context)!!.setAllConstraintsMet(chain.download().id)
+        env.await({ workManager.getWorkInfoById(chain.download().id).get()!!.state }) { it.isFinished }
+        // The import is enqueued (constraints not yet met): one update in progress, not "available".
+        assertThat(env.await({ manager.status.value }) { it is UpdateStatus.Running })
+            .isEqualTo(UpdateStatus.Running(UpdateWork.PHASE_STARTING, 0f))
     }
 }
