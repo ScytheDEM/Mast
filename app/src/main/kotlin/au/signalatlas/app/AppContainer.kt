@@ -50,7 +50,7 @@ class AppContainer(context: Context) {
     val updateDeps: UpdateDeps = object : UpdateDeps {
         override val remote = this@AppContainer.remote
         override val repo = this@AppContainer.repo
-        override val importer = AcmaImporter()
+        override val importer = AcmaImporter(log = { Log.i(IMPORT_LOG_TAG, it) })
         override val installer = this@AppContainer.installer
         override val workDir = towersDir
         override val notifications = UpdateNotifications(app)
@@ -100,5 +100,7 @@ class AppContainer(context: Context) {
 
     private companion object {
         const val TAG = "SignalAtlas"
+        /** Per-phase import timings: `phase=<name> ms=<elapsed>`, then `phase=total`. */
+        const val IMPORT_LOG_TAG = "AcmaImporter"
     }
 }

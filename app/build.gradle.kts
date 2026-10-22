@@ -18,6 +18,18 @@ android {
         }
     }
 
+    buildTypes {
+        release {
+            // R8 full mode is AGP's default (android.enableR8.fullMode is not overridden).
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // LOCAL TESTING ONLY: signed with the debug keystore so it installs on the emulator.
+            // A store release needs its own signing config.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
     buildFeatures {
         compose = true
     }
