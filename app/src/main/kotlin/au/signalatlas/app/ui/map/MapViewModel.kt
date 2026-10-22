@@ -89,9 +89,9 @@ class MapViewModel(
 
         combine(query.debounce(SEARCH_DEBOUNCE_MS), data.changes) { q, _ -> q.trim() }
             .mapLatest { q ->
-                if (q.isEmpty()) emptyList() else withContext(compute) { data.current()?.search(q).orEmpty() }
+                q to if (q.isEmpty()) emptyList() else withContext(compute) { data.current()?.search(q).orEmpty() }
             }
-            .onEach { results -> _state.update { it.copy(searchResults = results) } }
+            .onEach { (q, results) -> _state.update { it.copy(search = it.search.copy(results = results, resultsFor = q)) } }
             .launchIn(viewModelScope)
 
         location.last.onEach { it?.let { (lat, lon) -> onLocation(lat, lon) } }.launchIn(viewModelScope)
@@ -144,9 +144,13 @@ class MapViewModel(
         if (id == null) _state.update { it.copy(selected = null, selectedId = null) }
     }
 
+    /** The search field's text changed; results follow after [SEARCH_DEBOUNCE_MS], tagged with their query. */
     fun search(q: String) {
         query.value = q
-        _state.update { it.copy(query = q, searchResults = if (q.isBlank()) emptyList() else it.searchResults) }
+        _state.update {
+            val blank = q.isBlank()
+            it.copy(search = it.search.copy(query = q, results = if (blank) emptyList() else it.search.results, resultsFor = if (blank) "" else it.search.resultsFor))
+        }
     }
 
     fun onLocation(lat: Double, lon: Double) {

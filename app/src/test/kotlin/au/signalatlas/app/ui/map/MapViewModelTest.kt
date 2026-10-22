@@ -5,18 +5,11 @@ import au.signalatlas.app.data.LocationSource
 import au.signalatlas.app.data.TowerData
 import au.signalatlas.app.data.TowerSnapshot
 import au.signalatlas.app.data.Updates
-import au.signalatlas.core.acma.ImportReport
-import au.signalatlas.core.data.DataMeta
 import au.signalatlas.core.model.Network
-import au.signalatlas.core.model.Site
-import au.signalatlas.core.model.SiteDetail
-import au.signalatlas.core.model.SiteSummary
-import au.signalatlas.core.model.Tech
 import au.signalatlas.core.model.TowerFilter
 import au.signalatlas.core.update.UpdateStatus
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -30,8 +23,6 @@ import kotlinx.coroutines.Dispatchers
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
-import java.time.Instant
-import kotlin.math.abs
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class MapViewModelTest {
@@ -40,66 +31,8 @@ class MapViewModelTest {
     @Before fun setUp() = Dispatchers.setMain(dispatcher)
     @After fun tearDown() = Dispatchers.resetMain()
 
-    private fun site(id: Int, name: String, lat: Double, lon: Double, vararg nets: Network, techs: Set<Tech> = setOf(Tech.LTE)) =
-        SiteSummary(id, lat, lon, name, nets.toSet(), techs, setOf("B28"))
-
-    private val sites = listOf(
-        site(101160, "Telstra Exchange 22 Barton Tce", -35.31, 149.13, Network.TELSTRA, Network.OPTUS),
-        site(200, "Optus Rooftop Civic", -35.28, 149.13, Network.OPTUS, techs = setOf(Tech.LTE, Tech.NR)),
-        site(300, "TPG Pole Kingston", -35.32, 149.15, Network.TPG),
-        site(400, "NBN Tower Belconnen", -35.24, 149.06, Network.NBN),
-    )
-
-    private inner class FakeSnapshot(val all: List<SiteSummary>) : TowerSnapshot {
-        var retired = false
-        override val meta = DataMeta(
-            "202610220500", Instant.parse("2026-10-22T06:00:00Z"),
-            ImportReport(all.size, 10, 20, 5, 0, 0, 0, 0, emptyMap()),
-        )
-        override val allBands = listOf("B28", "n78")
-        override fun allSites(f: TowerFilter) = all.filter { f.matches(it) }
-        // Deliberately unsorted: the view model must order nearby sites by distance itself.
-        override fun nearest(lat: Double, lon: Double, f: TowerFilter, limit: Int) =
-            all.filter { f.matches(it) }.map { it to (abs(it.lat - lat) + abs(it.lon - lon)) * 100_000 }.reversed()
-        override fun search(query: String, limit: Int) = all.filter { it.name.contains(query, ignoreCase = true) }
-        override fun siteDetail(siteId: Int): SiteDetail? {
-            if (retired) return null
-            val s = all.firstOrNull { it.id == siteId } ?: return null
-            return SiteDetail(Site(s.id, s.lat, s.lon, s.name, "ACT", "2600", null), emptyList())
-        }
-    }
-
-    private class FakeData(initial: TowerSnapshot?) : TowerData {
-        override val started = MutableStateFlow(true)
-        override val changes = MutableStateFlow(initial)
-        override fun current() = changes.value
-    }
-
-    private class FakeUpdates : Updates {
-        override val status = MutableStateFlow<UpdateStatus>(UpdateStatus.Unknown)
-        var checks = 0
-        var cancels = 0
-        val updateCalls = mutableListOf<Boolean>()
-        override suspend fun check() { checks++ }
-        override fun updateNow(allowMetered: Boolean) { updateCalls += allowMetered }
-        override fun cancel() { cancels++ }
-    }
-
-    private class FakeBasemap(val key: String?, val delayMs: Long = 0, val failure: Exception? = null) : BasemapKeys {
-        override suspend fun currentKey(): String? {
-            delay(delayMs)
-            failure?.let { throw it }
-            return key
-        }
-    }
-
-    private class FakeLocation : LocationSource {
-        override val last = MutableStateFlow<Pair<Double, Double>?>(null)
-        override val enabled = MutableStateFlow(true)
-    }
-
     private fun TestScope.vm(
-        data: TowerData = FakeData(FakeSnapshot(sites)),
+        data: TowerData = FakeData(FakeSnapshot(SITES)),
         updates: Updates = FakeUpdates(),
         basemap: BasemapKeys = FakeBasemap("20261022.pmtiles"),
         location: LocationSource = FakeLocation(),
@@ -114,13 +47,13 @@ class MapViewModelTest {
     }
 
     @Test fun storePresent_showsAllSitesForDefaultFilter() = runTest(dispatcher) {
-        val snap = FakeSnapshot(sites)
+        val snap = FakeSnapshot(SITES)
         val vm = vm(data = FakeData(snap))
         advanceUntilIdle()
         assertThat(vm.state.value.hasData).isTrue()
         assertThat(vm.state.value.sites).hasSize(snap.allSites(TowerFilter()).size)
         assertThat(vm.state.value.availableBands).containsExactly("B28", "n78").inOrder()
-        assertThat(vm.state.value.data?.sites).isEqualTo(sites.size)
+        assertThat(vm.state.value.data?.sites).isEqualTo(SITES.size)
     }
 
     @Test fun storeArrivingLater_switchesToData() = runTest(dispatcher) {
@@ -128,7 +61,7 @@ class MapViewModelTest {
         val vm = vm(data = data)
         advanceUntilIdle()
         assertThat(vm.state.value.hasData).isFalse()
-        data.changes.value = FakeSnapshot(sites)
+        data.changes.value = FakeSnapshot(SITES)
         advanceUntilIdle()
         assertThat(vm.state.value.hasData).isTrue()
         assertThat(vm.state.value.sites).hasSize(4)
@@ -167,9 +100,9 @@ class MapViewModelTest {
     }
 
     @Test fun selectSite_retiredStore_requeriesCurrentStore() = runTest(dispatcher) {
-        val old = FakeSnapshot(sites)
+        val old = FakeSnapshot(SITES)
         val data = object : TowerData {
-            val fresh = FakeSnapshot(sites)
+            val fresh = FakeSnapshot(SITES)
             var reads = 0
             override val started = MutableStateFlow(true)
             override val changes = MutableStateFlow<TowerSnapshot?>(old)
@@ -196,15 +129,47 @@ class MapViewModelTest {
         val vm = vm()
         advanceUntilIdle()
         vm.search("barton")
-        assertThat(vm.state.value.query).isEqualTo("barton")
+        assertThat(vm.state.value.search.query).isEqualTo("barton")
         advanceTimeBy(100)
         runCurrent()
-        assertThat(vm.state.value.searchResults).isEmpty() // still debouncing
+        assertThat(vm.state.value.search.pending).isTrue() // still debouncing
+        assertThat(vm.state.value.search.resultsFor("barton")).isNull()
         advanceUntilIdle()
-        assertThat(vm.state.value.searchResults.map { it.id }).contains(101160)
+        assertThat(vm.state.value.search.pending).isFalse()
+        assertThat(vm.state.value.search.resultsFor("barton")!!.map { it.id }).contains(101160)
         vm.search("")
         advanceUntilIdle()
-        assertThat(vm.state.value.searchResults).isEmpty()
+        assertThat(vm.state.value.search.results).isEmpty()
+    }
+
+    @Test fun search_postcode_findsItsSites() = runTest(dispatcher) {
+        val vm = vm()
+        advanceUntilIdle()
+        // Typed one digit at a time, as from the keyboard.
+        for (prefix in listOf("2", "26", "260", "2600")) {
+            vm.search(prefix)
+            advanceTimeBy(50)
+            runCurrent()
+        }
+        advanceUntilIdle()
+        val search = vm.state.value.search
+        assertThat(search.query).isEqualTo("2600")
+        assertThat(search.resultsFor).isEqualTo("2600")
+        assertThat(search.results.map { it.id }).containsExactly(101160, 300)
+    }
+
+    @Test fun search_resultsAreTaggedWithTheirQuery_neverShownForAnother() = runTest(dispatcher) {
+        val vm = vm()
+        advanceUntilIdle()
+        vm.search("barton")
+        advanceUntilIdle()
+        vm.search("2600")
+        runCurrent()
+        // The "barton" results are still in state, but they are not results for "2600".
+        assertThat(vm.state.value.search.resultsFor("2600")).isNull()
+        assertThat(vm.state.value.search.pending).isTrue()
+        advanceUntilIdle()
+        assertThat(vm.state.value.search.resultsFor("2600")!!.map { it.id }).containsExactly(101160, 300)
     }
 
     @Test fun permissionDenied_noNearby_noCrash() = runTest(dispatcher) {

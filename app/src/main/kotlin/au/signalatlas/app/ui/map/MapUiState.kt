@@ -16,8 +16,7 @@ data class MapUiState(
     val availableBands: List<String> = emptyList(),
     val selectedId: Int? = null,
     val selected: SiteDetail? = null,
-    val query: String = "",
-    val searchResults: List<SiteSummary> = emptyList(),
+    val search: SearchUiState = SearchUiState(),
     val update: UpdateStatus = UpdateStatus.Unknown,
     val basemapKey: String? = null,
     /** True once the basemap key is known or the lookup has taken too long; the map may show. */
@@ -30,6 +29,23 @@ data class MapUiState(
     val nearby: List<Pair<SiteSummary, Double>> = emptyList(),
     val data: DataSummary? = null,
 )
+
+/**
+ * Search box state. [results] always belong to [resultsFor] (a trimmed query), which can lag
+ * behind [query] while the debounce or the lookup runs.
+ */
+data class SearchUiState(
+    /** What the user typed last. */
+    val query: String = "",
+    val results: List<SiteSummary> = emptyList(),
+    val resultsFor: String = "",
+) {
+    /** A lookup for the current text has not finished yet. */
+    val pending: Boolean get() = query.trim() != resultsFor
+
+    /** Results for [text] (the field's current text), or null while they are still being computed. */
+    fun resultsFor(text: String): List<SiteSummary>? = if (text.trim() == resultsFor) results else null
+}
 
 /** What the installed DB contains, for the updates screen. */
 data class DataSummary(

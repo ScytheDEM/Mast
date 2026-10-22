@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,6 +33,8 @@ import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -51,6 +55,9 @@ import androidx.compose.material3.adaptive.layout.calculateThreePaneScaffoldValu
 import androidx.compose.material3.adaptive.layout.rememberPaneExpansionState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,6 +68,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -75,6 +84,9 @@ import au.signalatlas.app.ui.nearby.NearbyContent
 import au.signalatlas.core.map.MapCameraState
 import au.signalatlas.core.map.TowerMap
 import au.signalatlas.core.model.SiteSummary
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /** Keeps the camera across activity recreation (e.g. a dark-mode switch). */
@@ -97,8 +109,12 @@ fun MapScreen(
     vm: MapViewModel,
     location: DeviceLocationSource,
     onOpenUpdates: () -> Unit,
+    /** False only in tests: MapLibre needs a real device. */
+    renderMap: Boolean = true,
 ) {
     val camera = viewModel<MapCameraHolder>().camera
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -189,6 +205,9 @@ fun MapScreen(
         showNearby = true
     }
     val openSite = { s: SiteSummary ->
+        // Keyboard and focus go first, so the closing keyboard cannot disturb the sheet opening.
+        keyboard?.hide()
+        focusManager.clearFocus()
         searchExpanded = false
         camera.animateTo(s.lat, s.lon, SITE_ZOOM)
         vm.selectSite(s.id)
@@ -200,7 +219,7 @@ fun MapScreen(
 
     Box(Modifier.fillMaxSize()) {
         // 1. The map: always first, always full size.
-        if (state.basemapResolved) {
+        if (renderMap && state.basemapResolved) {
             TowerMap(
                 sites = state.sites,
                 selectedSiteId = state.selectedId,
@@ -322,20 +341,75 @@ private fun ExpandedPanes(
 
 private val SIDE_PANEL_WIDTH = 400.dp
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The compact layout's modal sheet. It opens only once the keyboard is gone (a keyboard closing
+ * mid-animation changes the sheet's anchors and could cancel the opening, leaving an invisible
+ * scrim that eats taps), re-opens if an opening is cancelled anyway, and animates closed when
+ * [pane] goes to [Pane.None] from outside (close button, back, site gone).
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun CompactSheet(pane: Pane, onDismiss: () -> Unit, paneContent: @Composable (Pane) -> Unit) {
-    if (pane == Pane.None) return
+    val sheetState = rememberModalBottomSheetState()
+    var visible by remember { mutableStateOf(false) }
+    // The last content, so the sheet can animate out with it.
+    var shown by remember { mutableStateOf(pane) }
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(pane, imeVisible) {
+        when {
+            pane != Pane.None && !imeVisible -> {
+                shown = pane
+                if (visible) sheetState.show() else visible = true
+            }
+            pane == Pane.None && visible -> {
+                sheetState.hide()
+                visible = false
+            }
+        }
+    }
+    if (!visible) return
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(),
+        sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
         scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.18f),
         contentWindowInsets = { WindowInsets(0) },
     ) {
-        Box(Modifier.fillMaxWidth().navigationBarsPadding()) { paneContent(pane) }
+        Box(Modifier.fillMaxWidth().navigationBarsPadding()) { paneContent(shown) }
+    }
+    EnsureOpened(sheetState, wanted = pane != Pane.None)
+}
+
+/**
+ * Re-opens a sheet whose opening animation was cancelled before it ever showed. Once it has been
+ * open, a later Hidden is the user dismissing it and is left alone.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EnsureOpened(sheetState: SheetState, wanted: Boolean) {
+    val currentlyWanted by rememberUpdatedState(wanted)
+    LaunchedEffect(sheetState) {
+        var opening = false
+        var opened = false
+        var retries = 0
+        snapshotFlow { sheetState.currentValue to sheetState.targetValue }.collect { (current, target) ->
+            if (target != SheetValue.Hidden) opening = true
+            if (current != SheetValue.Hidden) {
+                opened = true
+            } else if (target == SheetValue.Hidden && opening && !opened && currentlyWanted && retries < MAX_OPEN_RETRIES) {
+                // The opening began and settled back at Hidden without ever showing: try again.
+                retries++
+                try {
+                    sheetState.show()
+                } catch (e: CancellationException) {
+                    if (!currentCoroutineContext().isActive) throw e // else interrupted again; the next emission retries
+                }
+            }
+        }
     }
 }
+
+private const val MAX_OPEN_RETRIES = 3
 
 @Composable
 private fun MapControls(
@@ -356,7 +430,7 @@ private fun MapControls(
         Column(Modifier.fillMaxWidth()) {
             if (docked) {
                 TowerSearchBar(
-                    query = state.query, results = state.searchResults,
+                    search = state.search,
                     expanded = searchExpanded, onExpandedChange = onSearchExpandedChange,
                     onQueryChange = onQueryChange, onResultClick = onResultClick, onOpenUpdates = onOpenUpdates,
                     docked = true,
@@ -365,7 +439,7 @@ private fun MapControls(
             } else {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                     TowerSearchBar(
-                        query = state.query, results = state.searchResults,
+                        search = state.search,
                         expanded = searchExpanded, onExpandedChange = onSearchExpandedChange,
                         onQueryChange = onQueryChange, onResultClick = onResultClick, onOpenUpdates = onOpenUpdates,
                         docked = false,

@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,12 +44,14 @@ import au.signalatlas.core.model.SiteSummary
 /**
  * Material 3 search bar over the map; results are sites. [docked] uses the docked variant (for
  * the expanded two-pane layout) instead of expanding to full screen.
+ *
+ * The field's text lives here (not in the view model's state), so typing never round-trips
+ * through a StateFlow; every change is forwarded through [onQueryChange].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TowerSearchBar(
-    query: String,
-    results: List<SiteSummary>,
+    search: SearchUiState,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     onQueryChange: (String) -> Unit,
@@ -58,11 +61,17 @@ fun TowerSearchBar(
     modifier: Modifier = Modifier,
 ) {
     val focus = LocalFocusManager.current
+    var text by rememberSaveable { mutableStateOf(search.query) }
+    val setText = { q: String ->
+        text = q
+        onQueryChange(q)
+    }
+    val results = search.resultsFor(text)
     val input = @Composable {
         SearchBarDefaults.InputField(
-            query = query,
-            onQueryChange = onQueryChange,
-            onSearch = { results.firstOrNull()?.let(onResultClick); focus.clearFocus() },
+            query = text,
+            onQueryChange = setText,
+            onSearch = { results?.firstOrNull()?.let(onResultClick); focus.clearFocus() },
             expanded = expanded,
             onExpandedChange = onExpandedChange,
             placeholder = { Text(stringResource(R.string.search_hint), maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -77,7 +86,7 @@ fun TowerSearchBar(
             },
             trailingIcon = {
                 when {
-                    query.isNotEmpty() -> IconButton(onClick = { onQueryChange("") }) {
+                    text.isNotEmpty() -> IconButton(onClick = { setText("") }) {
                         Icon(Icons.Filled.Close, stringResource(R.string.clear))
                     }
                     !expanded -> OverflowMenu(onOpenUpdates)
@@ -86,7 +95,7 @@ fun TowerSearchBar(
         )
     }
     val colors = SearchBarDefaults.colors(containerColor = MaterialTheme.colorScheme.surfaceContainerLowest)
-    val content: @Composable () -> Unit = { SearchResults(query, results, onResultClick) }
+    val content: @Composable () -> Unit = { SearchResults(text, results, onResultClick) }
     if (docked) {
         DockedSearchBar(
             inputField = input,
@@ -122,8 +131,10 @@ private fun OverflowMenu(onOpenUpdates: () -> Unit) {
     }
 }
 
+/** [results] null = still looking up [query]: show nothing rather than "No matching sites". */
 @Composable
-private fun SearchResults(query: String, results: List<SiteSummary>, onResultClick: (SiteSummary) -> Unit) {
+private fun SearchResults(query: String, results: List<SiteSummary>?, onResultClick: (SiteSummary) -> Unit) {
+    if (results == null) return
     if (query.isNotBlank() && results.isEmpty()) {
         Text(
             stringResource(R.string.search_no_results),
