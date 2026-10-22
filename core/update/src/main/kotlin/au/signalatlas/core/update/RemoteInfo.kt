@@ -11,3 +11,6 @@ data class RemoteInfo(val extractStamp: String, val etag: String, val sizeBytes:
 
 /** The server answered, but not in the shape we rely on. */
 class RemoteFormatException(msg: String) : java.io.IOException(msg)
+
+/** The remote file changed (different ETag) between info() and the download; re-run info(). */
+class RemoteChangedException(msg: String) : java.io.IOException(msg)

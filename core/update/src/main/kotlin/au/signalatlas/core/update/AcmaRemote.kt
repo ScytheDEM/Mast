@@ -1,5 +1,6 @@
 package au.signalatlas.core.update
 
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -34,6 +35,12 @@ class AcmaRemote(
         private val CONTENT_RANGE = Regex("""^bytes (\d+)-(\d+)/(\d+)$""")
     }
 
+    /** Deletes [dest] and its provenance sidecar (call after a successful import). */
+    fun discard(dest: File) {
+        dest.delete()
+        sidecarOf(dest).delete()
+    }
+
     /** Fetches the extract stamp (GET) and the zip's ETag and size (HEAD). */
     suspend fun info(): RemoteInfo {
         val stamp = call(Request.Builder().url(stampUrl).get().build()) { response ->
@@ -58,18 +65,24 @@ class AcmaRemote(
      */
     suspend fun download(info: RemoteInfo, dest: File, onProgress: (bytes: Long, total: Long) -> Unit) {
         val total = info.sizeBytes
+        val sidecar = sidecarOf(dest)
         var existing = if (dest.isFile) dest.length() else 0L
+        // A partial (or finished) file is only trusted if it provably came from this exact ETag.
+        if (existing > 0 && !(sidecar.isFile && sidecar.readText() == info.etag)) {
+            discard(dest)
+            existing = 0L
+        }
         if (existing == total) {
             onProgress(total, total)
             return
         }
         if (existing > total) {
-            dest.delete()
+            discard(dest)
             existing = 0L
         }
         val resumeFrom = if (existing in 1 until total) existing else 0L
         if (!fetch(info, dest, resumeFrom, onProgress)) {
-            // The server did not offer the same file at the offset we asked for: start over.
+            // Same ETag but not the byte range we asked for: start over.
             check(fetch(info, dest, 0L, onProgress)) { "A download from byte 0 never asks to restart" }
         }
     }
@@ -88,46 +101,72 @@ class AcmaRemote(
             }
             .build()
         return call(request) { response ->
+            if (response.code != 200 && !(response.code == 206 && offset > 0) && !(response.code == 416 && offset > 0)) {
+                throw IOException("Download failed: HTTP ${response.code}")
+            }
+            if (response.code != 416) {
+                val served = response.header("ETag")
+                if (served != null && served != info.etag) {
+                    discard(dest)
+                    throw RemoteChangedException("Remote file changed during download (ETag $served, expected ${info.etag})")
+                }
+            }
             val append: Boolean
-            when {
-                response.code == 206 && offset > 0 -> {
+            when (response.code) {
+                206 -> {
                     val range = response.header("Content-Range")?.let { CONTENT_RANGE.matchEntire(it.trim()) }
-                    val sameFile = response.header("ETag").let { it == null || it == info.etag }
-                    if (range == null || !sameFile ||
+                    if (range == null ||
                         range.groupValues[1].toLongOrNull() != offset || range.groupValues[3].toLongOrNull() != total
                     ) {
                         return@call false
                     }
                     append = true
                 }
-                response.code == 200 -> append = false // Range ignored or If-Range failed: whole body from 0.
-                response.code == 416 && offset > 0 -> return@call false
-                else -> throw IOException("Download failed: HTTP ${response.code}")
+                200 -> append = false // Range ignored or If-Range failed: whole body from 0.
+                else -> return@call false // 416
             }
+            if (!append) writeSidecar(dest, info.etag)
 
             val start = if (append) offset else 0L
             var written = start
             var lastReported = start
             val buffer = ByteArray(BUFFER_BYTES)
-            FileOutputStream(dest, append).use { out ->
-                val source = response.body.byteStream()
-                while (true) {
-                    currentCoroutineContext().ensureActive()
-                    val n = source.read(buffer)
-                    if (n < 0) break
-                    out.write(buffer, 0, n)
-                    written += n
-                    if (written - lastReported >= PROGRESS_STEP_BYTES) {
-                        lastReported = written
-                        onProgress(written, total)
+            try {
+                FileOutputStream(dest, append).use { out ->
+                    val source = response.body.byteStream()
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val n = source.read(buffer)
+                        if (n < 0) break
+                        out.write(buffer, 0, n)
+                        written += n
+                        if (written - lastReported >= PROGRESS_STEP_BYTES) {
+                            lastReported = written
+                            onProgress(written, total)
+                        }
                     }
                 }
+            } catch (e: IOException) {
+                // call.cancel() surfaces as IOException("Canceled"); report the cancellation instead.
+                currentCoroutineContext().ensureActive()
+                throw e
             }
             if (dest.length() != total) {
                 throw IOException("Download incomplete: ${dest.length()} of $total bytes")
             }
             onProgress(total, total)
             true
+        }
+    }
+
+    private fun sidecarOf(dest: File) = File(dest.path + ".etag")
+
+    /** Records which ETag the bytes in [dest] belong to, durably, before any byte is written. */
+    private fun writeSidecar(dest: File, etag: String) {
+        FileOutputStream(sidecarOf(dest)).use { out ->
+            out.write(etag.toByteArray())
+            out.flush()
+            out.fd.sync()
         }
     }
 
@@ -140,7 +179,7 @@ class AcmaRemote(
         val call = http.newCall(request)
         coroutineScope {
             // Suspended until this scope is cancelled; then unblocks the thread stuck in OkHttp I/O.
-            val watcher = launch {
+            val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
                 try {
                     awaitCancellation()
                 } finally {
@@ -148,7 +187,12 @@ class AcmaRemote(
                 }
             }
             try {
-                call.execute().use { block(it) }
+                try {
+                    call.execute().use { block(it) }
+                } catch (e: IOException) {
+                    currentCoroutineContext().ensureActive()
+                    throw e
+                }
             } finally {
                 watcher.cancel()
             }

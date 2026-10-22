@@ -1,6 +1,11 @@
 package au.signalatlas.core.update
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import mockwebserver3.Dispatcher
@@ -47,6 +52,13 @@ class AcmaRemoteTest {
                 return handler(request)
             }
         }
+    }
+
+    private val sidecar get() = File(dest.path + ".etag")
+
+    private fun prefill(content: ByteArray, tag: String? = etag) {
+        dest.writeBytes(content)
+        if (tag != null) sidecar.writeText(tag)
     }
 
     private fun bytes(b: ByteArray) = Buffer().write(b)
@@ -116,7 +128,7 @@ class AcmaRemoteTest {
     }
 
     @Test fun resumesWithRangeAndIfRange() = runTest {
-        dest.writeBytes(body.copyOf(1000))
+        prefill(body.copyOf(1000))
         rangeServer()
         remote.download(info, dest) { _, _ -> }
         assertThat(dest.readBytes()).isEqualTo(body)
@@ -126,30 +138,97 @@ class AcmaRemoteTest {
         assertThat(ranged.single().headers["If-Range"]).isEqualTo(etag)
     }
 
-    @Test fun etagChangedServerReturns200RestartsFromZero() = runTest {
-        val newBody = ByteArray(body.size) { (it * 7 + 3).toByte() }
-        dest.writeBytes(body.copyOf(1000)) // prefix of the OLD file
-        serve { ok(newBody, tag = "0xNEW") } // If-Range failed: full 200 of the new file
-        remote.download(info, dest) { _, _ -> }
-        assertThat(dest.readBytes()).isEqualTo(newBody)
+    @Test fun freshDownloadWithChangedEtagThrowsAndLeavesNothing() = runTest {
+        serve { ok(body, tag = "0xNEW") }
+        assertThrows(RemoteChangedException::class.java) { runBlocking { remote.download(info, dest) { _, _ -> } } }
+        assertThat(dest.exists()).isFalse()
+        assertThat(sidecar.exists()).isFalse()
     }
 
-    @Test fun differentEtagOn206RestartsWithoutRange() = runTest {
-        dest.writeBytes(body.copyOf(1000))
-        serve { r ->
-            if (r.headers["Range"] != null) {
-                MockResponse.Builder().code(206).addHeader("ETag", "0xOTHER")
-                    .addHeader("Content-Range", "bytes 1000-${body.size - 1}/${body.size}")
-                    .body(bytes(body.copyOfRange(1000, body.size))).build()
-            } else ok(body)
+    @Test fun resumeAnswered200WithChangedEtagThrowsAndDeletesPartial() = runTest {
+        prefill(body.copyOf(1000))
+        serve { ok(body, tag = "0xNEW") }
+        assertThrows(RemoteChangedException::class.java) { runBlocking { remote.download(info, dest) { _, _ -> } } }
+        assertThat(dest.exists()).isFalse()
+        assertThat(sidecar.exists()).isFalse()
+    }
+
+    @Test fun differentEtagOn206ThrowsAndDeletesPartial() = runTest {
+        prefill(body.copyOf(1000))
+        serve {
+            MockResponse.Builder().code(206).addHeader("ETag", "0xOTHER")
+                .addHeader("Content-Range", "bytes 1000-${body.size - 1}/${body.size}")
+                .body(bytes(body.copyOfRange(1000, body.size))).build()
         }
+        assertThrows(RemoteChangedException::class.java) { runBlocking { remote.download(info, dest) { _, _ -> } } }
+        assertThat(dest.exists()).isFalse()
+        assertThat(sidecar.exists()).isFalse()
+    }
+
+    @Test fun partialFromOlderVersionIsNeverSpliced() = runTest {
+        val v1 = ByteArray(body.size) { (it * 5 + 1).toByte() }
+        prefill(v1.copyOf(1000), tag = "0xV1")
+        rangeServer() // honours Range for V2 (etag matches info)
         remote.download(info, dest) { _, _ -> }
         assertThat(dest.readBytes()).isEqualTo(body)
-        assertThat(requests.map { it.headers["Range"] }).containsExactly("bytes=1000-", null).inOrder()
+        assertThat(requests.none { it.headers["Range"] != null }).isTrue()
+        assertThat(sidecar.readText()).isEqualTo(etag)
+    }
+
+    @Test fun partialWithoutSidecarIsRestarted() = runTest {
+        prefill(body.copyOf(1000), tag = null)
+        rangeServer()
+        remote.download(info, dest) { _, _ -> }
+        assertThat(dest.readBytes()).isEqualTo(body)
+        assertThat(requests.none { it.headers["Range"] != null }).isTrue()
+    }
+
+    @Test fun sameSizeFileWithMismatchedOrMissingSidecarIsRedownloaded() = runTest {
+        val old = ByteArray(body.size) { 4 }
+        for (tag in listOf("0xV1", null)) {
+            requests.clear()
+            sidecar.delete()
+            prefill(old, tag = tag)
+            serve { ok(body) }
+            remote.download(info, dest) { _, _ -> }
+            assertThat(dest.readBytes()).isEqualTo(body)
+            assertThat(requests).hasSize(1)
+        }
+    }
+
+    @Test fun discardDeletesFileAndSidecar() {
+        prefill(body)
+        remote.discard(dest)
+        assertThat(dest.exists()).isFalse()
+        assertThat(sidecar.exists()).isFalse()
+    }
+
+    @Test fun cancellationMidStreamPropagatesAsCancellationAndKeepsPartial() = runBlocking {
+        serve {
+            MockResponse.Builder().code(200).addHeader("ETag", etag).body(bytes(body))
+                .throttleBody(20_000, 100, java.util.concurrent.TimeUnit.MILLISECONDS).build()
+        }
+        val outcome = kotlinx.coroutines.CompletableDeferred<Throwable?>()
+        val job = launch(Dispatchers.IO) {
+            try {
+                remote.download(info, dest) { _, _ -> }
+                outcome.complete(null)
+            } catch (t: Throwable) {
+                outcome.complete(t)
+                throw t
+            }
+        }
+        val deadline = System.currentTimeMillis() + 10_000
+        while (dest.length() == 0L && System.currentTimeMillis() < deadline) delay(20)
+        assertThat(dest.length()).isGreaterThan(0L)
+        job.cancelAndJoin()
+        assertThat(outcome.await()).isInstanceOf(CancellationException::class.java)
+        assertThat(dest.length()).isLessThan(body.size.toLong())
+        assertThat(sidecar.readText()).isEqualTo(etag)
     }
 
     @Test fun contentRangeStartMismatchRestartsFromZero() = runTest {
-        dest.writeBytes(body.copyOf(1000))
+        prefill(body.copyOf(1000))
         serve { r ->
             if (r.headers["Range"] != null) {
                 MockResponse.Builder().code(206).addHeader("ETag", etag)
@@ -162,7 +241,7 @@ class AcmaRemoteTest {
     }
 
     @Test fun completeFileMakesNoRequest() = runTest {
-        dest.writeBytes(body)
+        prefill(body)
         serve { ok(body) }
         var last: Pair<Long, Long>? = null
         remote.download(info, dest) { b, t -> last = b to t }
@@ -171,7 +250,7 @@ class AcmaRemoteTest {
     }
 
     @Test fun oversizedDestIsDiscardedAndRestarted() = runTest {
-        dest.writeBytes(ByteArray(body.size + 50) { 9 })
+        prefill(ByteArray(body.size + 50) { 9 })
         serve { ok(body) }
         remote.download(info, dest) { _, _ -> }
         assertThat(dest.readBytes()).isEqualTo(body)
