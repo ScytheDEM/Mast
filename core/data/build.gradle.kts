@@ -10,6 +10,7 @@ dependencies {
     api(project(":core:model"))
     api(project(":core:acma"))
     implementation(libs.androidx.sqlite.bundled)
+    implementation(libs.kotlinx.serialization.json)
     testImplementation(libs.junit)
     testImplementation(libs.truth)
 }
