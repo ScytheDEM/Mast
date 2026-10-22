@@ -1,6 +1,15 @@
 package au.signalatlas.app.ui.updates
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -12,6 +21,18 @@ import androidx.compose.ui.res.stringResource
 import au.signalatlas.app.R
 import au.signalatlas.core.update.UpdateStatus
 import kotlin.math.roundToInt
+
+/** What the active network allows a manual download to do right now. */
+enum class NetworkKind { Offline, Metered, Unmetered }
+
+/** No active network, or one without internet, counts as offline (not as "metered"). */
+fun Context.currentNetworkKind(): NetworkKind {
+    val cm = getSystemService(ConnectivityManager::class.java) ?: return NetworkKind.Offline
+    val network = cm.activeNetwork ?: return NetworkKind.Offline
+    val caps = cm.getNetworkCapabilities(network) ?: return NetworkKind.Offline
+    if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return NetworkKind.Offline
+    return if (cm.isActiveNetworkMetered) NetworkKind.Metered else NetworkKind.Unmetered
+}
 
 /** "about 68 MB", from ACMA's Content-Length when a check has seen it. */
 @Composable
@@ -25,19 +46,30 @@ fun downloadSizeLabel(status: UpdateStatus): String {
 }
 
 /**
- * Starts a manual download. On a metered network it first asks "Use mobile data for …?";
- * "Wait for Wi-Fi" queues the download for an unmetered network instead.
+ * Starts a manual download according to the network:
+ * - offline: nothing is queued; [offline] becomes true so the screen shows the offline message;
+ * - metered: first asks "Use mobile data for …?"; "Wait for Wi-Fi" queues it for Wi-Fi instead;
+ * - unmetered: downloads at once (Wi-Fi only).
  *
- * Call [DownloadGate.request] from a button and place [DownloadGate.Dialog] in the composition.
+ * Call [request] from a button and place [Dialog] in the composition.
  */
 class DownloadGate internal constructor(
-    private val isMetered: () -> Boolean,
+    private val network: () -> NetworkKind,
     private val onDownload: (allowMetered: Boolean) -> Unit,
     private val asking: () -> Boolean,
     private val setAsking: (Boolean) -> Unit,
+    private val isOffline: () -> Boolean,
+    private val setOffline: (Boolean) -> Unit,
 ) {
+    /** The last request found no network. */
+    val offline: Boolean get() = isOffline()
+
     fun request() {
-        if (isMetered()) setAsking(true) else onDownload(false)
+        when (network()) {
+            NetworkKind.Offline -> setOffline(true)
+            NetworkKind.Metered -> { setOffline(false); setAsking(true) }
+            NetworkKind.Unmetered -> { setOffline(false); onDownload(false) }
+        }
     }
 
     @Composable
@@ -58,7 +90,17 @@ class DownloadGate internal constructor(
 }
 
 @Composable
-fun rememberDownloadGate(isMetered: () -> Boolean, onDownload: (allowMetered: Boolean) -> Unit): DownloadGate {
+fun rememberDownloadGate(network: () -> NetworkKind, onDownload: (allowMetered: Boolean) -> Unit): DownloadGate {
     var asking by rememberSaveable { mutableStateOf(false) }
-    return DownloadGate(isMetered, onDownload, { asking }, { asking = it })
+    var offline by rememberSaveable { mutableStateOf(false) }
+    return DownloadGate(network, onDownload, { asking }, { asking = it }, { offline }, { offline = it })
+}
+
+/** Ways out of a queued (waiting) download: go now on mobile data, or cancel it. */
+@Composable
+fun WaitingActions(onUseMobileData: () -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedButton(onClick = onCancel) { Text(stringResource(R.string.cancel)) }
+        Button(onClick = onUseMobileData) { Text(stringResource(R.string.use_mobile_data_now)) }
+    }
 }

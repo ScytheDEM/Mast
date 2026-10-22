@@ -8,6 +8,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import au.signalatlas.app.ui.theme.SignalAtlasTheme
+import au.signalatlas.app.ui.updates.NetworkKind
+import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateStatus
 import com.google.common.truth.Truth.assertThat
 import org.junit.Rule
@@ -20,11 +22,17 @@ class FirstRunScreenTest {
     @get:Rule val compose = createComposeRule()
 
     private val calls = mutableListOf<Boolean>()
+    private var cancels = 0
 
-    private fun show(status: UpdateStatus, metered: Boolean = false) {
+    private fun show(status: UpdateStatus, network: NetworkKind = NetworkKind.Unmetered) {
         compose.setContent {
             SignalAtlasTheme {
-                FirstRunScreen(status = status, isMetered = { metered }, onDownload = { calls += it })
+                FirstRunScreen(
+                    status = status,
+                    network = { network },
+                    onDownload = { calls += it },
+                    onCancel = { cancels++ },
+                )
             }
         }
     }
@@ -64,11 +72,37 @@ class FirstRunScreenTest {
     }
 
     @Test fun metered_asksBeforeUsingMobileData() {
-        show(UpdateStatus.Unknown, metered = true)
+        show(UpdateStatus.Unknown, network = NetworkKind.Metered)
         compose.onNodeWithText("Download now").performClick()
         assertThat(calls).isEmpty()
         compose.onNodeWithText("Use mobile data for about 68 MB?").assertIsDisplayed()
         compose.onNodeWithText("Use mobile data").performClick()
         assertThat(calls).containsExactly(true)
+    }
+
+    @Test fun offlineTryAgain_showsOfflineMessage_withoutMeteredDialog() {
+        show(UpdateStatus.Unknown, network = NetworkKind.Offline)
+        compose.onNodeWithText("Download now").performClick()
+        compose.onNodeWithText("Use mobile data for about 68 MB?").assertDoesNotExist()
+        compose.onNodeWithText("You're offline. Connect to the internet to download tower data.").assertIsDisplayed()
+        compose.onNodeWithText("Try again").performClick()
+        compose.onNodeWithText("Use mobile data for about 68 MB?").assertDoesNotExist()
+        assertThat(calls).isEmpty()
+    }
+
+    @Test fun waitingForConnection_offersMobileDataAndCancel() {
+        show(UpdateStatus.Running(UpdateManager.PHASE_WAITING, 0f))
+        compose.onNodeWithText("Waiting for a connection").assertIsDisplayed()
+        compose.onNodeWithText("Use mobile data now").performClick()
+        assertThat(calls).containsExactly(true)
+        compose.onNodeWithText("Cancel").performClick()
+        assertThat(cancels).isEqualTo(1)
+    }
+
+    @Test fun waitingForWifi_saysSoAndOffersActions() {
+        show(UpdateStatus.Running(UpdateManager.PHASE_WAITING_WIFI, 0f))
+        compose.onNodeWithText("Waiting for Wi-Fi").assertIsDisplayed()
+        compose.onNodeWithText("Use mobile data now").assertIsDisplayed()
+        compose.onNodeWithText("Cancel").assertIsDisplayed()
     }
 }

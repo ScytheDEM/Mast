@@ -122,9 +122,10 @@ fun MapScreen(
     // Permission may change in Settings while we are away.
     LifecycleResumeEffect(Unit) {
         vm.onLocationPermission(location.hasPermission())
+        location.refresh()
         onPauseOrDispose { }
     }
-    LifecycleStartEffect(state.locationGranted) {
+    LifecycleStartEffect(state.locationGranted, state.locationEnabled) {
         if (state.locationGranted) location.start()
         onStopOrDispose { location.stop() }
     }
@@ -157,6 +158,12 @@ fun MapScreen(
         afterGrant = null
     }
 
+    val locationOffMessage = stringResource(R.string.location_off)
+    val locationSettingsLabel = stringResource(R.string.location_settings)
+    val openLocationSettings = {
+        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
     /** Runs [action] with location permission, explaining first and asking if needed. */
     fun withLocation(action: () -> Unit) {
         if (location.hasPermission()) {
@@ -169,8 +176,17 @@ fun MapScreen(
 
     val onMyLocation = {
         withLocation {
+            location.refresh()
             val fix = state.location
-            if (fix != null) camera.animateTo(fix.first, fix.second, SITE_ZOOM) else centreOnFix = true
+            when {
+                // Location services off: no fix will come, so say so instead of waiting forever.
+                !location.enabled.value -> scope.launch {
+                    val r = snackbar.showSnackbar(locationOffMessage, actionLabel = locationSettingsLabel, withDismissAction = true)
+                    if (r == SnackbarResult.ActionPerformed) openLocationSettings()
+                }
+                fix != null -> camera.animateTo(fix.first, fix.second, SITE_ZOOM)
+                else -> centreOnFix = true
+            }
         }
     }
     val onNearby = { withLocation { }; showNearby = true }
@@ -197,6 +213,8 @@ fun MapScreen(
                 onCameraIdle = { },
                 selectedColor = MaterialTheme.colorScheme.primary.toArgb(),
                 modifier = Modifier.fillMaxSize(),
+                userLocation = state.location.takeIf { state.locationGranted },
+                userLocationColor = MaterialTheme.colorScheme.primary.toArgb(),
             )
         }
 
@@ -222,7 +240,9 @@ fun MapScreen(
                 Pane.Site -> state.selected?.let { SiteSheetContent(it, onClose = { vm.selectSite(null) }) }
                 Pane.Nearby -> NearbyContent(
                     locationGranted = state.locationGranted,
+                    locationEnabled = state.locationEnabled,
                     hasLocation = state.location != null,
+                    onOpenLocationSettings = openLocationSettings,
                     nearby = state.nearby,
                     onSiteClick = openSite,
                     onRequestPermission = { withLocation { } },

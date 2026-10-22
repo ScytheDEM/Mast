@@ -35,6 +35,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import au.signalatlas.app.R
 import au.signalatlas.app.ui.map.DataSummary
+import au.signalatlas.app.ui.map.isWaiting
 import au.signalatlas.app.ui.map.overallFraction
 import au.signalatlas.app.ui.map.runningLabel
 import au.signalatlas.core.update.UpdateStatus
@@ -51,13 +52,14 @@ import java.util.Locale
 fun UpdatesScreen(
     data: DataSummary?,
     status: UpdateStatus,
-    isMetered: () -> Boolean,
+    network: () -> NetworkKind,
     onCheck: () -> Unit,
     onUpdateNow: (allowMetered: Boolean) -> Unit,
+    onCancel: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val gate = rememberDownloadGate(isMetered, onUpdateNow)
+    val gate = rememberDownloadGate(network, onUpdateNow)
     gate.Dialog(downloadSizeLabel(status))
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -95,9 +97,14 @@ fun UpdatesScreen(
                     }
                 }
                 Spacer(Modifier.height(24.dp))
-                StatusLine(status)
+                // A fresh "Update now" with no network trumps an older status.
+                StatusLine(if (gate.offline && status !is UpdateStatus.Running) UpdateStatus.Offline else status)
                 Spacer(Modifier.height(20.dp))
                 val running = status is UpdateStatus.Running
+                if (status is UpdateStatus.Running && status.isWaiting()) {
+                    WaitingActions(onUseMobileData = { onUpdateNow(true) }, onCancel = onCancel)
+                    Spacer(Modifier.height(12.dp))
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(
                         onClick = onCheck,
@@ -141,7 +148,11 @@ private fun StatusLine(status: UpdateStatus) {
         )
         if (status is UpdateStatus.Running) {
             Spacer(Modifier.height(10.dp))
-            LinearProgressIndicator(progress = { status.overallFraction() }, modifier = Modifier.fillMaxWidth())
+            if (status.isWaiting()) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(progress = { status.overallFraction() }, modifier = Modifier.fillMaxWidth())
+            }
         }
     }
 }

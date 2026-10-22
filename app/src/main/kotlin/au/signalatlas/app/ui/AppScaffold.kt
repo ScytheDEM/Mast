@@ -1,9 +1,7 @@
 package au.signalatlas.app.ui
 
 import android.Manifest
-import android.content.Context
 import android.content.pm.PackageManager
-import android.net.ConnectivityManager
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -32,6 +30,7 @@ import au.signalatlas.app.ui.firstrun.FirstRunScreen
 import au.signalatlas.app.ui.map.MapScreen
 import au.signalatlas.app.ui.map.MapViewModel
 import au.signalatlas.app.ui.updates.UpdatesScreen
+import au.signalatlas.app.ui.updates.currentNetworkKind
 
 private enum class Root { Loading, FirstRun, Map }
 
@@ -43,7 +42,7 @@ fun AppScaffold(container: AppContainer) {
     val context = LocalContext.current
     var showUpdates by rememberSaveable { mutableStateOf(false) }
 
-    val isMetered = remember(context) { { context.isOnMeteredNetwork() } }
+    val network = remember(context) { { context.currentNetworkKind() } }
     val askNotifications = rememberNotificationPermissionOnce()
     val updateNow = { allowMetered: Boolean ->
         askNotifications()
@@ -61,7 +60,12 @@ fun AppScaffold(container: AppContainer) {
             when (r) {
                 // Same colour as the window background, so start-up shows no flash.
                 Root.Loading -> Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) { }
-                Root.FirstRun -> FirstRunScreen(status = state.update, isMetered = isMetered, onDownload = updateNow)
+                Root.FirstRun -> FirstRunScreen(
+                    status = state.update,
+                    network = network,
+                    onDownload = updateNow,
+                    onCancel = vm::cancelUpdate,
+                )
                 Root.Map -> MapScreen(state, vm, container.location, onOpenUpdates = { showUpdates = true })
             }
         }
@@ -75,18 +79,16 @@ fun AppScaffold(container: AppContainer) {
             UpdatesScreen(
                 data = state.data,
                 status = state.update,
-                isMetered = isMetered,
+                network = network,
                 onCheck = vm::checkUpdates,
                 onUpdateNow = updateNow,
+                onCancel = vm::cancelUpdate,
                 onBack = { showUpdates = false },
             )
         }
     }
     BackHandler(enabled = showUpdates) { showUpdates = false }
 }
-
-private fun Context.isOnMeteredNetwork(): Boolean =
-    getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered ?: true
 
 /**
  * POST_NOTIFICATIONS (API 33+) for the download's progress notification, asked the first time the

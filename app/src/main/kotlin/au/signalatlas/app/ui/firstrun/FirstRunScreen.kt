@@ -31,23 +31,26 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import au.signalatlas.app.R
+import au.signalatlas.app.ui.map.isWaiting
 import au.signalatlas.app.ui.map.overallFraction
 import au.signalatlas.app.ui.map.runningLabel
+import au.signalatlas.app.ui.updates.NetworkKind
+import au.signalatlas.app.ui.updates.WaitingActions
 import au.signalatlas.app.ui.updates.downloadSizeLabel
 import au.signalatlas.app.ui.updates.rememberDownloadGate
 import au.signalatlas.core.update.TowerUpdateWorker
-import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateStatus
 
 /** Replaces the map until a tower DB is installed. */
 @Composable
 fun FirstRunScreen(
     status: UpdateStatus,
-    isMetered: () -> Boolean,
+    network: () -> NetworkKind,
     onDownload: (allowMetered: Boolean) -> Unit,
+    onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val gate = rememberDownloadGate(isMetered, onDownload)
+    val gate = rememberDownloadGate(network, onDownload)
     gate.Dialog(downloadSizeLabel(status))
 
     Surface(modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
@@ -81,14 +84,15 @@ fun FirstRunScreen(
                 )
                 Spacer(Modifier.height(36.dp))
                 AnimatedContent(
-                    targetState = status.panel(),
+                    targetState = status.panel(gate.offline),
                     transitionSpec = { fadeIn() togetherWith fadeOut() },
                     contentAlignment = Alignment.Center,
                     label = "firstRunAction",
                 ) { panel ->
                     when (panel) {
                         Panel.Progress -> ProgressPanel(status as? UpdateStatus.Running)
-                        Panel.Error -> ErrorPanel(status, onRetry = gate::request)
+                        Panel.Waiting -> WaitingPanel(status as? UpdateStatus.Running, onDownload, onCancel)
+                        Panel.Error -> ErrorPanel(status, gate.offline, onRetry = gate::request)
                         Panel.Start -> Button(onClick = gate::request, Modifier.widthIn(min = 200.dp).height(52.dp)) {
                             Text(stringResource(R.string.firstrun_download), style = MaterialTheme.typography.titleMedium)
                         }
@@ -99,19 +103,32 @@ fun FirstRunScreen(
     }
 }
 
-private enum class Panel { Start, Progress, Error }
+private enum class Panel { Start, Progress, Waiting, Error }
 
-private fun UpdateStatus.panel(): Panel = when (this) {
-    is UpdateStatus.Running -> Panel.Progress
-    is UpdateStatus.Failed, UpdateStatus.Offline -> Panel.Error
+private fun UpdateStatus.panel(noNetwork: Boolean): Panel = when {
+    this is UpdateStatus.Running -> if (isWaiting()) Panel.Waiting else Panel.Progress
+    noNetwork || this is UpdateStatus.Failed || this == UpdateStatus.Offline -> Panel.Error
     else -> Panel.Start
+}
+
+/** Queued until a (Wi-Fi) network appears: say why, and offer a way out. */
+@Composable
+private fun WaitingPanel(running: UpdateStatus.Running?, onDownload: (Boolean) -> Unit, onCancel: () -> Unit) {
+    Column(Modifier.widthIn(max = 360.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        LinearProgressIndicator(Modifier.widthIn(max = 320.dp).fillMaxWidth())
+        Spacer(Modifier.height(12.dp))
+        if (running != null) {
+            Text(runningLabel(running), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(Modifier.height(20.dp))
+        WaitingActions(onUseMobileData = { onDownload(true) }, onCancel = onCancel)
+    }
 }
 
 @Composable
 private fun ProgressPanel(running: UpdateStatus.Running?) {
     Column(Modifier.widthIn(max = 320.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        val indeterminate = running == null ||
-            running.phase == UpdateManager.PHASE_WAITING || running.phase == TowerUpdateWorker.PHASE_STARTING
+        val indeterminate = running == null || running.phase == TowerUpdateWorker.PHASE_STARTING
         if (indeterminate) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         } else {
@@ -129,10 +146,10 @@ private fun ProgressPanel(running: UpdateStatus.Running?) {
 }
 
 @Composable
-private fun ErrorPanel(status: UpdateStatus, onRetry: () -> Unit) {
+private fun ErrorPanel(status: UpdateStatus, noNetwork: Boolean, onRetry: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            if (status is UpdateStatus.Failed) status.message else stringResource(R.string.offline_message),
+            if (status is UpdateStatus.Failed && !noNetwork) status.message else stringResource(R.string.offline_message),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.error,
             textAlign = TextAlign.Center,

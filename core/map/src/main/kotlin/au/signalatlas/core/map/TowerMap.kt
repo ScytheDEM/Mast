@@ -1,7 +1,9 @@
 package au.signalatlas.core.map
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.RectF
+import android.location.Location
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -25,6 +27,9 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.LocationComponentOptions
+import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
@@ -115,6 +120,9 @@ fun TowerMap(
     onCameraIdle: (GeoBounds) -> Unit,
     selectedColor: Int,
     modifier: Modifier = Modifier,
+    /** The user's position (lat, lon) for the location dot; pass null without location permission. */
+    userLocation: Pair<Double, Double>? = null,
+    userLocationColor: Int = selectedColor,
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -177,7 +185,54 @@ fun TowerMap(
         layer.setProperties(circleStrokeColor(selectedColor))
     }
 
+    // The location dot: MapLibre's LocationComponent fed by us (no location engine of its own).
+    // Activated once per map; it re-adds its layers itself when the style is replaced.
+    val showDot = userLocation != null
+    LaunchedEffect(style, showDot, userLocationColor) {
+        val m = map ?: return@LaunchedEffect
+        val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
+        setUserLocationVisible(m, s, context, showDot, userLocationColor)
+    }
+    LaunchedEffect(style, userLocation) {
+        val m = map ?: return@LaunchedEffect
+        val at = userLocation ?: return@LaunchedEffect
+        if (style?.isFullyLoaded != true) return@LaunchedEffect
+        val lc = m.locationComponent
+        if (lc.isLocationComponentActivated && lc.isLocationComponentEnabled) {
+            lc.forceLocationUpdate(Location("signal-atlas").apply { latitude = at.first; longitude = at.second })
+        }
+    }
+
     AndroidView(factory = { mapView }, modifier = modifier)
+}
+
+/** No location engine runs, so no permission is used here; the caller only passes a position it may show. */
+@SuppressLint("MissingPermission")
+private fun setUserLocationVisible(map: MapLibreMap, style: Style, context: Context, visible: Boolean, color: Int) {
+    val lc = map.locationComponent
+    if (!visible) {
+        if (lc.isLocationComponentActivated && lc.isLocationComponentEnabled) lc.isLocationComponentEnabled = false
+        return
+    }
+    val options = LocationComponentOptions.builder(context)
+        .foregroundTintColor(color)
+        .backgroundTintColor(0xFFFFFFFF.toInt())
+        .accuracyColor(color)
+        .accuracyAlpha(0.12f)
+        .pulseEnabled(false)
+        .build()
+    if (lc.isLocationComponentActivated) {
+        lc.applyStyle(options)
+    } else {
+        lc.activateLocationComponent(
+            LocationComponentActivationOptions.Builder(context, style)
+                .useDefaultLocationEngine(false)
+                .locationComponentOptions(options)
+                .build(),
+        )
+    }
+    if (!lc.isLocationComponentEnabled) lc.isLocationComponentEnabled = true
+    lc.renderMode = RenderMode.NORMAL
 }
 
 private fun createMapView(context: Context, camera: MapCameraState): MapView {

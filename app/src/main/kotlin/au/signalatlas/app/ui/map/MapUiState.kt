@@ -23,6 +23,8 @@ data class MapUiState(
     /** True once the basemap key is known or the lookup has taken too long; the map may show. */
     val basemapResolved: Boolean = false,
     val locationGranted: Boolean = false,
+    /** False while the device's location services are off (then no fix will arrive). */
+    val locationEnabled: Boolean = true,
     val location: Pair<Double, Double>? = null,
     /** Nearest filtered sites with distance in metres, nearest first; empty without permission. */
     val nearby: List<Pair<SiteSummary, Double>> = emptyList(),

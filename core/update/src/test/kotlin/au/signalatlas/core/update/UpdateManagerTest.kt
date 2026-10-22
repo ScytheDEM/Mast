@@ -166,6 +166,21 @@ class UpdateManagerTest {
             .isEqualTo(UpdateStatus.Running(UpdateManager.PHASE_WAITING, 0f))
     }
 
+    @Test fun wifiOnlyManualRunWaitsForWifi() {
+        manager.updateNow(allowMetered = false)
+        assertThat(env.await({ manager.status.value }) { it is UpdateStatus.Running })
+            .isEqualTo(UpdateStatus.Running(UpdateManager.PHASE_WAITING_WIFI, 0f))
+    }
+
+    @Test fun cancelManualStopsWaiting() {
+        manager.updateNow(allowMetered = false)
+        env.await({ manager.status.value }) { it is UpdateStatus.Running }
+        manager.cancelManual()
+        val info = env.await({ workManager.getWorkInfosForUniqueWork(UpdateManager.MANUAL_WORK).get().single() }) { it.state.isFinished }
+        assertThat(info.state).isEqualTo(WorkInfo.State.CANCELLED)
+        assertThat(env.await({ manager.status.value }) { it !is UpdateStatus.Running }).isNotInstanceOf(UpdateStatus.Running::class.java)
+    }
+
     @Test fun manualRunInstallsAndEndsUpToDate() {
         env.seed("202610221934")
         manager.updateNow(allowMetered = true)

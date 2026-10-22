@@ -18,7 +18,10 @@
     <string name="size_about_mb">about %1$d MB</string>
 
     <!-- Update progress -->
-    <string name="phase_waiting">Waiting for a network…</string>
+    <string name="phase_waiting">Waiting for a connection</string>
+    <string name="phase_waiting_wifi">Waiting for Wi-Fi</string>
+    <string name="use_mobile_data_now">Use mobile data now</string>
+    <string name="cancel">Cancel</string>
     <string name="phase_starting">Starting…</string>
     <string name="phase_download">Downloading · %1$d%%</string>
     <string name="phase_building">Building tower database · %1$d%%</string>
@@ -62,6 +65,9 @@
     <string name="not_now">Not now</string>
     <string name="location_denied">Location is off for Signal Atlas. You can turn it on in Settings.</string>
     <string name="settings">Settings</string>
+    <string name="location_off">Location is turned off</string>
+    <string name="location_off_detail">Turn on location to see the towers nearest you.</string>
+    <string name="location_settings">Location settings</string>
 
     <!-- Nearby -->
     <string name="nearby_title">Nearby towers</string>

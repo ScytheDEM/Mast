@@ -43,6 +43,8 @@ interface Updates {
     val status: StateFlow<UpdateStatus>
     suspend fun check()
     fun updateNow(allowMetered: Boolean)
+    /** Cancels a queued or running manual update. */
+    fun cancel()
 }
 
 fun interface BasemapKeys {
@@ -52,6 +54,8 @@ fun interface BasemapKeys {
 /** The device's last known position as (lat, lon). */
 interface LocationSource {
     val last: StateFlow<Pair<Double, Double>?>
+    /** False while the device's location services are switched off. */
+    val enabled: StateFlow<Boolean>
 }
 
 /** Equality is the wrapped store's identity, so a reload is always a change. */
@@ -73,6 +77,7 @@ class ManagerUpdates(private val manager: UpdateManager) : Updates {
     override val status: StateFlow<UpdateStatus> get() = manager.status
     override suspend fun check() = manager.checkOnAppOpen()
     override fun updateNow(allowMetered: Boolean) = manager.updateNow(allowMetered)
+    override fun cancel() = manager.cancelManual()
 }
 
 class LocatorBasemapKeys(private val locator: BasemapLocator) : BasemapKeys {

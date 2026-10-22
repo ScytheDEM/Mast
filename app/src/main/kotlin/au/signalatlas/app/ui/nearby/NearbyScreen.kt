@@ -39,7 +39,9 @@ import kotlin.math.roundToInt
 @Composable
 fun NearbyContent(
     locationGranted: Boolean,
+    locationEnabled: Boolean,
     hasLocation: Boolean,
+    onOpenLocationSettings: () -> Unit,
     nearby: List<Pair<SiteSummary, Double>>,
     onSiteClick: (SiteSummary) -> Unit,
     onRequestPermission: () -> Unit,
@@ -59,6 +61,12 @@ fun NearbyContent(
                 Message(stringResource(R.string.nearby_no_permission)) {
                     Spacer(Modifier.height(16.dp))
                     FilledTonalButton(onClick = onRequestPermission) { Text(stringResource(R.string.nearby_allow)) }
+                }
+            }
+            !locationEnabled -> item(key = "off") {
+                Message(stringResource(R.string.location_off), stringResource(R.string.location_off_detail)) {
+                    Spacer(Modifier.height(16.dp))
+                    FilledTonalButton(onClick = onOpenLocationSettings) { Text(stringResource(R.string.location_settings)) }
                 }
             }
             !hasLocation -> item(key = "finding") {
@@ -94,9 +102,13 @@ fun NearbyContent(
 }
 
 @Composable
-private fun Message(text: String, extra: @Composable () -> Unit = {}) {
+private fun Message(text: String, detail: String? = null, extra: @Composable () -> Unit = {}) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        if (detail != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        }
         extra()
     }
 }

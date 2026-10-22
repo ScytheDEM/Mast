@@ -9,6 +9,7 @@ import au.signalatlas.app.data.TowerSnapshot
 import au.signalatlas.app.data.Updates
 import au.signalatlas.core.model.SiteDetail
 import au.signalatlas.core.model.TowerFilter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -94,6 +95,7 @@ class MapViewModel(
             .launchIn(viewModelScope)
 
         location.last.onEach { it?.let { (lat, lon) -> onLocation(lat, lon) } }.launchIn(viewModelScope)
+        location.enabled.onEach { on -> _state.update { it.copy(locationEnabled = on) } }.launchIn(viewModelScope)
 
         combine(data.changes, filter, granted, position) { snap, f, ok, pos -> NearbyQuery(snap, f, ok, pos) }
             .mapLatest { q ->
@@ -112,7 +114,16 @@ class MapViewModel(
         updates.status.onEach { s -> _state.update { it.copy(update = s) } }.launchIn(viewModelScope)
 
         viewModelScope.launch {
-            val lookup = async { basemap.currentKey() }
+            // A failed lookup (e.g. corrupt DataStore) must not crash start-up: no key, fallback style.
+            val lookup = async {
+                try {
+                    basemap.currentKey()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+            }
             // Show the map after at most BASEMAP_WAIT_MS; a later key costs one style reload.
             val inTime = withTimeoutOrNull(BASEMAP_WAIT_MS) { Resolved(lookup.await()) }
             _state.update { it.copy(basemapKey = inTime?.key, basemapResolved = true) }
@@ -155,6 +166,8 @@ class MapViewModel(
     }
 
     fun updateNow(allowMetered: Boolean) = updates.updateNow(allowMetered)
+
+    fun cancelUpdate() = updates.cancel()
 
     /** A reload may retire the store mid-query; then the current one is asked once more. */
     private fun loadDetail(id: Int): SiteDetail? =

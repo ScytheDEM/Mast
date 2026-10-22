@@ -85,11 +85,16 @@ fun UpdateStatus.Running.overallFraction(): Float {
     return (before + PHASES[index].second * fraction.coerceIn(0f, 1f)).coerceIn(0f, 1f)
 }
 
+/** A manual update queued until a (Wi-Fi) network appears; not yet started. */
+fun UpdateStatus.Running.isWaiting(): Boolean =
+    phase == UpdateManager.PHASE_WAITING || phase == UpdateManager.PHASE_WAITING_WIFI
+
 @Composable
 fun runningLabel(status: UpdateStatus.Running): String {
     val percent = (status.overallFraction() * 100).toInt()
     return when (status.phase) {
         UpdateManager.PHASE_WAITING -> stringResource(R.string.phase_waiting)
+        UpdateManager.PHASE_WAITING_WIFI -> stringResource(R.string.phase_waiting_wifi)
         TowerUpdateWorker.PHASE_STARTING -> stringResource(R.string.phase_starting)
         TowerUpdateWorker.PHASE_DOWNLOAD -> stringResource(R.string.phase_download, percent)
         else -> stringResource(R.string.phase_building, percent)

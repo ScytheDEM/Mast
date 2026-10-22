@@ -51,8 +51,10 @@ class UpdateManager(
         const val PERIODIC_WORK = "acma-periodic"
         const val STALE_WORK = "acma-stale"
         const val MANUAL_WORK = "acma-manual"
-        /** [UpdateStatus.Running] phase of a manual update queued until its network is available. */
+        /** [UpdateStatus.Running] phase of a manual update queued until any network is available. */
         const val PHASE_WAITING = "waiting"
+        /** [UpdateStatus.Running] phase of a manual update queued until an unmetered (Wi-Fi) network. */
+        const val PHASE_WAITING_WIFI = "waiting_wifi"
         val CHECK_INTERVAL: Duration = Duration.ofMinutes(30)
     }
 
@@ -142,6 +144,11 @@ class UpdateManager(
         )
     }
 
+    /** Cancels a queued or running manual update ("Cancel" while waiting). */
+    fun cancelManual() {
+        workManager.cancelUniqueWork(MANUAL_WORK)
+    }
+
     private fun derive(check: Check, store: TowerStore?, manual: List<WorkInfo>, automatic: List<WorkInfo>): UpdateStatus {
         (manual + automatic).firstOrNull { it.state == WorkInfo.State.RUNNING }?.let { running ->
             return UpdateStatus.Running(
@@ -149,8 +156,9 @@ class UpdateManager(
                 running.progress.getFloat(TowerUpdateWorker.KEY_FRACTION, 0f),
             )
         }
-        if (manual.any { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }) {
-            return UpdateStatus.Running(PHASE_WAITING, 0f)
+        manual.firstOrNull { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }?.let { queued ->
+            val wifiOnly = queued.constraints.requiredNetworkType == NetworkType.UNMETERED
+            return UpdateStatus.Running(if (wifiOnly) PHASE_WAITING_WIFI else PHASE_WAITING, 0f)
         }
         val liveStamp = store?.meta?.extractStamp
         val checked = when (check) {

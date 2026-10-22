@@ -78,17 +78,24 @@ class MapViewModelTest {
     private class FakeUpdates : Updates {
         override val status = MutableStateFlow<UpdateStatus>(UpdateStatus.Unknown)
         var checks = 0
+        var cancels = 0
         val updateCalls = mutableListOf<Boolean>()
         override suspend fun check() { checks++ }
         override fun updateNow(allowMetered: Boolean) { updateCalls += allowMetered }
+        override fun cancel() { cancels++ }
     }
 
-    private class FakeBasemap(val key: String?, val delayMs: Long = 0) : BasemapKeys {
-        override suspend fun currentKey(): String? { delay(delayMs); return key }
+    private class FakeBasemap(val key: String?, val delayMs: Long = 0, val failure: Exception? = null) : BasemapKeys {
+        override suspend fun currentKey(): String? {
+            delay(delayMs)
+            failure?.let { throw it }
+            return key
+        }
     }
 
     private class FakeLocation : LocationSource {
         override val last = MutableStateFlow<Pair<Double, Double>?>(null)
+        override val enabled = MutableStateFlow(true)
     }
 
     private fun TestScope.vm(
@@ -243,9 +250,11 @@ class MapViewModelTest {
         assertThat(vm.state.value.update).isEqualTo(UpdateStatus.Running("download", 0.4f))
         vm.checkUpdates()
         vm.updateNow(allowMetered = true)
+        vm.cancelUpdate()
         advanceUntilIdle()
         assertThat(updates.checks).isEqualTo(1)
         assertThat(updates.updateCalls).containsExactly(true)
+        assertThat(updates.cancels).isEqualTo(1)
     }
 
     @Test fun basemap_resolvedBeforeMapShown() = runTest(dispatcher) {
@@ -265,5 +274,24 @@ class MapViewModelTest {
         assertThat(vm.state.value.basemapKey).isNull()
         advanceUntilIdle()
         assertThat(vm.state.value.basemapKey).isEqualTo("20261022.pmtiles")
+    }
+
+    @Test fun basemapLookupFailure_becomesNullKey() = runTest(dispatcher) {
+        val vm = vm(basemap = FakeBasemap(null, failure = java.io.IOException("datastore corrupt")))
+        advanceUntilIdle()
+        assertThat(vm.state.value.basemapResolved).isTrue()
+        assertThat(vm.state.value.basemapKey).isNull()
+    }
+
+    @Test fun locationServicesOff_isExposed() = runTest(dispatcher) {
+        val location = FakeLocation()
+        location.enabled.value = false
+        val vm = vm(location = location)
+        vm.onLocationPermission(true)
+        advanceUntilIdle()
+        assertThat(vm.state.value.locationEnabled).isFalse()
+        location.enabled.value = true
+        advanceUntilIdle()
+        assertThat(vm.state.value.locationEnabled).isTrue()
     }
 }
