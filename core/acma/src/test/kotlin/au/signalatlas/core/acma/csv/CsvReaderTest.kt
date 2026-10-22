@@ -127,4 +127,34 @@ class CsvReaderTest {
             assertThat(n).isEqualTo(200_000)
         }
     }
+
+    @Test
+    fun fieldOverCapThrowsWithRecordNumber() {
+        val big = "x".repeat(CsvReader.MAX_FIELD_CHARS + 1)
+        for (field in listOf(big, "\"" + big + "\"")) {
+            reader("A\n1\n$field\n").use { r ->
+                assertThat(r.next()).isTrue()
+                val e = assertThrows(AcmaFormatException::class.java) { r.next() }
+                assertThat(e).hasMessageThat().contains("record 3")
+            }
+        }
+    }
+
+    @Test
+    fun fieldAtCapIsAccepted() {
+        val ok = "x".repeat(CsvReader.MAX_FIELD_CHARS)
+        reader("A\n$ok\n").use { r ->
+            assertThat(r.next()).isTrue()
+            assertThat(r[0]).hasLength(CsvReader.MAX_FIELD_CHARS)
+        }
+    }
+
+    @Test
+    fun eofInsideOpenQuoteThrows() {
+        reader("A,B\n1,2\n\"unterminated,3\n4,5\n").use { r ->
+            assertThat(r.next()).isTrue()
+            val e = assertThrows(AcmaFormatException::class.java) { r.next() }
+            assertThat(e).hasMessageThat().contains("unterminated quoted field at record 3")
+        }
+    }
 }

@@ -19,6 +19,7 @@ class CsvReader(private val input: InputStream, bufferSize: Int = 1 shl 16) : Cl
 
     private var fields = Array(16) { StringBuilder() }
     private var count = 0
+    private var recordNo = 0 // 1-based; the header is record 1
 
     val header: List<String>
     private val columnIndex: Map<String, Int>
@@ -58,6 +59,13 @@ class CsvReader(private val input: InputStream, bufferSize: Int = 1 shl 16) : Cl
         return true
     }
 
+    private fun StringBuilder.appendBounded(c: Int) {
+        if (length >= MAX_FIELD_CHARS) {
+            throw AcmaFormatException("field exceeds $MAX_FIELD_CHARS chars at record $recordNo")
+        }
+        append(c.toChar())
+    }
+
     private fun startField(): StringBuilder {
         if (count == fields.size) {
             val old = fields
@@ -69,6 +77,7 @@ class CsvReader(private val input: InputStream, bufferSize: Int = 1 shl 16) : Cl
     /** Reads one record into [fields]/[count]. False if the input is exhausted before any byte. */
     private fun readRecord(): Boolean {
         count = 0
+        recordNo++
         var cur = startField()
         var inQuotes = false
         // A quote seen inside a quoted field; whether it closes the field or escapes depends on the next byte.
@@ -82,6 +91,9 @@ class CsvReader(private val input: InputStream, bufferSize: Int = 1 shl 16) : Cl
                     count = 0
                     return false
                 }
+                if (inQuotes && !pendingQuote) {
+                    throw AcmaFormatException("unterminated quoted field at record $recordNo")
+                }
                 return true
             }
             val c = (buf[pos++].toInt() and 0xFF)
@@ -90,14 +102,14 @@ class CsvReader(private val input: InputStream, bufferSize: Int = 1 shl 16) : Cl
             if (pendingQuote) {
                 pendingQuote = false
                 if (c == QUOTE) {
-                    cur.append('"')
+                    cur.appendBounded(QUOTE)
                     continue
                 }
                 inQuotes = false // the quote closed the field; fall through to handle c unquoted
             }
 
             if (inQuotes) {
-                if (c == QUOTE) pendingQuote = true else cur.append(c.toChar())
+                if (c == QUOTE) pendingQuote = true else cur.appendBounded(c)
                 continue
             }
 
@@ -112,20 +124,22 @@ class CsvReader(private val input: InputStream, bufferSize: Int = 1 shl 16) : Cl
                     inQuotes = true
                     atFieldStart = false
                 } else {
-                    cur.append('"')
+                    cur.appendBounded(QUOTE)
                 }
                 else -> {
-                    cur.append(c.toChar())
+                    cur.appendBounded(c)
                     atFieldStart = false
                 }
             }
         }
     }
 
-    private companion object {
-        const val COMMA = ','.code
-        const val QUOTE = '"'.code
-        const val LF = '\n'.code
-        const val CR = '\r'.code
+    companion object {
+        /** Upper bound on a single field, in chars; guards against runaway quotes on a 388 MB file. */
+        const val MAX_FIELD_CHARS = 1_048_576
+        private const val COMMA = ','.code
+        private const val QUOTE = '"'.code
+        private const val LF = '\n'.code
+        private const val CR = '\r'.code
     }
 }
