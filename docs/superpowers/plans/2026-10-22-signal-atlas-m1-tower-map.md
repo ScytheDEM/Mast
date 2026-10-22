@@ -67,7 +67,8 @@ kotlinx-coroutines 1.11.0, kotlinx-serialization-json 1.12.0, MapLibre Android
 7. **Sites kept:** referenced by at least one kept device, with `LATITUDE`/`LONGITUDE` parseable and inside lat [−55, −9], lon [72, 169]. Devices on a missing or out-of-bounds site are **skipped** (`skippedBadSite`), and a sector with no remaining carriers is dropped.
 8. **Antennas kept:** referenced by a kept sector. `GAIN`, `FRONT_TO_BACK`, `H_BEAMWIDTH`: blank or `0` → null (gain null → 0.0 when used in rule 5).
 9. **Tilt:** `TILT` as float, blank → 0.0.
-10. `ImportReport` counts: `sites`, `sectors`, `carriers`, `antennas`, `skippedUnknownBand`, `skippedNoPower`, `skippedBadSite`, and `carriersByNetwork` (map of network name → count).
+10. `ImportReport` counts: `sites`, `sectors`, `carriers`, `antennas`, `skippedUnknownBand`, `skippedNoPower`, `skippedBadSite`, `skippedMalformed`, and `carriersByNetwork` (map of network name → count).
+11. **Identifiers:** `SDD_ID`, `SITE_ID`, `ANTENNA_ID`, `CLIENT_NO` are parsed as decimal integers after trimming (leading zeros allowed, so `"01000"` = `1000`); `SDD_ID` must fit in 0..2^63−1, the others in 0..2^31−1. A kept device whose `SDD_ID` is not a valid integer is **skipped** (`skippedMalformed`), checked before rule 4. A non-blank `ANTENNA_ID` that is not a valid integer is treated as blank (null antenna, rule 6). A `SITE_ID` that is not a valid integer counts as a missing site (rule 7). Malformed data never aborts the import; only a missing required column does.
 
 ### DB schema v1 (`towers.db`)
 
