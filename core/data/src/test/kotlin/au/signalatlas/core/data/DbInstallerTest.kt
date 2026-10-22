@@ -37,6 +37,7 @@ class DbInstallerTest {
         assertThat(inst.install(build())).isEqualTo(Validation.Ok)
         assertThat(inst.live.exists()).isTrue()
         assertThat(inst.previous.exists()).isFalse()
+        assertThat(File(dir, "towers.prev.db.tmp").exists()).isFalse()
     }
 
     @Test fun secondInstallKeepsFirstAsPrevious() {
@@ -139,5 +140,47 @@ class DbInstallerTest {
 
     @Test fun rollbackWithoutPreviousReturnsFalse() {
         assertThat(installer().rollback()).isFalse()
+    }
+
+    @Test fun crashBetweenMovesIsRecoveredByCleanupStale() {
+        val inst = installer()
+        inst.install(build())
+        val oldStamp = meta(inst.live, "extract_stamp")
+        inst.install(build())
+        // Simulate the old crash window: live gone, previous = last good, candidate still .building.
+        inst.live.delete()
+        File(dir, "x.building").writeText("z")
+        val prevStamp = meta(inst.previous, "extract_stamp")
+        inst.cleanupStale()
+        assertThat(inst.live.exists()).isTrue()
+        assertThat(meta(inst.live, "extract_stamp")).isEqualTo(prevStamp)
+        assertThat(prevStamp).isEqualTo(oldStamp)
+        assertThat(File(dir, "x.building").exists()).isFalse()
+    }
+
+    @Test fun failingFinalMovePropagatesAndLiveIsIntact() {
+        val real = installer()
+        real.install(build())
+        val oldStamp = meta(real.live, "extract_stamp")
+        val before = real.live.readBytes()
+        val failing = DbInstaller(dir, DbValidator(1)) { from, to ->
+            if (to == real.live.toPath()) throw java.io.IOException("boom")
+            java.nio.file.Files.move(from, to, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+        val cand = build()
+        val ex = runCatching { failing.install(cand) }.exceptionOrNull()
+        assertThat(ex).isInstanceOf(java.io.IOException::class.java)
+        assertThat(real.live.readBytes()).isEqualTo(before)
+        assertThat(meta(real.previous, "extract_stamp")).isEqualTo(oldStamp)
+        assertThat(cand.exists()).isFalse()
+    }
+
+    @Test fun previousKeepsOldDbAfterSuccessfulInstall() {
+        val inst = installer()
+        inst.install(build())
+        val oldBytes = inst.live.readBytes()
+        inst.install(build())
+        assertThat(inst.previous.readBytes()).isEqualTo(oldBytes)
+        assertThat(File(dir, "towers.prev.db.tmp").exists()).isFalse()
     }
 }
