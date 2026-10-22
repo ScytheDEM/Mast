@@ -54,13 +54,15 @@ kotlinx-coroutines 1.11.0, kotlinx-serialization-json 1.12.0, MapLibre Android
    `Vodafone Hutchison Australia Pty Limited`, `Vodafone Australia Pty Limited`, `TPG INTERNET PTY LTD` → `TPG`;
    `MOBILE JV PTY LIMITED` → `OPTUS_TPG_JV`; `NBN CO LIMITED` → `NBN`. Matching is exact and case-insensitive after trimming.
 3. **Devices kept:** `DEVICE_TYPE == "T"` and `LICENCE_NO` is a kept licence.
-4. **Band plan** (by `FREQUENCY` in MHz, inclusive ranges, first match wins) → (band, tech):
-   758–803 `B28` LTE · 869–894 `B5` LTE, except network `TELSTRA` → `n5` NR · 925–960 `B8` LTE · 1805–1880 `B3` LTE ·
-   2110–2170 `B1` LTE · 2300–2400 `B40` LTE · 2620–2690 `B7` LTE · 3300–3800 `n78` NR · 24250–27499.999 `n258` NR ·
+4. **Band plan** (`FREQUENCY` is in Hz; compare `FREQUENCY / 1e6` in MHz against inclusive ranges, first match wins) → (band, tech):
+   758–803 `B28` LTE · 859–868.999 `B26` LTE, except network `TELSTRA` → `n26` NR · 869–894 `B5` LTE, except network `TELSTRA` → `n5` NR · 925–960 `B8` LTE · 1805–1880 `B3` LTE ·
+   2110–2170 `B1` LTE · 2300–2400 `B40` LTE · 2620–2690 `B7` LTE · 3300–3800 `n78` NR · 3800.001–4200 `n77` NR · 24250–27499.999 `n258` NR ·
    27500–29500 `n257` NR. Otherwise the device is **skipped** (`skippedUnknownBand`).
 5. **EIRP (dBm):** if `EIRP` is non-blank, convert using `EIRP_UNIT` (`W`: 10·log10(v)+30, `mW`: 10·log10(v), `kW`: 10·log10(v)+60, `dBW`: v+30, `dBm`: v).
    Otherwise, if `TRANSMITTER_POWER` is non-blank, convert using `TRANSMITTER_POWER_UNIT` the same way, then add antenna `GAIN` (dBi, blank = 0) and subtract `FEEDER_LOSS` (blank = 0).
-   Otherwise, or if the value is ≤ 0 W or the unit is unrecognised, **skip** (`skippedNoPower`). Round to 0.01 dB.
+   A non-blank `EIRP` whose value is ≤ 0 in a linear unit (`W`, `mW`, `kW`) counts as not supplied and falls through to `TRANSMITTER_POWER`.
+   Otherwise (no usable value, transmitter power ≤ 0 in a linear unit, unparseable number, or unrecognised unit) **skip** (`skippedNoPower`). Round to 0.01 dB.
+   Skip precedence per device: band (rule 4) → power (rule 5) → site (rule 7); a device is counted under the first rule that skips it.
 6. **Sector key:** (`SITE_ID`, network, `ANTENNA_ID`, azimuth, height) where azimuth = `AZIMUTH` as float rounded to 0.1° (blank → null = omni) and height = `HEIGHT` rounded to 0.1 m (blank → 0.0). Sector IDs are assigned 1..N in first-seen order of `device_details.csv`.
 7. **Sites kept:** referenced by at least one kept device, with `LATITUDE`/`LONGITUDE` parseable and inside lat [−55, −9], lon [72, 169]. Devices on a missing or out-of-bounds site are **skipped** (`skippedBadSite`), and a sector with no remaining carriers is dropped.
 8. **Antennas kept:** referenced by a kept sector. `GAIN`, `FRONT_TO_BACK`, `H_BEAMWIDTH`: blank or `0` → null (gain null → 0.0 when used in rule 5).
