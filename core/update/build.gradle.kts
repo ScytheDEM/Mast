@@ -23,4 +23,12 @@ kotlin {
 dependencies {
     api(project(":core:acma"))
     api(project(":core:data"))
+    // OkHttpClient is part of AcmaRemote's public constructor.
+    api(libs.okhttp)
+    implementation(libs.kotlinx.coroutines.core)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.truth)
+    testImplementation(libs.okhttp.mockwebserver3)
+    testImplementation(libs.kotlinx.coroutines.test)
 }
