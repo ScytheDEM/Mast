@@ -63,7 +63,7 @@ kotlinx-coroutines 1.11.0, kotlinx-serialization-json 1.12.0, MapLibre Android
    A non-blank `EIRP` whose value is ≤ 0 in a linear unit (`W`, `mW`, `kW`) counts as not supplied and falls through to `TRANSMITTER_POWER`.
    Otherwise (no usable value, transmitter power ≤ 0 in a linear unit, unparseable number, or unrecognised unit) **skip** (`skippedNoPower`). Round to 0.01 dB.
    Skip precedence per device: band (rule 4) → power (rule 5) → site (rule 7); a device is counted under the first rule that skips it.
-6. **Sector key:** (`SITE_ID`, network, `ANTENNA_ID`, azimuth, height) where azimuth = `AZIMUTH` as float rounded to 0.1° (blank → null = omni) and height = `HEIGHT` rounded to 0.1 m (blank → 0.0). Sector IDs are assigned 1..N in first-seen order of `device_details.csv`.
+6. **Sector key:** (`SITE_ID`, network, `ANTENNA_ID`, azimuth, height) where azimuth = `AZIMUTH` as float rounded to 0.1° (blank → null = omni) and height = `HEIGHT` rounded to 0.1 m (blank → 0.0). Rounding is exactly `floor(x * 10 + 0.5) / 10` in IEEE double (identical in Python and Kotlin), then `-0.0` is normalised to `0.0`. Blank `ANTENNA_ID` → null antenna (part of the key). Sector IDs are assigned 1..N in first-seen order of `device_details.csv`.
 7. **Sites kept:** referenced by at least one kept device, with `LATITUDE`/`LONGITUDE` parseable and inside lat [−55, −9], lon [72, 169]. Devices on a missing or out-of-bounds site are **skipped** (`skippedBadSite`), and a sector with no remaining carriers is dropped.
 8. **Antennas kept:** referenced by a kept sector. `GAIN`, `FRONT_TO_BACK`, `H_BEAMWIDTH`: blank or `0` → null (gain null → 0.0 when used in rule 5).
 9. **Tilt:** `TILT` as float, blank → 0.0.
