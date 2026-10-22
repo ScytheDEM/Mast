@@ -79,11 +79,30 @@ Live cells/GPS ─► :core:radio ─────┘                          �
 
 ## 3. ACMA pipeline and database
 
-- **Source:** the ACMA Register of Radiocommunications Licences full weekly export (`spectra_rrl.zip`).
-  The size (believed to be ~150 MB+ compressed) is **to be verified at implementation**; it could not be
-  reached from the design environment.
-- **Check:** on app open and on "Check for updates", send a `HEAD` request and compare `ETag` /
-  `Last-Modified` with the stored values. If newer, show a "New tower data" chip.
+- **Sources (verified 2026-10-22):**
+  - `https://cdn.acma.gov.au/rrl/spectra_rrl.zip`: the full register, refreshed **daily**. 68 MB zipped,
+    606 MB unzipped. Key entries: `client.csv`, `licence.csv`, `site.csv` (13.6 MB), `antenna.csv`,
+    `antenna_pattern.csv`, `device_details.csv` (388 MB), plus `applic_text_block.csv` (177 MB, skipped).
+  - `https://backend.acma.gov.au/rrl/v1/extracts/datetime-of-extract.txt`: the extract timestamp as
+    `yyyyMMddHHmm` (for example `202610221934`). This is the cheap update check.
+  - `https://cdn.acma.gov.au/rrl/spectra_licence_hrp.zip`: **per-device horizontal radiation patterns**.
+    1.56 GB zipped, one entry `LICENCE_.csv` of 10 GB with columns
+    `SDD_ID,DEVICE_REGISTRATION_IDENTIFIER,START_ANGLE,STOP_ANGLE,POWER`: 360 one-degree rows per device,
+    `POWER` = EIRP in dBW in that direction. Processed on the phone monthly (§4a).
+  - Daily `changes/` files stopped on 2026-06-25, so they are **not** used.
+  - ACMA licence (LICENCE.TXT §5) permits reproduction, adaptation and distribution of derivatives.
+- **Measured mobile subset:** about 857k transmitter rows (Spectrum licences, `DEVICE_TYPE=T`) on
+  about 27k sites, using 1,861 antenna models. Horizontal beamwidth is present for 99% of devices,
+  front-to-back for 89%, gain for nearly all. **Vertical beamwidth is never present, and 96% of devices
+  report tilt 0** (electrical downtilt is not recorded). `antenna_pattern.csv` has **no** patterns for
+  mobile antennas.
+- **Licensee → network mapping** (the licence holder is not the site's name; sites are shared):
+  `TELSTRA LIMITED`, `Telstra 3G Spectrum Holdings Pty Ltd` → Telstra; `Optus Mobile Pty Limited` →
+  Optus; `Vodafone Hutchison Australia Pty Limited`, `Vodafone Australia Pty Limited`,
+  `TPG INTERNET PTY LTD` → TPG; `MOBILE JV PTY LIMITED` → Optus+TPG shared; `NBN CO LIMITED` → NBN.
+- **Check:** on app open and on "Check for updates", fetch `datetime-of-extract.txt` (bytes) and compare
+  it with the stored stamp; also `HEAD` the zip for `ETag`. If newer, show a "New tower data" chip.
+  (ACMA refreshes daily; the app updates at most weekly unless the user taps "Update now".)
 - **Automatic update:** WorkManager, unmetered network required, prefers charging. If the data is more
   than 14 days old, the charging requirement is relaxed (Wi-Fi still required).
 - **Manual update:** "Update now" may use mobile data, after confirming the size.
@@ -96,7 +115,8 @@ Live cells/GPS ─► :core:radio ─────┘                          �
   4. Normalise into Site, Sector (site + antenna + azimuth group: height, tilt, EIRP/power, feeder loss),
      Carrier (frequency, bandwidth, technology derived from band and emission), and Antenna (gain,
      beamwidths, front-to-back, model). H/V radiation patterns are packed into 0.25 dB lookup tables.
-  5. Build the SQLite R-Tree spatial index.
+  5. Spatial lookup: with about 27k sites, all sites load into a packed in-memory uniform grid
+     index at startup (about 1 MB), replacing an SQLite R-Tree; a viewport query stays under 5 ms.
   6. Build into a new DB file → validate (row counts, coordinate bounds, referential integrity) → atomic
      rename. Keep the previous DB for rollback.
   7. Diff against the previous DB → invalidate coverage tiles only near changed sites → feed the
@@ -112,8 +132,13 @@ Per sector, per grid point:
 
 1. **EIRP per resource element:** taken from ACMA EIRP, or from power + gain − feeder loss, minus
    10·log10(subcarriers) for the carrier bandwidth and technology (for example ~31 dB for 20 MHz LTE).
-2. **Antenna pattern:** ACMA H/V patterns steered by azimuth and ACMA tilt. Fallback is the 3GPP
-   parametric pattern built from the beamwidths and front-to-back ratio.
+2. **Antenna pattern:**
+   - **Horizontal:** the per-device ACMA HRP (§4a) when imported. Otherwise the 3GPP parametric pattern
+     from `H_BEAMWIDTH` and `FRONT_TO_BACK` (default 25 dB when missing).
+   - **Vertical:** ACMA has none. Vertical beamwidth is estimated from gain and horizontal beamwidth
+     (`V_BW ≈ 32400 / (10^(G/10) · H_BW)`, clamped to 4–30°). Electrical downtilt defaults by
+     height and band (for example 4–8° for urban macro), with ACMA tilt used when it is non-zero.
+     Self-calibration learns the real per-sector tilt.
 3. **Path loss**, chosen automatically:
    - With terrain: **ITU-R P.1812** with **ITU-R P.526 delta-Bullington** diffraction.
    - Urban close range: **3GPP TR 38.901** UMa/UMi. Where building data exists, a deterministic
@@ -132,6 +157,16 @@ Per sector, per grid point:
   NEON SIMD, a thread pool on the big cores, and memory-mapped terrain/building tiles. Results are
   progressive (quick → full), stored as uint8 values in 0.5 dB steps.
 - **Tile layers:** best-server RSRP, estimated SINR and serving-sector ID, per carrier × technology.
+
+### 4a. Monthly HRP import (on the phone)
+- WorkManager job, **unmetered + charging**, at most every 30 days, and only when the HRP file's `ETag`
+  has changed.
+- Download the 1.56 GB zip to a temporary file (resumable), then stream-inflate the single CSV entry
+  without extracting it. Keep only `SDD_ID`s that are in the tower DB. Convert each device's 360
+  `POWER` values into attenuation relative to the peak, quantised to uint8 at 0.25 dB steps. De-duplicate
+  identical patterns by hash, so devices store a pattern ID. Delete the zip when finished.
+- Resumable at the row level: progress (the last completed `SDD_ID`) is checkpointed, and a restart skips
+  ahead. The tower DB stays usable throughout; patterns become active atomically at the end.
 
 ## 5. Rendering and map style
 
@@ -237,7 +272,10 @@ Per sector, per grid point:
 
 ## 11. Risks and open items
 
-- **ACMA export size and format:** verify before building the parser. Isolated behind the mapping file.
+- **ACMA export format:** verified 2026-10-22 (see §3). Isolated behind the mapping file in case it
+  changes.
+- **Fonts:** bundle Noto Sans glyph PBFs (OFL, from protomaps/basemaps-assets) instead of Inter, because
+  they are ready-made for MapLibre.
 - **ACMA EIRP semantics** vary by licence type; validate on known sites against field measurements.
 - **The MapLibre custom layer with the Vulkan backend** may lag behind GLES. The fallback is a
   local raster tile source with a raster-colour ramp.
