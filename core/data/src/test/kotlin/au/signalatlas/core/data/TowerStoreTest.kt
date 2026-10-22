@@ -7,6 +7,7 @@ import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.TowerFilter
 import com.google.common.truth.Truth.assertThat
 import java.io.File
+import androidx.sqlite.execSQL
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -101,6 +102,42 @@ class TowerStoreTest {
         assertThat(store.search("barton").map { it.id }).contains(101160)
         assertThat(store.search("BARTON").map { it.id }).contains(101160)
         assertThat(store.search("barton", limit = 1)).hasSize(1)
+    }
+
+    @Test fun digitsOnlyQueryFallsBackToNameContains() {
+        val expected = sql("SELECT id FROM site WHERE name LIKE '%135%' ORDER BY id") { it.getLong(0).toInt() }
+        assertThat(expected).contains(9019760)
+        assertThat(store.search("135").map { it.id }).containsExactlyElementsIn(expected)
+    }
+
+    @Test fun leadingZeroQueryDoesNotMatchSiteId() {
+        assertThat(store.search("9002575").map { it.id }).contains(9002575)
+        assertThat(store.search("09002575").map { it.id }).doesNotContain(9002575)
+    }
+
+    @Test fun searchGroupsAreOrderedDedupedAndCapped() {
+        // Copy the DB and engineer one site per group for the query "41428".
+        val copy = File(tmp.newFolder(), "towers.db").also { db.copyTo(it) }
+        BundledSQLiteDriver().open(copy.path).use { c ->
+            c.execSQL("UPDATE site SET postcode = '41428' WHERE id = 9002575")
+            c.execSQL("UPDATE site SET name = 'Depot 41428 North' WHERE id = 101160")
+        }
+        TowerStore.open(copy).use { s ->
+            assertThat(s.search("41428").map { it.id }).containsExactly(41428, 9002575, 101160).inOrder()
+            assertThat(s.search("41428", limit = 2).map { it.id }).containsExactly(41428, 9002575).inOrder()
+            assertThat(s.search("41428", limit = 1).map { it.id }).containsExactly(41428)
+        }
+    }
+
+    @Test fun openNonexistentPathThrowsAndCreatesNothing() {
+        val missing = File(tmp.newFolder(), "nope.db")
+        try {
+            TowerStore.open(missing)
+            error("expected FileNotFoundException")
+        } catch (e: java.io.FileNotFoundException) {
+            // expected
+        }
+        assertThat(missing.exists()).isFalse()
     }
 
     @Test fun searchBlankOrNoMatchIsEmpty() {

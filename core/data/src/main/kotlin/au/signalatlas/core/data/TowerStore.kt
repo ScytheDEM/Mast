@@ -19,6 +19,7 @@ import au.signalatlas.core.model.Tech
 import au.signalatlas.core.model.TowerFilter
 import java.io.Closeable
 import java.io.File
+import java.io.FileNotFoundException
 import java.time.Instant
 import kotlinx.serialization.json.Json
 
@@ -61,26 +62,31 @@ class TowerStore private constructor(
         }
 
     /**
-     * Digits only: exact site id first, then exact postcode. Anything else: case-insensitive name
-     * substring, ordered by name. Blank query gives an empty list.
+     * Results in this order, de-duplicated and capped at [limit]:
+     * 1. exact site id, only for a digits-only query without a leading zero ("0820" is not site 820);
+     * 2. exact postcode, for a digits-only query (by site id);
+     * 3. case-insensitive name substring, ordered by name then id (also for digits-only queries,
+     *    since ACMA names often start with street numbers).
+     * A blank query gives an empty list.
      */
     fun search(query: String, limit: Int = 20): List<SiteSummary> {
         val q = query.trim()
         if (q.isEmpty() || limit <= 0) return emptyList()
-        val out = ArrayList<SiteSummary>()
+        val out = LinkedHashMap<Int, SiteSummary>()
         if (q.all { it in '0'..'9' }) {
-            val id = q.toIntOrNull()
-            if (id != null) summaries.firstOrNull { it.id == id }?.let { out.add(it) }
+            val id = if (q == "0" || !q.startsWith('0')) q.toIntOrNull() else null
+            if (id != null) summaries.firstOrNull { it.id == id }?.let { out[it.id] = it }
             for (i in summaries.indices) {
                 if (out.size >= limit) break
-                if (postcodes[i] == q && summaries[i].id != id) out.add(summaries[i])
+                if (postcodes[i] == q) out.putIfAbsent(summaries[i].id, summaries[i])
             }
-        } else {
-            summaries.filter { it.name.contains(q, ignoreCase = true) }
-                .sortedWith(compareBy<SiteSummary, String>(String.CASE_INSENSITIVE_ORDER) { it.name }.thenBy { it.id })
-                .forEach { out.add(it) }
         }
-        return if (out.size > limit) out.subList(0, limit).toList() else out
+        if (out.size < limit) {
+            summaries.filter { it.name.contains(q, ignoreCase = true) && it.id !in out }
+                .sortedWith(compareBy<SiteSummary, String>(String.CASE_INSENSITIVE_ORDER) { it.name }.thenBy { it.id })
+                .forEach { if (out.size < limit) out[it.id] = it }
+        }
+        return out.values.toList()
     }
 
     fun siteDetail(siteId: Int): SiteDetail? = synchronized(lock) {
@@ -155,8 +161,14 @@ class TowerStore private constructor(
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
 
-        /** Opens [db] read-only and loads every site summary. Throws if the DB is unreadable. */
+        /**
+         * Opens [db] and loads every site summary. Throws [FileNotFoundException] (without touching the
+         * driver, so nothing is created) when [db] does not exist, and other exceptions if it is unreadable.
+         * [BundledSQLiteDriver] is opened read-only; for any other [driver] the caller must supply one
+         * that opens connections read-only.
+         */
         fun open(db: File, driver: SQLiteDriver = BundledSQLiteDriver()): TowerStore {
+            if (!db.isFile) throw FileNotFoundException("tower DB not found: ${db.path}")
             val conn = if (driver is BundledSQLiteDriver) driver.open(db.path, SQLITE_OPEN_READONLY) else driver.open(db.path)
             try {
                 return load(conn)
