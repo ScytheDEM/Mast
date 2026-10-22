@@ -13,3 +13,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.truth)
 }
+
+// Share the ACMA test fixture (fixture.zip) without duplicating the binary.
+sourceSets.test {
+    resources.srcDir("../acma/src/test/resources")
+}
