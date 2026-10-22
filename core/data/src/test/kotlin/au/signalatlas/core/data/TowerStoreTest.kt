@@ -212,14 +212,11 @@ class TowerStoreTest {
         assertThat(errors).isEmpty()
     }
 
-    @Test fun closeThenDetailFails() {
+    @Test fun closeThenDetailIsNull() {
+        assertThat(store.siteDetail(101160)).isNotNull()
         store.close()
         store.close() // idempotent
-        try {
-            store.siteDetail(101160)
-            error("expected failure")
-        } catch (e: IllegalStateException) {
-            assertThat(e.message).contains("closed")
-        }
+        // In-flight readers holding a replaced store must not crash; they re-read TowerRepository.store.
+        assertThat(store.siteDetail(101160)).isNull()
     }
 }

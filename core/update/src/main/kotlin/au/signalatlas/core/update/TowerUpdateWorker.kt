@@ -46,8 +46,8 @@ class TowerUpdateWorkerFactory(private val deps: UpdateDeps) : WorkerFactory() {
  * validated atomic install → live store reload. The current DB stays installed and open on any
  * failure. Without input `force = true` it stops early when the live DB already has ACMA's stamp.
  *
- * Results: network trouble retries (failure after [MAX_ATTEMPTS] attempts); an unusable zip or
- * a DB that fails validation fails with output [KEY_ERROR].
+ * Results: network trouble retries (failure after [MAX_ATTEMPTS] attempts); a malformed ACMA
+ * response, an unusable zip or a DB that fails validation fails with output [KEY_ERROR].
  */
 class TowerUpdateWorker(
     appContext: Context,
@@ -93,6 +93,8 @@ class TowerUpdateWorker(
             withContext(Dispatchers.IO) { deps.installer.cleanupStale() }
             deps.repo.start()
             deps.remote.info()
+        } catch (e: RemoteFormatException) {
+            return Result.failure(workDataOf(KEY_ERROR to "ACMA returned unexpected data: ${e.message}"))
         } catch (e: IOException) {
             return retryOrFail(e)
         }

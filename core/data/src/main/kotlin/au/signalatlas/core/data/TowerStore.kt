@@ -89,8 +89,12 @@ class TowerStore private constructor(
         return out.values.toList()
     }
 
+    /**
+     * Full detail of one site, or null if it does not exist. Also returns null if this store has
+     * been closed; callers re-read TowerRepository.store.
+     */
     fun siteDetail(siteId: Int): SiteDetail? = synchronized(lock) {
-        check(!closed) { "TowerStore is closed" }
+        if (closed) return null
         val site = conn.prepare(
             "SELECT id, lat, lon, name, state, postcode, elevation_m FROM site WHERE id = ?",
         ).use { st ->

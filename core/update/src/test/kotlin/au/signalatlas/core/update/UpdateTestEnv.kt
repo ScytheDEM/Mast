@@ -7,6 +7,9 @@ import au.signalatlas.core.acma.AcmaImporter
 import au.signalatlas.core.data.DbInstaller
 import au.signalatlas.core.data.DbValidator
 import au.signalatlas.core.data.Validation
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
 import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
@@ -23,7 +26,12 @@ import java.time.ZoneOffset
 import java.util.concurrent.CopyOnWriteArrayList
 
 /** A fake ACMA (stamp + zip over mockwebserver3) plus a real installer/repository in [root]. */
-class UpdateTestEnv(root: File, minSites: Int = 1) : AutoCloseable {
+class UpdateTestEnv(
+    root: File,
+    minSites: Int = 1,
+    /** Where replaced stores are closed after the grace period; never advanced by default. */
+    repoScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+) : AutoCloseable {
     val context: Context = ApplicationProvider.getApplicationContext()
     val server = MockWebServer()
     val requests = CopyOnWriteArrayList<RecordedRequest>()
@@ -35,7 +43,7 @@ class UpdateTestEnv(root: File, minSites: Int = 1) : AutoCloseable {
 
     val workDir = File(root, "towers")
     val installer = DbInstaller(workDir, DbValidator(minSites = minSites))
-    val repo = TowerRepository(installer)
+    val repo = TowerRepository(installer, repoScope)
     val importer = AcmaImporter()
     val notifications = UpdateNotifications(context)
     val zip = File(workDir, "download/spectra_rrl.zip")
@@ -93,7 +101,7 @@ class UpdateTestEnv(root: File, minSites: Int = 1) : AutoCloseable {
     }
 
     override fun close() {
-        repo.store.value?.close()
+        repo.close()
         server.close()
     }
 }

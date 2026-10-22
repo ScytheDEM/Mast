@@ -5,6 +5,10 @@ import androidx.work.testing.TestListenableWorkerBuilder
 import androidx.work.workDataOf
 import au.signalatlas.core.model.TowerFilter
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Rule
@@ -19,10 +23,12 @@ class TowerUpdateWorkerTest {
     @get:Rule val tmp = TemporaryFolder()
 
     private lateinit var env: UpdateTestEnv
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private fun newEnv(minSites: Int = 1) = UpdateTestEnv(tmp.root, minSites).also { env = it }
 
     @After fun tearDown() {
+        scope.cancel()
         if (::env.isInitialized) env.close()
     }
 
@@ -49,7 +55,7 @@ class TowerUpdateWorkerTest {
         assertThat(env.installer.live.isFile).isTrue()
     }
 
-    @Test fun replacesAnOlderStoreAndClosesIt() {
+    @Test fun replacesAnOlderStore() {
         newEnv().seed("202610010000")
         val old = checkNotNull(env.repo.store.value)
         assertThat(run()).isEqualTo(Result.success())
@@ -76,7 +82,7 @@ class TowerUpdateWorkerTest {
     @Test fun startsTheRepositoryItselfInAFreshProcess() {
         newEnv().seed("202610221934")
         // A worker process where nobody called repo.start(): it must not re-download current data.
-        val fresh = TowerRepository(env.installer)
+        val fresh = TowerRepository(env.installer, scope)
         val deps = object : UpdateDeps by env.deps {
             override val repo = fresh
         }
@@ -87,7 +93,7 @@ class TowerUpdateWorkerTest {
         assertThat(result).isEqualTo(Result.success())
         assertThat(env.zipRequests()).isEqualTo(0)
         assertThat(fresh.store.value?.meta?.extractStamp).isEqualTo("202610221934")
-        fresh.store.value?.close()
+        fresh.close()
     }
 
     @Test fun corruptZipFailsAndKeepsTheCurrentStore() {
@@ -124,6 +130,14 @@ class TowerUpdateWorkerTest {
         val last = run(attempt = TowerUpdateWorker.MAX_ATTEMPTS)
         assertThat(last).isInstanceOf(Result.Failure::class.java)
         assertThat(last.outputData.getString(TowerUpdateWorker.KEY_ERROR)).isNotEmpty()
+    }
+
+    @Test fun unexpectedStampFormatFails() {
+        newEnv().stamp = "<html>Maintenance</html>"
+        val result = run(attempt = 0)
+        assertThat(result).isInstanceOf(Result.Failure::class.java)
+        assertThat(result.outputData.getString(TowerUpdateWorker.KEY_ERROR)).isNotEmpty()
+        assertThat(env.zipRequests()).isEqualTo(0)
     }
 
     @Test fun cleansUpLeftoversOfACrashedImport() {
