@@ -60,6 +60,7 @@ class FullExportTest {
                 skippedUnknownBand = 304,
                 skippedNoPower = 10,
                 skippedBadSite = 0,
+                skippedMalformed = 0,
                 carriersByNetwork = mapOf(
                     "NBN" to 204154,
                     "OPTUS" to 190082,

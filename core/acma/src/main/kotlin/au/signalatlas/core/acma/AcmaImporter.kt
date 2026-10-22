@@ -72,7 +72,7 @@ private class ImportRun(
     private val progress: (String, Float) -> Unit,
     private val cancel: () -> Boolean,
 ) {
-    private val networkByClient = HashMap<String, Network>()
+    private val networkByClient = HashMap<Int, Network>()
     private val networkByLicence = HashMap<String, Network>()
 
     private val sectors = SectorKeyTable()
@@ -87,6 +87,7 @@ private class ImportRun(
     private var skippedUnknownBand = 0
     private var skippedNoPower = 0
     private var skippedBadSite = 0
+    private var skippedMalformed = 0
 
     fun run(extractStamp: String, zipEtag: String): ImportReport {
         conn.execSQL("PRAGMA journal_mode=OFF")
@@ -109,7 +110,8 @@ private class ImportRun(
         val licensee = r.column("LICENCEE")
         return@scan {
             val network = NetworkMapping.fromLicensee(r[licensee])
-            if (network != null) networkByClient[r[clientNo].trim()] = network
+            val id = parseInt32Id(r[clientNo])
+            if (network != null && id != null) networkByClient[id] = network
         }
     }
 
@@ -119,7 +121,7 @@ private class ImportRun(
         val type = r.column("LICENCE_TYPE_NAME")
         return@scan {
             if (r[type].trim() in LICENCE_TYPES) {
-                val network = networkByClient[r[clientNo].trim()]
+                val network = parseInt32Id(r[clientNo])?.let { networkByClient[it] }
                 if (network != null) networkByLicence[r[licenceNo].trim()] = network
             }
         }
@@ -158,6 +160,13 @@ private class ImportRun(
                     if (r[cType].trim() != "T") return@device
                     val licenceNo = r[cLicence].trim()
                     val network = networkByLicence[licenceNo] ?: return@device
+
+                    // Rule 11: checked before rule 4.
+                    val sddId = parseIdentifier(r[cSdd], Long.MAX_VALUE)
+                    if (sddId == null) {
+                        skippedMalformed++
+                        return@device
+                    }
 
                     // Rule 4.
                     val freq = parseNumber(r[cFreq])
@@ -200,21 +209,15 @@ private class ImportRun(
                         eirp = round2(base - feederLoss) // provisional until the antenna gain is known
                     }
 
-                    // Rule 7 (first half): a blank or non-numeric SITE_ID can never match a site.
-                    val siteId = parseId(r[cSite].trim())
+                    // Rule 7 (first half) + rule 11: a blank or invalid SITE_ID can never match a site.
+                    val siteId = parseInt32Id(r[cSite])
                     if (siteId == null) {
                         skippedBadSite++
                         return@device
                     }
 
-                    // Rule 6.
-                    val antennaText = r[cAntenna].trim()
-                    val antennaId = if (antennaText.isEmpty()) {
-                        null
-                    } else {
-                        parseId(antennaText)
-                            ?: throw AcmaFormatException("non-numeric ANTENNA_ID '$antennaText' (SDD_ID ${r[cSdd]})")
-                    }
+                    // Rule 6 + rule 11: a blank or invalid ANTENNA_ID is a null antenna.
+                    val antennaId = parseInt32Id(r[cAntenna])
                     val azimuth = parseNumber(r[cAzimuth])?.let(::round1)
                     val height = parseNumber(r[cHeight])?.let(::round1) ?: 0.0
                     val sectorId = sectors.getOrAdd(siteId, antennaId, azimuth, height, network.ordinal, nextSectorId)
@@ -232,8 +235,6 @@ private class ImportRun(
                         insertSector.step()
                     }
 
-                    val sddText = r[cSdd].trim()
-                    val sddId = sddText.toLongOrNull() ?: throw AcmaFormatException("non-numeric SDD_ID '$sddText'")
                     insertCarrier.reset()
                     insertCarrier.bindLong(1, sddId)
                     insertCarrier.bindLong(2, sectorId.toLong())
@@ -274,7 +275,7 @@ private class ImportRun(
                 val cPostcode = r.column("POSTCODE")
                 val cElevation = r.column("ELEVATION")
                 return@scan site@{
-                    val id = parseId(r[cId].trim()) ?: return@site
+                    val id = parseInt32Id(r[cId]) ?: return@site
                     if (id !in referencedSites) return@site
                     val lat = parseNumber(r[cLat]) ?: return@site
                     val lon = parseNumber(r[cLon]) ?: return@site
@@ -308,7 +309,7 @@ private class ImportRun(
                 val cModel = r.column("MODEL")
                 val cManufacturer = r.column("MANUFACTURER")
                 return@scan antenna@{
-                    val id = parseId(r[cId].trim()) ?: return@antenna
+                    val id = parseInt32Id(r[cId]) ?: return@antenna
                     if (id !in referencedAntennas) return@antenna
                     // Rule 8: blank or 0 -> null.
                     val gain = nonZeroOrNull(r[cGain])
@@ -378,6 +379,7 @@ private class ImportRun(
             skippedUnknownBand = skippedUnknownBand,
             skippedNoPower = skippedNoPower,
             skippedBadSite = skippedBadSite,
+            skippedMalformed = skippedMalformed,
             carriersByNetwork = byNetwork,
         )
     }
@@ -504,11 +506,21 @@ internal fun parseNumber(raw: String): Double? {
     return if (v.isFinite()) v else null
 }
 
-/** A non-negative integer ID that fits in an Int (site and antenna IDs), or null. */
-internal fun parseId(s: String): Int? {
-    if (s.isEmpty() || s.length > 10 || s.any { it !in '0'..'9' }) return null
-    return s.toLong().takeIf { it <= Int.MAX_VALUE }?.toInt()
+/**
+ * Rule 11: an identifier is ASCII decimal digits after trimming (leading zeros allowed) with a value
+ * in 0..[max]; anything else is null. Never throws, so malformed rows cannot abort an import.
+ */
+internal fun parseIdentifier(raw: String, max: Long): Long? {
+    val s = raw.trim()
+    if (s.isEmpty() || s.any { it !in '0'..'9' }) return null
+    val digits = s.trimStart('0')
+    if (digits.length > 19) return null // more than Long.MAX_VALUE's 19 digits
+    val v = if (digits.isEmpty()) 0L else digits.toLongOrNull() ?: return null
+    return v.takeIf { it <= max }
 }
+
+/** Rule 11 for SITE_ID, ANTENNA_ID and CLIENT_NO (0..2^31-1). */
+internal fun parseInt32Id(raw: String): Int? = parseIdentifier(raw, Int.MAX_VALUE.toLong())?.toInt()
 
 /** Rule 6: `floor(x * 10 + 0.5) / 10` in double, with `-0.0` normalised to `0.0` (by adding `0.0`). */
 internal fun round1(x: Double): Double = floor(x * 10 + 0.5) / 10 + 0.0

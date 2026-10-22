@@ -1,4 +1,4 @@
-"""Reference implementation of the Signal Atlas "Import rules" 1-10.
+"""Reference implementation of the Signal Atlas "Import rules" 1-11.
 
 Usage: python3 -I tools/acma/reference.py <rrl.zip> <expected.json>
 
@@ -25,6 +25,8 @@ NETWORK_BY_LICENSEE = {
 }
 LICENCE_TYPES = {"Spectrum", "PTS"}
 LINEAR_UNITS = ("W", "mW", "kW")
+INT32_MAX = 2**31 - 1
+INT64_MAX = 2**63 - 1
 
 # (lo MHz, hi MHz, band, tech); inclusive, first match wins. B5/B26 are NR for TELSTRA.
 BANDS = [
@@ -62,6 +64,16 @@ def num(s):
     except ValueError:
         return None
     return v if math.isfinite(v) else None
+
+
+def parse_id(s, hi):
+    """Rule 11: a decimal integer in 0..hi after trimming (leading zeros allowed), else None.
+    ASCII digits only (str.isdigit would also accept superscripts in ISO-8859-1)."""
+    s = s.strip() if s is not None else ""
+    if not s or any(c not in "0123456789" for c in s):
+        return None
+    v = int(s)
+    return v if v <= hi else None
 
 
 def band_for(freq_mhz, network):
@@ -111,7 +123,7 @@ def eirp_dbm(dev, antennas):
     d = None if v is None else to_dbm(v, dev["TRANSMITTER_POWER_UNIT"].strip())
     if d is None:
         return None
-    ant = antennas.get(dev["ANTENNA_ID"].strip())
+    ant = antennas.get(parse_id(dev["ANTENNA_ID"], INT32_MAX))
     gain = ant["gain"] if ant and ant["gain"] is not None else 0.0
     loss = num(dev["FEEDER_LOSS"]) or 0.0
     return round(d + gain - loss, 2)
@@ -133,31 +145,36 @@ def run(zip_path):
     network_by_client = {}
     for r in read_csv(zf, "client.csv"):
         net = NETWORK_BY_LICENSEE.get(r["LICENCEE"].strip().lower())
-        if net:
-            network_by_client[r["CLIENT_NO"].strip()] = net
+        cid = parse_id(r["CLIENT_NO"], INT32_MAX)
+        if net and cid is not None:
+            network_by_client[cid] = net
 
     licence_network = {}
     for r in read_csv(zf, "licence.csv"):
         if r["LICENCE_TYPE_NAME"].strip() in LICENCE_TYPES:
-            net = network_by_client.get(r["CLIENT_NO"].strip())
+            net = network_by_client.get(parse_id(r["CLIENT_NO"], INT32_MAX))
             if net:
                 licence_network[r["LICENCE_NO"].strip()] = net
 
     sites = {}
     for r in read_csv(zf, "site.csv"):
+        sid = parse_id(r["SITE_ID"], INT32_MAX)
         lat, lon = num(r["LATITUDE"]), num(r["LONGITUDE"])
-        if lat is not None and lon is not None and -55 <= lat <= -9 and 72 <= lon <= 169:
-            sites[r["SITE_ID"].strip()] = (lat, lon)
+        if sid is not None and lat is not None and lon is not None and -55 <= lat <= -9 and 72 <= lon <= 169:
+            sites[sid] = (lat, lon)
 
     antennas = {}
     for r in read_csv(zf, "antenna.csv"):
-        antennas[r["ANTENNA_ID"].strip()] = {
+        aid = parse_id(r["ANTENNA_ID"], INT32_MAX)
+        if aid is None:
+            continue
+        antennas[aid] = {
             "gain": positive_or_none(r["GAIN"]),
             "f2b": positive_or_none(r["FRONT_TO_BACK"]),
             "hbw": positive_or_none(r["H_BEAMWIDTH"]),
         }
 
-    skipped_band = skipped_power = skipped_site = 0
+    skipped_band = skipped_power = skipped_site = skipped_malformed = 0
     sector_ids = {}          # key -> id (first-seen order)
     sector_site = {}         # id -> site id
     sector_antenna = {}      # id -> antenna id or None
@@ -168,6 +185,9 @@ def run(zip_path):
         network = licence_network.get(dev["LICENCE_NO"].strip())
         if network is None:
             continue
+        if parse_id(dev["SDD_ID"], INT64_MAX) is None:
+            skipped_malformed += 1
+            continue
         freq = num(dev["FREQUENCY"])
         if band_for(None if freq is None else freq / 1e6, network) is None:
             skipped_band += 1
@@ -175,15 +195,15 @@ def run(zip_path):
         if eirp_dbm(dev, antennas) is None:
             skipped_power += 1
             continue
-        site_id = dev["SITE_ID"].strip()
-        if site_id not in sites:
+        site_id = parse_id(dev["SITE_ID"], INT32_MAX)
+        if site_id is None or site_id not in sites:
             skipped_site += 1
             continue
         az = num(dev["AZIMUTH"])
         az = None if az is None else round1(az)
         h = num(dev["HEIGHT"])
         h = 0.0 if h is None else round1(h)
-        ant_id = dev["ANTENNA_ID"].strip() or None
+        ant_id = parse_id(dev["ANTENNA_ID"], INT32_MAX)  # blank or invalid -> null antenna
         key = (site_id, network, ant_id, az, h)
         if key not in sector_ids:
             sid = len(sector_ids) + 1
@@ -201,6 +221,7 @@ def run(zip_path):
         "skippedUnknownBand": skipped_band,
         "skippedNoPower": skipped_power,
         "skippedBadSite": skipped_site,
+        "skippedMalformed": skipped_malformed,
         "carriersByNetwork": {k: v for k, v in carrier_count.items() if v > 0},
     }
 

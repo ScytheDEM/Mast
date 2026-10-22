@@ -12,5 +12,6 @@ data class ImportReport(
     val skippedUnknownBand: Int,
     val skippedNoPower: Int,
     val skippedBadSite: Int,
+    val skippedMalformed: Int,
     val carriersByNetwork: Map<String, Int>,
 )

@@ -100,6 +100,11 @@ def main():
         synth(999999309, AZIMUTH="22.25"),                                 # key rounds to 22.3
         synth(999999310, FREQUENCY="450000000", SITE_ID="999999001"),      # band+site -> band
         synth(999999311, FREQUENCY="450000000", EIRP="", TRANSMITTER_POWER=""),  # band+power -> band
+        # 4xx: rule 11 identifiers
+        synth("ABC"),                                                      # skippedMalformed
+        synth(999999401, ANTENNA_ID="N/A"),                                # invalid antenna -> null antenna
+        synth(999999402, SITE_ID="X1"),                                    # invalid site -> skippedBadSite
+        synth(999999403, SITE_ID="0101160"),                               # leading zero = site 101160
     ]
     for sid, name, lat, lon in (("999999001", "SYNTHETIC BAD SITE 1", "", ""),
                                 ("999999002", "SYNTHETIC BAD SITE 2", "51.5", "-0.1")):

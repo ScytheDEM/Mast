@@ -1,6 +1,6 @@
 # ACMA reference importer
 
-Python reference for the Signal Atlas "Import rules" (1-10). The Kotlin importer
+Python reference for the Signal Atlas "Import rules" (1-11). The Kotlin importer
 must reproduce its counts exactly. Stdlib only; always run with `python3 -I`
 (the export is untrusted data; keep it outside this directory).
 
@@ -36,6 +36,10 @@ python3 -I tools/acma/reference.py core/acma/src/test/resources/acma/fixture.zip
 | 999999309 | AZIMUTH 22.25 | key rounds to 22.3 (floor(x*10+0.5)/10) |
 | 999999310 | 450 MHz on site 999999001 | band+site both fail: counts skippedUnknownBand |
 | 999999311 | 450 MHz, blank EIRP and power | band+power both fail: counts skippedUnknownBand |
+| ABC | SDD_ID "ABC" | rule 11: skippedMalformed (checked before band) |
+| 999999401 | ANTENNA_ID "N/A" | rule 11: invalid antenna -> null antenna (same sector as 999999308) |
+| 999999402 | SITE_ID "X1" | rule 11: invalid site -> skippedBadSite |
+| 999999403 | SITE_ID "0101160" | rule 11: leading zeros allowed, counts as site 101160 |
 
 Together with the real rows (W units, EIRP=0 fall-through, Telstra n5) the fixture covers the band plan,
 power units, omni sectors, null antennas, rounding and skip precedence (band -> power -> site).
@@ -48,15 +52,19 @@ power units, omni sectors, null antennas, rounding and skip precedence (band -> 
   EIRP=0 W beside a valid transmitter power (9625 kept-licence T devices on the 2026-10-22 export).
   Any other unusable value (unparseable number, unknown unit, blank/unusable transmitter power) is `skippedNoPower`.
 - Skip precedence per device: unknown band, then no power, then bad site (each device counted once).
+- Rule 11: SDD_ID, SITE_ID, ANTENNA_ID and CLIENT_NO are ASCII decimal integers after trimming
+  (leading zeros allowed; SDD_ID <= 2^63-1, others <= 2^31-1) and are keyed as integers. A kept device
+  with an invalid SDD_ID is `skippedMalformed` (before band); an invalid ANTENNA_ID is a null antenna;
+  an invalid SITE_ID is a missing site. Rows in site.csv/antenna.csv/client.csv with invalid IDs are ignored.
 - `antennas` counts distinct non-blank antenna IDs on kept sectors that exist in antenna.csv.
 
 ## Full export (Task 12 reference)
 
-Export 2026-10-22, extract stamp 202610221934 (`spectra_rrl.zip`, 68 MB), with band plan including B26/n26 and n77.
-Reference wall-clock: 15.1 s.
+Export 2026-10-22, extract stamp 202610221934 (`spectra_rrl.zip`, 68 MB), with band plan including B26/n26 and n77
+and rule 11 identifiers. Reference wall-clock: 16.3 s.
 
 ```
 sites 25359, sectors 537540, carriers 852634, antennas 1803,
-skippedUnknownBand 304, skippedNoPower 10, skippedBadSite 0
+skippedUnknownBand 304, skippedNoPower 10, skippedBadSite 0, skippedMalformed 0
 carriersByNetwork: NBN 204154, OPTUS 190082, OPTUS_TPG_JV 23815, TELSTRA 231490, TPG 203093
 ```

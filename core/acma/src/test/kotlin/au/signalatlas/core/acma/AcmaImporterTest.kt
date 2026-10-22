@@ -101,6 +101,7 @@ class AcmaImporterTest {
         assertThat(report.skippedUnknownBand).isEqualTo(int("skippedUnknownBand"))
         assertThat(report.skippedNoPower).isEqualTo(int("skippedNoPower"))
         assertThat(report.skippedBadSite).isEqualTo(int("skippedBadSite"))
+        assertThat(report.skippedMalformed).isEqualTo(int("skippedMalformed"))
         val byNetwork = expected.getValue("carriersByNetwork").jsonObject.mapValues { it.value.jsonPrimitive.int }
         assertThat(report.carriersByNetwork).isEqualTo(byNetwork)
     }
@@ -180,6 +181,39 @@ class AcmaImporterTest {
             for (skipped in listOf(999999102L, 999999103L, 999999201L, 999999202L, 999999310L, 999999311L)) {
                 assertThat(db.scalarText("SELECT COUNT(*) FROM carrier WHERE sdd_id = $skipped")).isEqualTo("0")
             }
+        }
+    }
+
+    @Test
+    fun malformedIdentifierRows() {
+        val (report, out) = importFixture()
+        assertThat(report.skippedMalformed).isEqualTo(1) // SDD_ID "ABC"
+        withDb(out) { db ->
+            fun sectorOf(sdd: Long) = db.scalarText("SELECT sector_id FROM carrier WHERE sdd_id = $sdd")
+            // ANTENNA_ID "N/A" -> null antenna, so it shares 999999308's (blank antenna) sector.
+            assertThat(db.carrierRow(999999401)["antenna_id"]).isNull()
+            assertThat(sectorOf(999999401)).isEqualTo(sectorOf(999999308))
+            // SITE_ID "X1" -> missing site.
+            assertThat(db.scalarText("SELECT COUNT(*) FROM carrier WHERE sdd_id = 999999402")).isEqualTo("0")
+            // SITE_ID "0101160" -> site 101160.
+            assertThat(
+                db.scalarText("SELECT s.site_id FROM carrier c JOIN sector s ON s.id = c.sector_id WHERE c.sdd_id = 999999403"),
+            ).isEqualTo("101160")
+        }
+    }
+
+    @Test
+    fun identifierParsing() {
+        assertThat(parseIdentifier(" 01000 ", Int.MAX_VALUE.toLong())).isEqualTo(1000L)
+        assertThat(parseIdentifier("0", Int.MAX_VALUE.toLong())).isEqualTo(0L)
+        assertThat(parseIdentifier("000000000000000000000042", Long.MAX_VALUE)).isEqualTo(42L)
+        assertThat(parseIdentifier("2147483647", Int.MAX_VALUE.toLong())).isEqualTo(2147483647L)
+        assertThat(parseIdentifier("2147483648", Int.MAX_VALUE.toLong())).isNull()
+        assertThat(parseIdentifier("9223372036854775807", Long.MAX_VALUE)).isEqualTo(Long.MAX_VALUE)
+        assertThat(parseIdentifier("9223372036854775808", Long.MAX_VALUE)).isNull()
+        assertThat(parseIdentifier("99999999999999999999", Long.MAX_VALUE)).isNull()
+        for (bad in listOf("", "  ", "ABC", "N/A", "X1", "-1", "+1", "1.0", "1e3", "\u00b2")) {
+            assertThat(parseIdentifier(bad, Long.MAX_VALUE)).isNull()
         }
     }
 
