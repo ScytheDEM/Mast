@@ -26,9 +26,10 @@ NETWORK_BY_LICENSEE = {
 LICENCE_TYPES = {"Spectrum", "PTS"}
 LINEAR_UNITS = ("W", "mW", "kW")
 
-# (lo MHz, hi MHz, band, tech); inclusive, first match wins. B5 handled specially.
+# (lo MHz, hi MHz, band, tech); inclusive, first match wins. B5/B26 are NR for TELSTRA.
 BANDS = [
     (758, 803, "B28", "LTE"),
+    (859, 868.999, "B26", "LTE"),
     (869, 894, "B5", "LTE"),
     (925, 960, "B8", "LTE"),
     (1805, 1880, "B3", "LTE"),
@@ -36,6 +37,7 @@ BANDS = [
     (2300, 2400, "B40", "LTE"),
     (2620, 2690, "B7", "LTE"),
     (3300, 3800, "n78", "NR"),
+    (3800.001, 4200, "n77", "NR"),
     (24250, 27499.999, "n258", "NR"),
     (27500, 29500, "n257", "NR"),
 ]
@@ -67,8 +69,8 @@ def band_for(freq_mhz, network):
         return None
     for lo, hi, band, tech in BANDS:
         if lo <= freq_mhz <= hi:
-            if band == "B5" and network == "TELSTRA":
-                return ("n5", "NR")
+            if network == "TELSTRA" and band in ("B5", "B26"):
+                return ("n" + band[1:], "NR")
             return (band, tech)
     return None
 

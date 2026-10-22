@@ -15,6 +15,13 @@ class BandPlanTest {
         assertThat(BandPlan.classify(28_900_000_000, Network.NBN)!!.band).isEqualTo("n257")
     }
 
+    @Test fun classifiesB26N26AndN77() {
+        assertThat(BandPlan.classify(862_000_000, Network.TELSTRA)).isEqualTo(BandInfo("n26", Tech.NR))
+        assertThat(BandPlan.classify(862_000_000, Network.OPTUS)).isEqualTo(BandInfo("B26", Tech.LTE))
+        assertThat(BandPlan.classify(3_920_000_000, Network.NBN)).isEqualTo(BandInfo("n77", Tech.NR))
+        assertThat(BandPlan.classify(3_800_000_000, Network.NBN)!!.band).isEqualTo("n78")
+    }
+
     @Test fun boundariesAreInclusive() {
         assertThat(BandPlan.classify(758_000_000, Network.OPTUS)!!.band).isEqualTo("B28")
         assertThat(BandPlan.classify(803_000_000, Network.OPTUS)!!.band).isEqualTo("B28")

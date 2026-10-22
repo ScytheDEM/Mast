@@ -22,7 +22,7 @@ python3 -I tools/acma/reference.py core/acma/src/test/resources/acma/fixture.zip
 ## Interpretation notes (the Kotlin importer must match)
 
 - `FREQUENCY` and `BANDWIDTH` in device_details are in Hz; the band plan compares `FREQUENCY / 1e6`.
-- Rule 5: a non-blank `EIRP` that is <= 0 in a linear unit (W/mW/kW) is treated as not supplied
+- Rules 4-5 as amended in the plan (commit 557f87d): B26/n26 and n77 added. Rule 5: a non-blank `EIRP` that is <= 0 in a linear unit (W/mW/kW) is treated as not supplied
   and falls through to `TRANSMITTER_POWER` + antenna gain - feeder loss. The real export has
   EIRP=0 W beside a valid transmitter power (9625 kept-licence T devices on the 2026-10-22 export).
   Any other unusable value (unparseable number, unknown unit, blank/unusable transmitter power) is `skippedNoPower`.
@@ -31,10 +31,11 @@ python3 -I tools/acma/reference.py core/acma/src/test/resources/acma/fixture.zip
 
 ## Full export (Task 12 reference)
 
-Export 2026-10-22, extract stamp 202610221934 (`spectra_rrl.zip`, 68 MB). Reference wall-clock: 15.5 s.
+Export 2026-10-22, extract stamp 202610221934 (`spectra_rrl.zip`, 68 MB), with band plan including B26/n26 and n77.
+Reference wall-clock: 15.1 s.
 
 ```
-sites 25349, sectors 530442, carriers 838129, antennas 1799,
-skippedUnknownBand 14809, skippedNoPower 10, skippedBadSite 0
-carriersByNetwork: NBN 203889, OPTUS 190082, OPTUS_TPG_JV 23815, TELSTRA 217250, TPG 203093
+sites 25359, sectors 537526, carriers 852634, antennas 1803,
+skippedUnknownBand 304, skippedNoPower 10, skippedBadSite 0
+carriersByNetwork: NBN 204154, OPTUS 190082, OPTUS_TPG_JV 23815, TELSTRA 231490, TPG 203093
 ```
