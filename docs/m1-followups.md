@@ -1,0 +1,108 @@
+# Milestone 1 follow-ups
+
+Decisions made during M1 execution and deferred minor findings, carried into M2+ planning.
+
+## Rulings
+- Ruling A: :core:acma applies org.jetbrains.kotlin.plugin.serialization + kotlinx-serialization-json — ImportReport is @Serializable per T5 — cost if wrong: trivial build change.
+- Ruling B: dependency direction becomes data → acma (api for ImportReport) in addition to model; update → acma, data — DataMeta needs ImportReport and T6 tests need AcmaImporter — cost if wrong: one module edge to move later.
+- Ruling C: Task 1 bootstraps the wrapper by downloading the official Gradle 9.8.2 bin distribution into the scratchpad and running its `gradle wrapper --gradle-version 9.8.2` — no system Gradle exists — cost if wrong: none (wrapper files are standard).
+- Ruling D: Task 0 (toolchain install + one doc file, no product code) verified directly by the controller (adb version, -list-avds, sdk dirs) in place of a reviewer subagent — nothing to review for spec/quality beyond install state — cost if wrong: a doc inaccuracy, caught in final review.
+- Ruling E: Band plan adds 859–868.999 MHz → B26 LTE (TELSTRA → n26 NR) and 3800.001–4200 MHz → n77 NR — full export had 14,240 Telstra transmitters at 860–869 MHz (850 expansion) and ~265 NBN at 3.88–3.93 GHz silently dropped; remaining unknowns are uplink-frequency registrations (Optus 1.76/1.95 GHz, 900–910 MHz; TPG 820–830) correctly skipped — cost if wrong: tech label (LTE vs NR) for those carriers; coverage geometry unaffected.
+- Ruling F: Import rule 5 — non-blank EIRP ≤ 0 in a linear unit falls through to TRANSMITTER_POWER (9,625 real devices carry EIRP=0 W beside real power) — cost if wrong: EIRP for those devices overstated by the antenna-gain assumption.
+- Ruling G: FREQUENCY is Hz; rule 4 ranges apply to FREQUENCY/1e6 (already how Task 2 implemented it) — no cost.
+- Ruling H: skip precedence band → power → site — only fixture counts depend on it — no real cost.
+- Ruling I: Import rule 6 rounding pinned to floor(x*10+0.5)/10 with -0.0→0.0, blank ANTENNA_ID → null key part (plan commit after d8685c0) — Python round() is half-even, Kotlin would differ on x.x5 values — cost if wrong: none (both sides follow the same formula).
+- Ruling K: Import rule 11 added — integer identifier grammar (leading zeros ok; SDD_ID 63-bit, others 31-bit); bad SDD_ID → new counter skippedMalformed (checked before band); bad ANTENNA_ID → null antenna; bad SITE_ID → missing site; malformed data never aborts, only a missing column does — one bad row in a future export would otherwise break every phone's update — cost if wrong: an extra ImportReport field to carry.
+- Ruling L: DbInstaller install sequence changes from "move live→previous, move candidate→live" to: fsync candidate (FileChannel.force) → hard-link live to previous.tmp (fallback: copy) → fsync → atomic move previous.tmp→previous → atomic REPLACE candidate→live; so towers.db always exists. Plus recover(): if live missing and previous exists → restore previous, called at start of cleanupStale()/install — crash between moves otherwise stranded the DB and cleanupStale deleted the only new copy; importer builds with synchronous=OFF so the candidate must be forced to disk before rename — cost if wrong: ~1 s extra copy on filesystems without hard links.
+- Ruling M: search resolution amended — digits-only query: exact site id (only if canonical, no leading zero) → exact postcode → case-insensitive name contains; de-duplicated, capped at limit — ACMA names start with street numbers ("243 Northbourne Ave") — cost if wrong: a few extra name hits for numeric queries.
+- Ruling N: AcmaRemote owns partial-file provenance via sidecar `<dest>.etag` (written before first byte, checked before resume or same-size shortcut; mismatch/missing → delete both, restart from 0; deleted on success? kept so same-size shortcut stays valid) — If-Range only proves the server's version, not the local prefix's — cost if wrong: a few extra bytes on disk.
+- Ruling O: keep UNDISPATCHED watcher coroutine for Call cancellation instead of controller-suggested invokeOnCompletion — completion handler fires only after the blocking read returns, so it cannot interrupt a stalled read; UNDISPATCHED closes the dispatch race — cost if wrong: one extra lightweight coroutine per request.
+- Ruling P: the live DB's meta.extract_stamp (via TowerRepository.store) is the source of truth for "what data do I have"; UpdatePrefs (DataStore) stores only lastCheckAt and the last RemoteInfo seen — avoids prefs/DB drift after rollback or recover — cost if wrong: none.
+- Ruling Q: the resumable zip lives at <dir>/download/spectra_rrl.zip (+ .etag sidecar), NOT <dir>/spectra_rrl.zip.tmp as the plan says — DbInstaller.cleanupStale() deletes *.tmp in <dir>, which would destroy every resumable partial — cost if wrong: none.
+- Ruling R: the worker gets its dependencies through `TowerUpdateWorkerFactory(deps: UpdateDeps)` (a WorkerFactory); the app installs it through Configuration.Provider in Task 11; tests pass it to TestListenableWorkerBuilder — default WorkManager instantiation can't inject constructor deps — cost if wrong: small refactor.
+- Ruling S: first run with no DB — the stale job (unmetered only) may auto-download the 68 MB on Wi-Fi without a tap; on mobile data the first-run screen's "Download now" (with confirm) is required — matches the user's Wi-Fi-automatic preference and avoids an empty app — cost if wrong: one unprompted 68 MB Wi-Fi download.
+- Ruling T: closed-store reads — TowerStore.siteDetail returns null (never throws) once closed, and TowerRepository.reload closes the old store only after a 10 s grace delay (on its scope); UI always re-reads repo.store.value — a weekly reload mid-sheet otherwise crashes the app — cost if wrong: old store memory held 10 s longer.
+- Ruling U: RemoteFormatException in the worker → Result.failure (brief: "failure() on format errors"), not retry — cost if wrong: one fewer retry on a transient HTML error page (next schedule retries anyway).
+- Ruling V: fix round 1 also takes Minor #1 (location services off → endless "Finding your location…") and Minor #4 (basemap lookup DataStore exception crashes startup) — both are Review Focus #3/#5-class failures (crash or endless spinner) — cost if wrong: small extra scope.
+- Ruling W: add a location dot (MapLibre LocationComponent, puck in Material primary) now — the "My location" FAB without a dot reads as broken to users — cost if wrong: small core:map change; selected-site-behind-side-panel camera padding deferred to M7 (foldable polish).
+- Ruling X: final fix wave = C1, I1–I5, triage must-fixes (finalise cancellable, manual-behind-periodic double download, stale-fix age check, sheet hide animation, wrapper distributionSha256Sum), plus Minor M4 (release build type with R8) and per-phase import timing log (needed for measurement). I6 and TowerStore schema_version check are deferred to the M2 plan as its first task — architecture change, not merge-blocking — cost if wrong: M2 starts with a refactor task.
+
+## Deferred to M2 (first task)
+- Move TowerRepository to :core:data with ref-counted store lifetime and a bulk sectors-in-bounds query (final review I6).
+- TowerStore.open must check meta.schema_version.
+
+## Deferred minor findings
+- Task 1: minor (deferred): wrapper lacks distributionSha256Sum
+- Task 1: minor (deferred): manifest has no android:theme / edge-to-edge yet (Task 11 owns UI)
+- Task 1: minor (deferred): hardcoded android:label, no strings.xml
+- Task 1: minor (deferred): configuration cache not enabled
+- Task 2: minor (deferred): BandPlan Telstra n5 override keyed on band label string "B5"
+- Task 2: minor (deferred): no test pins persisted enum ordinals
+- Task 2: minor (deferred): 27499.999–27500 MHz gap returns null (per rule text), untested
+- Task 2: minor (deferred): TowerFilterTest lacks empty-bands-set case
+- Task 3: minor (deferred): mid-file blank line yields a phantom 1-empty-field row
+- Task 3: minor (deferred): lone CR dropped silently; CR-only endings unsupported (fine for ACMA)
+- Task 3: minor (deferred): untested edges: closing quote at EOF, "" field, bare mid-field quote, dup headers, empty input, get before next
+- Task 3: minor (deferred): every field decoded even if unread; importer should read only needed columns
+- Task 3: minor (deferred): reader not recoverable after AcmaFormatException (callers must treat as fatal)
+- Task 3: minor (deferred): capped field may retain ~2 MiB StringBuilder capacity per column
+- Task 3: minor (deferred): MAX_FIELD_CHARS public; could be internal
+- Task 4: minor (deferred): number grammar differs Python float() vs Kotlin toDouble (underscores/suffixes)
+- Task 4: minor (deferred): reference crashes on short CSV rows (DictReader None)
+- Task 4: minor (deferred): duplicate SDD_ID behaviour unspecified (none in real data)
+- Task 4: minor (deferred): no BandPlanTest at 868.999/869 and 3800.0–3800.001 boundaries
+- Task 4: minor (deferred): make_fixture reuses reference's licensee table (harmless)
+- Task 5: minor (deferred): heap check indirect — prefer FullExportTest maxHeapSize=160m (OOM = fail) over GC-flag sampling
+- Task 5: minor (deferred): api(sqlite-bundled) broader than needed (api androidx.sqlite:sqlite + impl bundled)
+- Task 5: minor (deferred): parseNumber comment claims parity with Python float() (underscores differ)
+- Task 5: minor (deferred): no test for Ruling J duplicate SDD_ID incl. derived-power changes() guard
+- Task 5: minor (deferred): cancel untested mid-device_details; finalise not cancellable
+- Task 5: minor (deferred): conn.close() failure in finally could mask original exception (addSuppressed)
+- Task 5: minor (deferred): AcmaImporter.kt 652 lines — extract SectorKeyTable/PendingPower
+- Task 5: minor (deferred): importer deletes `out` first — KDoc that caller must never pass live towers.db
+- Task 5: minor (deferred): U+0085 trim parity Python strip() vs Kotlin trim()
+- Task 5: minor (deferred): duplicate SDD_ID — Kotlin count from table vs reference counts every row (diverge only on dups; none in real data)
+- Task 6: minor (deferred): unconditional -wal/-shm deletion for live/previous assumes non-WAL DBs
+- Task 6: minor (deferred): cleanupStale unsynchronized vs in-flight import — must only run before imports start (document)
+- Task 6: minor (deferred): cleanupStale leaves -wal/-shm of .building/.tmp
+- Task 6: minor (deferred): injected non-bundled driver opens read-write
+- Task 6: minor (deferred): test meta() helper opens read-write
+- Task 6: minor (deferred): deleteSiblings(live) before final move loses a hot journal on the failure path
+- Task 6: minor (deferred): directory not fsynced after renames
+- Task 7: minor (deferred): nearest limit not clamped to n (OOM on huge limit)
+- Task 7: minor (deferred): equidistant co-sited points at k cut-off depend on scan order
+- Task 7: minor (deferred): search sorts all matches before limit (per-keystroke cost) — UI must call off main thread
+- Task 7: minor (deferred): allBands test near-tautological; add known order B28 < B3
+- Task 7: minor (deferred): FQ SQLiteStatement in test; closed-store inconsistency; allBands mutable ArrayList
+- Task 7: minor (deferred): corrupt ordinal → index error; open doesn't check schema_version
+- Task 7: minor (deferred): speed test covers GridIndex only, not sitesIn path
+- Task 7: minor (deferred): search dedupe path not exercised; injected-driver no-touch untested; numeric fallback test brittle beyond 20 matches; import order; KDoc wording at TowerStore.kt:67
+- Task 8: minor (deferred): info() stamp GET + HEAD not atomic; stamp body unbounded
+- Task 8: minor (deferred): tests lack 416, 206 truncated mid-append, missing/zero Content-Length; loose progress assertion
+- Task 8: minor (deferred): resume progress doesn't report initial offset; dest.parentFile not created
+- Task 8: minor (deferred): 200/206 without ETag header still accepted (server always sends one today)
+- Task 9: minor (deferred): host-native extraction — Intel Mac mapped to osx_arm64; java.library.path replaced not appended
+- Task 9: minor (deferred): manual force run queued behind periodic downloads twice (pass enqueue-time stamp)
+- Task 9: minor (deferred): retry cap fails on 6th run (0-based runAttemptCount)
+- Task 9: minor (deferred): reload() exception after Ok escapes without KEY_ERROR; unreadable live DB never auto-repaired
+- Task 9: minor (deferred): stale job re-checks stamp every app open while ACMA unchanged
+- Task 9: minor (deferred): concurrent checkOnAppOpen not de-duplicated
+- Task 9: minor (deferred): retiring stores stay open if scope cancelled before grace; close() not under reload mutex (shutdown only)
+- Task 10: minor (deferred): MapView created in remember (onCreate during composition; abandoned composition could leak)
+- Task 10: minor (deferred): camera.attach after dispose could hold destroyed map (no disposed guard)
+- Task 10: minor (deferred): style load failure silent (no listener/log)
+- Task 10: minor (deferred): basemapKey null→value triggers full style reload flash; selectedFilter public returning MapLibre Expression
+- Task 10: minor (deferred): setGeoJson(String) on main thread — measure with full national set vs 120 fps
+- Task 10: minor (deferred): BasemapLocator no negative caching / no mutex; TowerLayer num() throws on NaN
+- Task 10: minor (deferred): style tests don't pin POI/building minzooms
+- Task 11: minor (deferred): stale last-known fix used without age check
+- Task 11: minor (deferred): update chip empty determinate ring for waiting/starting phases
+- Task 11: minor (deferred): "Check for updates" may return 30-min cached result
+- Task 11: minor (deferred): old selection highlighted while next loads
+- Task 11: minor (deferred): sites flow queries emitted snapshot not current() (harmless, comment)
+- Task 11: minor (deferred): map keeps rendering under opaque Updates screen
+- Task 11: minor (deferred): compact sheet closes without hide animation
+- Task 11: minor (deferred): notification-permission asked-once flag resets per process
+- Task 11: minor (deferred → M7): camera padding so selected site isn't hidden behind side panel; search ranking (101160 vs BARTON SIDING)
+- Task 11: minor (deferred): gate.offline flag sticky until next request; LocationComponent across style swaps unverified on device (Task 12 check); cancelManual race at ENQUEUED→RUNNING; provider re-register edge; stale dot when location off; no Compose test for UpdatesScreen waiting actions
+- Final: minor (deferred): periodic import dropped if ACMA publishes between adjacent runs; uncaught install/reload error lacks KEY_ERROR; ENQUEUED import shows "starting" indefinitely; sheet waits for IME close; broad -dontwarn maplibre; stale dev-install unique works (cancel acma-stale/acma-periodic before first ship); auto-run failures never surfaced
