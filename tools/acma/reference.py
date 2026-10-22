@@ -117,6 +117,11 @@ def eirp_dbm(dev, antennas):
     return round(d + gain - loss, 2)
 
 
+def round1(x):
+    """Rule 6 rounding: floor(x * 10 + 0.5) / 10 in double, -0.0 -> 0.0."""
+    return math.floor(x * 10 + 0.5) / 10 + 0.0
+
+
 def positive_or_none(s):
     v = num(s)
     return None if v is None or v == 0 else v
@@ -175,9 +180,9 @@ def run(zip_path):
             skipped_site += 1
             continue
         az = num(dev["AZIMUTH"])
-        az = None if az is None else round(az, 1)
+        az = None if az is None else round1(az)
         h = num(dev["HEIGHT"])
-        h = 0.0 if h is None else round(h, 1)
+        h = 0.0 if h is None else round1(h)
         ant_id = dev["ANTENNA_ID"].strip() or None
         key = (site_id, network, ant_id, az, h)
         if key not in sector_ids:

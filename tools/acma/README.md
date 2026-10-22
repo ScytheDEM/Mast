@@ -19,6 +19,27 @@ python3 -I tools/acma/make_fixture.py /path/to/spectra_rrl.zip core/acma/src/tes
 python3 -I tools/acma/reference.py core/acma/src/test/resources/acma/fixture.zip core/acma/src/test/resources/acma/expected.json
 ```
 
+## Synthetic fixture rows (all copy the first kept device, a TPG device; only listed fields change)
+
+| SDD_ID | Change | Exercises |
+|---|---|---|
+| 999999201 / 202 | SITE_ID 999999001 (blank lat) / 999999002 (lat 51.5, lon -0.1) | skippedBadSite (missing coordinates, out of bounds) |
+| 999999101 | EIRP blank, TRANSMITTER_POWER 40 W | derived power (+ antenna gain - feeder loss) |
+| 999999102 | EIRP and TRANSMITTER_POWER blank | skippedNoPower |
+| 999999103 | FREQUENCY 450 MHz | skippedUnknownBand |
+| 999999301 | Telstra licence 9263433, 862 MHz | n26 NR (Telstra override of B26) |
+| 999999302 | Optus licence 9460720, 862 MHz | B26 LTE |
+| 999999303 | 3920 MHz | n77 NR |
+| 999999304 / 305 / 306 | EIRP 500 mW / 40 dBm / 10 dBW | mW, dBm, dBW conversion |
+| 999999307 | blank AZIMUTH | omni sector (null azimuth key) |
+| 999999308 | blank ANTENNA_ID | null antenna in the key |
+| 999999309 | AZIMUTH 22.25 | key rounds to 22.3 (floor(x*10+0.5)/10) |
+| 999999310 | 450 MHz on site 999999001 | band+site both fail: counts skippedUnknownBand |
+| 999999311 | 450 MHz, blank EIRP and power | band+power both fail: counts skippedUnknownBand |
+
+Together with the real rows (W units, EIRP=0 fall-through, Telstra n5) the fixture covers the band plan,
+power units, omni sectors, null antennas, rounding and skip precedence (band -> power -> site).
+
 ## Interpretation notes (the Kotlin importer must match)
 
 - `FREQUENCY` and `BANDWIDTH` in device_details are in Hz; the band plan compares `FREQUENCY / 1e6`.
@@ -35,7 +56,7 @@ Export 2026-10-22, extract stamp 202610221934 (`spectra_rrl.zip`, 68 MB), with b
 Reference wall-clock: 15.1 s.
 
 ```
-sites 25359, sectors 537526, carriers 852634, antennas 1803,
+sites 25359, sectors 537540, carriers 852634, antennas 1803,
 skippedUnknownBand 304, skippedNoPower 10, skippedBadSite 0
 carriersByNetwork: NBN 204154, OPTUS 190082, OPTUS_TPG_JV 23815, TELSTRA 231490, TPG 203093
 ```

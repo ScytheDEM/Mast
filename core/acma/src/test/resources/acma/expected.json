@@ -1,16 +1,16 @@
 {
   "antennas": 74,
-  "carriers": 1145,
+  "carriers": 1154,
   "carriersByNetwork": {
     "NBN": 844,
-    "OPTUS": 66,
+    "OPTUS": 67,
     "OPTUS_TPG_JV": 18,
-    "TELSTRA": 108,
-    "TPG": 109
+    "TELSTRA": 109,
+    "TPG": 116
   },
-  "sectors": 314,
+  "sectors": 319,
   "sites": 4,
   "skippedBadSite": 2,
   "skippedNoPower": 1,
-  "skippedUnknownBand": 1
+  "skippedUnknownBand": 3
 }

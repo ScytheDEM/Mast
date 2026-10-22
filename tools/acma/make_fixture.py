@@ -13,6 +13,8 @@ import sys
 import zipfile
 
 SITE_IDS = {"101160", "41428", "9002575", "9019760"}
+TELSTRA_LIC = "9263433"  # TELSTRA LIMITED, Spectrum
+OPTUS_LIC = "9460720"    # Optus Mobile Pty Limited, Spectrum
 NAMES = ["client.csv", "licence.csv", "site.csv", "antenna.csv",
          "antenna_pattern.csv", "device_details.csv"]
 
@@ -86,6 +88,18 @@ def main():
         synth(999999101, EIRP="", TRANSMITTER_POWER="40", TRANSMITTER_POWER_UNIT="W"),
         synth(999999102, EIRP="", TRANSMITTER_POWER=""),
         synth(999999103, FREQUENCY="450000000"),
+        # 3xx: amended band plan, units, sector-key and skip-precedence branches
+        synth(999999301, LICENCE_NO=TELSTRA_LIC, FREQUENCY="862000000"),   # n26 (Telstra NR)
+        synth(999999302, LICENCE_NO=OPTUS_LIC, FREQUENCY="862000000"),     # B26 (LTE)
+        synth(999999303, FREQUENCY="3920000000"),                          # n77
+        synth(999999304, EIRP="500", EIRP_UNIT="mW"),
+        synth(999999305, EIRP="40", EIRP_UNIT="dBm"),
+        synth(999999306, EIRP="10", EIRP_UNIT="dBW"),
+        synth(999999307, AZIMUTH=""),                                      # omni sector
+        synth(999999308, ANTENNA_ID=""),                                   # null antenna
+        synth(999999309, AZIMUTH="22.25"),                                 # key rounds to 22.3
+        synth(999999310, FREQUENCY="450000000", SITE_ID="999999001"),      # band+site -> band
+        synth(999999311, FREQUENCY="450000000", EIRP="", TRANSMITTER_POWER=""),  # band+power -> band
     ]
     for sid, name, lat, lon in (("999999001", "SYNTHETIC BAD SITE 1", "", ""),
                                 ("999999002", "SYNTHETIC BAD SITE 2", "51.5", "-0.1")):
