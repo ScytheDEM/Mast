@@ -14,7 +14,8 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // -Pabis=arm64-v8a builds a phone-only APK (x86_64 is only for emulators).
+            abiFilters += (findProperty("abis") as String?)?.split(",") ?: listOf("arm64-v8a", "x86_64")
         }
     }
 
