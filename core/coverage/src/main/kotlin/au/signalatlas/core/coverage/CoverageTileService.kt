@@ -125,6 +125,43 @@ class CoverageTileService internal constructor(
     private fun terrainSegment(): String = "t${terrainEpoch.value}"
 
     /** The terrain version a tile of this selection and data has now (0 = quick only); [create] adds its region if new. */
+    /**
+     * A tile served from the cache never renders, so a terrain region recreated after an eviction would never ask for its
+     * tables: a one-off low-priority job computes the demand from the region's carriers and queues the builds.
+     */
+    private fun ensureDemand(key: TileKey, sel: CoverageSelection) {
+        val tc = terrain ?: return
+        if (key.terrainVersion == 0L) return
+        val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y)
+        if (!tc.claimDemand(tk)) return
+        tk!!
+        val tile = Triple(key.z, key.x, key.y)
+        pool.submit(
+            tile, RenderPool.PRIORITY_TABLE,
+            work = { _ ->
+                try {
+                    if (isCurrent(key)) {
+                        val tr = tc.region(tk)
+                        tc.setDemand(tr, region(key, sel).batch)
+                        tc.ensureTables(tr, tile)
+                    }
+                } catch (t: Throwable) {
+                    // Stale data or a failed region query: the next request asks again.
+                } finally {
+                    tc.demandDone(tk)
+                }
+            },
+            onCancelled = { tc.demandDone(tk) },
+        )
+    }
+
+    /** Memory pressure ([android.content.ComponentCallbacks2.onTrimMemory]): sheds terrain memory, see [TerrainCoordinator.trimMemory]. */
+    fun onTrimMemory(level: Int) {
+        if (level < android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) return
+        terrain?.trimMemory()
+        synchronized(terrainPrepared) { terrainPrepared.clear() }
+    }
+
     private fun terrainVersion(
         selectionId: String, stamp: String, etag: String, z: Int, x: Int, y: Int, create: Boolean = false, recheck: Boolean = false,
     ): Long {
@@ -170,6 +207,7 @@ class CoverageTileService internal constructor(
         }
         val version = terrainVersion(tile.selectionId, stamp, tile.patternsEtag, tile.z, tile.x, tile.y, create = true, recheck = true)
         val key = TileKey(tile.z, tile.x, tile.y, tile.selectionId, stamp, tile.patternsEtag, version)
+        ensureDemand(key, sel)
         return rawTile(key, sel).thenApply { TerrariumEncoder.encode(it.rsrp, tile.view, it.prob) }
     }
 
@@ -184,10 +222,11 @@ class CoverageTileService internal constructor(
     /** Tiles the viewport needs; other queued or running renders are cancelled. */
     fun setVisible(tiles: Set<Triple<Int, Int, Int>>) {
         cancelStale()
-        pool.setVisible(tiles)
         val sel = selection.value
         val stamp = towers.stamp()
+        // The coordinator learns the new view first, so jobs the pool cancels below are seen as dropped by a pan.
         terrain?.onVisible(tiles, if (sel == null || stamp == null) null else TerrainCoordinator.Context(sel.cacheId(), stamp, patternsEtag()))
+        pool.setVisible(tiles)
     }
 
     /**
@@ -342,7 +381,9 @@ class CoverageTileService internal constructor(
     private fun preparedFor(key: TileKey, sel: CoverageSelection, region: Region): PreparedRegion {
         val tc = terrain
         if (tc == null || key.terrainVersion == 0L) return region.prepared!!
-        val tr = tc.region(tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y))
+        val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y)
+            ?: return region.prepared!!
+        val tr = tc.region(tk)
         tc.setDemand(tr, region.batch)
         val snap = tc.snapshot(tr)
         if (snap.version != key.terrainVersion) throw TileCancelledException()

@@ -38,7 +38,7 @@ interface NetworkMonitor {
     fun isMetered(): Boolean
 }
 
-/** [NetworkMonitor] following the default network through a [ConnectivityManager] callback (needs ACCESS_NETWORK_STATE). */
+/** [NetworkMonitor] following the default network through a [ConnectivityManager] callback (needs ACCESS_NETWORK_STATE); online = INTERNET and VALIDATED. */
 class ConnectivityNetworkMonitor(context: Context) : NetworkMonitor {
     private val _unmetered = MutableStateFlow(false)
     override val unmetered: StateFlow<Boolean> get() = _unmetered
@@ -53,7 +53,8 @@ class ConnectivityNetworkMonitor(context: Context) : NetworkMonitor {
                 cm.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
                     override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                         update(
-                            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+                            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED),
                             !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED),
                         )
                     }
@@ -81,6 +82,7 @@ class ConnectivityNetworkMonitor(context: Context) : NetworkMonitor {
  * scope for background work. Without it the service renders with the quick model only.
  *
  * @param settleMs how long the camera must rest before auto-caching starts.
+ * @param minBumpMs minimum spacing of terrain-epoch bumps.
  */
 class TerrainSupport(
     val chunks: DemChunkStore,
@@ -89,4 +91,7 @@ class TerrainSupport(
     val network: NetworkMonitor,
     val scope: CoroutineScope,
     val settleMs: Long = 1_500,
+    /** At most one terrain-epoch bump (a tile refetch for the whole view) per this many ms. */
+    val minBumpMs: Long = 1_000,
+    val clock: () -> Long = System::currentTimeMillis,
 )

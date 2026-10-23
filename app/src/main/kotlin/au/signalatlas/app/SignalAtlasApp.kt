@@ -5,6 +5,11 @@ import androidx.work.Configuration
 import au.signalatlas.core.update.TowerUpdateWorkerFactory
 
 class SignalAtlasApp : Application(), Configuration.Provider {
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (::container.isInitialized) container.onTrimMemory(level)
+    }
+
     lateinit var container: AppContainer
         private set
 

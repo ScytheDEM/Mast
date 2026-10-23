@@ -72,6 +72,7 @@ internal class TerrainRig(
     towers: FakeTowers = FakeTowers(),
     renderer: FakeRenderer = FakeRenderer(),
     settleMs: Long = 20,
+    minBumpMs: Long = 0,
 ) {
     val chunkStore = DemChunkStore(chunkDir, { Long.MAX_VALUE })
     val network = FakeNetwork(online, metered)
@@ -79,7 +80,7 @@ internal class TerrainRig(
     val tableStore = TerrainTableStore(tableDir)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val rig = Rig(tmp.newFolder(), threads, towers = towers, renderer = renderer,
-        terrain = TerrainSupport(chunkStore, source, tableStore, network, scope, settleMs))
+        terrain = TerrainSupport(chunkStore, source, tableStore, network, scope, settleMs, minBumpMs))
     val service get() = rig.service
     val renderer get() = rig.renderer
     val cache get() = rig.cache

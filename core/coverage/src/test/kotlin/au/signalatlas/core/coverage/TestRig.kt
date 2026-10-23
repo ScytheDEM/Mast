@@ -113,6 +113,8 @@ class FakeRenderer : TileRenderer {
     val buildCalls = CopyOnWriteArrayList<Pair<Float, Float>>()
     /** While true a table build spins until released or cancelled. */
     @Volatile var holdBuilds = false
+    /** Builds after the first [holdAfter] calls spin until released or cancelled. */
+    @Volatile var holdAfter = Int.MAX_VALUE
     /** The table returned for (freq, hTx). */
     val tableFor = java.util.concurrent.ConcurrentHashMap<Pair<Float, Float>, TerrainTable>()
 
@@ -121,7 +123,7 @@ class FakeRenderer : TileRenderer {
     ): TerrainTable? {
         require(dem.isComplete) { "incomplete DEM" }
         buildCalls += freqMhz to hTxAgl
-        while (holdBuilds && !cancel.isCancelled) Thread.sleep(2)
+        while ((holdBuilds || buildCalls.size > holdAfter) && !cancel.isCancelled) Thread.sleep(2)
         if (cancel.isCancelled) return null
         val t = TerrainTable(java.nio.ByteBuffer.allocateDirect(TerrainTable.CELLS), java.nio.ByteBuffer.allocateDirect(TerrainTable.MASK_BYTES))
         tableFor[freqMhz to hTxAgl] = t

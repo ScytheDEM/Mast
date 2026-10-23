@@ -365,6 +365,7 @@ class TerrainServiceTest {
     }
 
     @Test fun onlyTheNearestTablesPerRegionAreBuilt() {
+        assertThat(TerrainCoordinator.MAX_TABLES_PER_REGION).isEqualTo(128)
         val n = TerrainCoordinator.MAX_TABLES_PER_REGION + 40
         val towers = FakeTowers().apply {
             batchFor = { sydneyBatch(FloatArray(n) { 700f + 10 * it }, FloatArray(n) { 30f }, sameSite = true) }
@@ -377,4 +378,127 @@ class TerrainServiceTest {
         // Published in batches along the way, once more when the queue drained.
         assertThat(r.service.terrainEpoch.value).isAtLeast(TerrainCoordinator.MAX_TABLES_PER_REGION / TerrainCoordinator.PUBLISH_BATCH.toLong())
     }
+
+    @Test fun aPanThatDrainsCancelledJobsDoesNotPublishStagedTablesOrBumpTheEpoch() {
+        val r = rig()
+        r.renderer.holdAfter = 1 // the first table finishes (staged), the second keeps building
+        r.render()
+        waitUntil { r.renderer.buildCalls.size == 2 && r.renderer.builds.size == 1 }
+        val far = Triple(10, r.at.x + 40, r.at.y)
+        r.service.setVisible(setOf(far)) // cancels the second build; pending drains with one table staged
+        Thread.sleep(200)
+        assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
+        val v0 = r.key()
+        r.renderer.holdAfter = Int.MAX_VALUE
+        r.service.setVisible(setOf(r.tile)) // back: the missing table is rebuilt and then everything publishes at once
+        r.awaitEpochAbove(0)
+        assertThat(r.service.terrainEpoch.value).isEqualTo(1L)
+        assertThat(r.key()).isNotEqualTo(v0)
+        assertThat(r.renderer.builds).hasSize(2)
+    }
+
+    @Test fun aTileCrossingPanOfAVisibleRegionDoesNotBumpTheEpoch() {
+        val r = rig()
+        val a = Triple(11, r.at.x * 2, r.at.y * 2)
+        val b = Triple(11, r.at.x * 2 + 1, r.at.y * 2)
+        r.renderer.holdAfter = 1
+        r.service.setVisible(setOf(a, b))
+        r.render(a.first, a.second, a.third)
+        waitUntil { r.renderer.buildCalls.size == 2 && r.renderer.builds.size == 1 }
+        r.service.setVisible(setOf(b)) // a leaves, b stays in the same region: the cancelled job is requeued under b
+        Thread.sleep(200)
+        assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
+        r.renderer.holdAfter = Int.MAX_VALUE
+        waitUntil { r.renderer.builds.size == 2 }
+        r.awaitEpochAbove(0)
+    }
+
+    @Test fun epochBumpsAreCoalescedToOnePerWindow() {
+        val r = TerrainRig(tmp, chunksPresent = false, minBumpMs = 400).also { rig = it }
+        r.putChunks(r.regionChunks)
+        r.service.setVisible(setOf(r.tile))
+        r.service.onTrimMemory(0) // keeps the rig referenced; no-op below RUNNING_LOW
+        r.render()
+        r.awaitEpochAbove(0) // the tables' publication is the first bump of this service
+        val t0 = System.nanoTime()
+        // Two more version changes right away (chunks of a second region arriving, then tables): one deferred bump.
+        val before = r.service.terrainEpoch.value
+        r.service.setVisible(setOf(Triple(10, r.at.x + 1, r.at.y)))
+        r.putChunks(ChunkMathRegion.of(r.at.x + 1, r.at.y))
+        r.render(10, r.at.x + 1, r.at.y)
+        r.render(10, r.at.x + 1, r.at.y)
+        waitUntil(what = "coalesced bump") { r.service.terrainEpoch.value > before }
+        assertThat(r.service.terrainEpoch.value).isEqualTo(before + 1)
+        assertThat((System.nanoTime() - t0) / 1_000_000).isAtLeast(300L)
+    }
+
+    @Test fun belowZ10NoTerrainRegionIsEverCreatedAndTilesAreQuickOnly() {
+        val r = rig()
+        for (z in 8..9) {
+            val x = r.at.x shr (10 - z)
+            val y = r.at.y shr (10 - z)
+            r.render(z, x, y)
+            val key = r.key(z, x, y)
+            assertThat(key.terrainVersion).isEqualTo(0L)
+            assertThat(accuracyOf(r, key)).isEqualTo(Accuracy.QUICK)
+        }
+        r.service.setVisible(setOf(Triple(9, r.at.x shr 1, r.at.y shr 1)))
+        Thread.sleep(100)
+        assertThat(r.renderer.buildCalls).isEmpty()
+        assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
+        // z10 does get one (chunks are present) and builds.
+        r.render()
+        r.awaitEpochAbove(0)
+    }
+
+    @Test fun atMostTwelveTerrainRegionsAreKept() {
+        val r = rig(chunks = false)
+        val k0 = r.key()
+        repeat(TerrainCoordinator.MAX_REGIONS + 2) { r.key(10, r.at.x + 1 + it, r.at.y) }
+        // The first region was evicted: it is recreated from scratch (still no chunks -> 0), and peeking another is cheap.
+        assertThat(TerrainCoordinator.MAX_REGIONS).isEqualTo(12)
+        assertThat(r.key()).isEqualTo(k0)
+        r.putChunks(r.regionChunks)
+        assertThat(r.key().terrainVersion).isEqualTo(0L) // recheck only happens on a tile request
+        r.render()
+        assertThat(r.key().terrainVersion).isNotEqualTo(0L)
+    }
+
+    @Test fun trimMemoryDropsTheTableLruAndOffScreenRegionsButTheDiskTablesStillServe() {
+        val r = rig()
+        r.service.setVisible(setOf(r.tile))
+        r.render()
+        r.awaitEpochAbove(0)
+        r.render()
+        val withTables = r.key()
+        assertThat(r.tableStore.memorySize).isEqualTo(2)
+        r.service.onTrimMemory(5) // below RUNNING_LOW: nothing
+        assertThat(r.tableStore.memorySize).isEqualTo(2)
+        r.service.onTrimMemory(android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW)
+        assertThat(r.tableStore.memorySize).isEqualTo(0)
+        assertThat(r.key()).isEqualTo(withTables) // the region on screen keeps its snapshot
+
+        r.service.setVisible(setOf(Triple(10, r.at.x + 40, r.at.y)))
+        r.service.onTrimMemory(android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
+        // The region left the screen and was dropped: rebuilt from the chunks, its two tables come from disk, no builds.
+        val builds = r.renderer.buildCalls.size
+        r.service.setVisible(setOf(r.tile))
+        r.render()
+        
+        r.awaitEpochAbove(1)
+        assertThat(r.renderer.buildCalls).hasSize(builds)
+    }
+
+    @Test fun estimateAndIncreaseWithoutAViewAnswerNoViewInsteadOfCrashing(): Unit = runBlocking {
+        val r = rig(chunks = false)
+        r.service.setVisible(setOf(r.tile))
+        r.service.setVisible(emptySet()) // the view becomes null
+        assertThat(r.service.estimateIncreaseBytes()).isNull()
+        assertThat(r.service.increaseResolution(true).toList()).containsExactly(FetchProgress.Failed("no view"))
+    }
+}
+
+/** Chunks of the z10 tile (x, y). */
+private object ChunkMathRegion {
+    fun of(x: Int, y: Int) = au.signalatlas.core.geo.ChunkMath.chunksFor(TileMath.bounds(10, x, y), 40.0)
 }

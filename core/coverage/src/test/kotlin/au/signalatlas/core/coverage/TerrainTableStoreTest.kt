@@ -33,21 +33,20 @@ class TerrainTableStoreTest {
         val dir = tmp.newFolder()
         TerrainTableStore(dir).put(key(), table(1))
         val file = tbl(dir).single()
-        assertThat(file.name).isEqualTo("1x-1_3500_30.tbl")
+        assertThat(file.name).isEqualTo("1x-1_3500_30_7.tbl")
         assertThat(file.parentFile.name).isEqualTo("s1")
         assertThat(file.length()).isEqualTo(TerrainTableStore.FILE_BYTES.toLong())
         same(TerrainTableStore(dir).get(key())!!, table(1))
     }
 
-    @Test fun aDifferentDemRectangleIsAMissButKeepsTheFileUntilRebuilt() {
+    @Test fun aDifferentDemRectangleIsAMissWithItsOwnFile() {
         val dir = tmp.newFolder()
         TerrainTableStore(dir).put(key(dem = 7), table(1))
         val fresh = TerrainTableStore(dir)
         assertThat(fresh.get(key(dem = 8))).isNull()
-        assertThat(tbl(dir)).hasSize(1)
         fresh.put(key(dem = 8), table(2))
-        assertThat(tbl(dir)).hasSize(1) // replaced, same file name
-        assertThat(TerrainTableStore(dir).get(key(dem = 7))).isNull()
+        assertThat(tbl(dir)).hasSize(2) // the rectangles never overwrite each other
+        same(TerrainTableStore(dir).get(key(dem = 7))!!, table(1))
         same(TerrainTableStore(dir).get(key(dem = 8))!!, table(2))
     }
 
@@ -102,6 +101,15 @@ class TerrainTableStoreTest {
         assertThat(File(dir, "old").exists()).isFalse()
         assertThat(tbl(dir).map { it.parentFile.name }).containsExactly("new")
         assertThat(s.diskUsage).isEqualTo(TerrainTableStore.FILE_BYTES.toLong())
+    }
+
+    @Test fun dropMemoryKeepsTheFiles() {
+        val dir = tmp.newFolder()
+        val s = TerrainTableStore(dir)
+        s.put(key(1), table(1))
+        s.dropMemory()
+        assertThat(s.memorySize).isEqualTo(0)
+        same(s.get(key(1))!!, table(1))
     }
 
     @Test fun writesAreAtomicNoPartialFilesAreVisible() {

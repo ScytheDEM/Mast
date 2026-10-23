@@ -30,12 +30,15 @@ class ConnectivityNetworkMonitorTest {
         assertThat(m.unmetered.value).isFalse()
 
         val net = Network::class.java.getDeclaredConstructor(Int::class.javaPrimitiveType).apply { isAccessible = true }.newInstance(1)
+        // Connected but not validated (captive portal, no route): not online.
         callback().onCapabilitiesChanged(net, caps(NetworkCapabilities.NET_CAPABILITY_INTERNET))
+        assertThat(m.isOnline()).isFalse()
+        callback().onCapabilitiesChanged(net, caps(NetworkCapabilities.NET_CAPABILITY_INTERNET, NetworkCapabilities.NET_CAPABILITY_VALIDATED))
         assertThat(m.isOnline()).isTrue()
         assertThat(m.isMetered()).isTrue() // no NOT_METERED capability
         assertThat(m.unmetered.value).isFalse()
 
-        callback().onCapabilitiesChanged(net, caps(NetworkCapabilities.NET_CAPABILITY_INTERNET, NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
+        callback().onCapabilitiesChanged(net, caps(NetworkCapabilities.NET_CAPABILITY_INTERNET, NetworkCapabilities.NET_CAPABILITY_VALIDATED, NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
         assertThat(m.isMetered()).isFalse()
         assertThat(m.unmetered.value).isTrue()
 

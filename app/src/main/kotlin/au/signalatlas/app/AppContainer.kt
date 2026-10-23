@@ -131,6 +131,9 @@ class AppContainer(context: Context) {
         )
     }
 
+    /** Memory pressure: the coverage service sheds its terrain memory. */
+    fun onTrimMemory(level: Int) = coverage.onTrimMemory(level)
+
     private fun renderThreads(): Int {
         val pm = app.getSystemService(PowerManager::class.java)
         val sdk = Build.VERSION.SDK_INT

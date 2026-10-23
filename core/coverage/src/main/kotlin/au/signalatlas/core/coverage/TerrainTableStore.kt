@@ -17,23 +17,23 @@ internal data class TableKey(
     val stamp: String, val latE5: Int, val lonE5: Int, val fkey: Int, val hkey: Int, val demId: Long,
 ) {
     val siteId: String get() = "${latE5}x$lonE5"
-    val fileName: String get() = "${siteId}_${fkey}_$hkey.tbl"
+    val fileName: String get() = "${siteId}_${fkey}_${hkey}_${java.lang.Long.toHexString(demId)}.tbl"
 }
 
 /**
  * Terrain tables of the current tower extract: a memory LRU of [memoryTables] tables (about 100 KiB each) over a disk
- * cache `dir/<stamp>/<siteId>_<fkey>_<hkey>.tbl`, kept under [diskBytes] by evicting the least recently used file.
+ * cache `dir/<stamp>/<siteId>_<fkey>_<hkey>_<demId>.tbl`, kept under [diskBytes] by evicting the least recently used file.
  *
  * File layout (little-endian): magic `"SATB"`, version int, demId long, the 92,160 table bytes, the 11,520 mask
- * bytes, CRC32 of everything before it. A file that fails magic, version, length or CRC is a miss and is deleted; one
- * written for another DEM rectangle ([TableKey.demId]) is a miss too and is replaced when the table is rebuilt.
+ * bytes, CRC32 of everything before it. A file that fails magic, version, length or CRC is a miss and is deleted. The
+ * DEM rectangle ([TableKey.demId]) is in the file name, so rectangles never overwrite each other, and checked in the header.
  * Writes are atomic (temp file, rename). The first use of a stamp deletes the directories of other stamps. Thread-safe;
  * file IO happens outside the locks.
  */
 class TerrainTableStore(
     private val dir: File,
     private val diskBytes: Long = 128L shl 20,
-    private val memoryTables: Int = 256,
+    private val memoryTables: Int = 192,
 ) {
     private val memory = object : LinkedHashMap<TableKey, TerrainTable>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TableKey, TerrainTable>) = size > memoryTables
@@ -48,6 +48,9 @@ class TerrainTableStore(
 
     internal val memorySize: Int get() = synchronized(memory) { memory.size }
     internal val diskUsage: Long get() = synchronized(diskLock) { index(); diskUsed }
+
+    /** Drops the memory LRU (memory pressure); the files stay. */
+    internal fun dropMemory() = synchronized(memory) { memory.clear() }
 
     /** The table for [key] from memory or disk, or null. May read a file: call off the main thread. */
     internal fun get(key: TableKey): TerrainTable? {

@@ -51,6 +51,7 @@ internal class TerrainRegion(val key: TerrainKey, val bounds: GeoBounds, val chu
     var available = false
     var snapshot = TerrainSnapshot(0L, emptyMap())
     var demand: List<Demand>? = null
+    var demandRequested = false
     val pending = HashSet<TableKey>()
     val staged = HashMap<TableKey, TerrainTable>()
     val failed = HashSet<TableKey>()
@@ -61,13 +62,13 @@ internal class TerrainRegion(val key: TerrainKey, val bounds: GeoBounds, val chu
 }
 
 /**
- * The terrain half of [CoverageTileService] (Task 5). Per [TerrainRegion] (the z10 tile containing a tile, expanded by
+ * The terrain half of [CoverageTileService] (Task 5). Per [TerrainRegion] (the z10 tile containing a tile at z >= 10, expanded by
  * 40 km for the elevation chunks):
  *
  * - **Availability.** Chunks = `ChunkMath.chunksFor(bounds, 40 km)`. All stored: the region is available and builds
  *   tables; otherwise it is quick-only and its [versionOf] is 0. Newly stored chunks ([onChunksChanged]) make it
  *   available and change its version.
- * - **Tables.** Wanted tables ([Demand]: the 256 nearest sites' (site, frequency key, height key) triples whose carriers
+ * - **Tables.** Wanted tables ([Demand]: the 128 nearest sites' (site, frequency key, height key) triples whose carriers
  *   reach the region) are built as [RenderPool] jobs one priority below visible renders, deduplicated per key, read
  *   from / written to [TerrainTableStore]. The DEM mosaic is opened by the first build and closed when the region
  *   has nothing pending (or is evicted). A mosaic with a missing chunk (evicted since the check) is dropped and the
@@ -106,6 +107,9 @@ internal class TerrainCoordinator(
     @Volatile private var view: View? = null
     private var settleJob: Job? = null
     private var autoJob: Job? = null
+    private val bumpLock = Any()
+    private var lastBump = Long.MIN_VALUE
+    private var bumpScheduled = false
     private var autoNeed: Set<ChunkId> = emptySet()
     @Volatile private var autoFailed: Set<ChunkId>? = null
 
@@ -117,16 +121,17 @@ internal class TerrainCoordinator(
 
     // ---- regions and versions -------------------------------------------------------------------------------------
 
-    fun keyFor(selectionId: String, stamp: String, etag: String, z: Int, x: Int, y: Int): TerrainKey {
-        val zf = minOf(z, TERRAIN_ZOOM)
-        return TerrainKey(selectionId, stamp, etag, zf, x shr (z - zf), y shr (z - zf))
-    }
+    /** The region of a tile; null below z10 (Ruling QQ: z8 and z9 are quick-only and never get a region). */
+    fun keyFor(selectionId: String, stamp: String, etag: String, z: Int, x: Int, y: Int): TerrainKey? =
+        if (z < TERRAIN_ZOOM) null
+        else TerrainKey(selectionId, stamp, etag, TERRAIN_ZOOM, x shr (z - TERRAIN_ZOOM), y shr (z - TERRAIN_ZOOM))
 
     /**
      * The version of the region of [k] (0 = quick only), creating it on first use. [recheck] looks again for chunks
      * stored since the region last found some missing (what an incoming tile request does).
      */
-    fun versionOf(k: TerrainKey, recheck: Boolean): Long {
+    fun versionOf(k: TerrainKey?, recheck: Boolean): Long {
+        if (k == null) return 0L
         var changed = false
         val v = synchronized(lock) {
             val tr = regionLocked(k)
@@ -138,7 +143,7 @@ internal class TerrainCoordinator(
     }
 
     /** The version of an existing region, or 0 without creating one. */
-    fun peekVersion(k: TerrainKey): Long = synchronized(lock) { regions[k]?.snapshot?.version ?: 0L }
+    fun peekVersion(k: TerrainKey?): Long = if (k == null) 0L else synchronized(lock) { regions[k]?.snapshot?.version ?: 0L }
 
     fun region(k: TerrainKey): TerrainRegion = synchronized(lock) { regionLocked(k) }
 
@@ -173,9 +178,34 @@ internal class TerrainCoordinator(
         return if (h == 0L) 1L else h
     }
 
+    /**
+     * A version changed. The epoch (which makes MapLibre refetch everything) goes up at most once per
+     * [TerrainSupport.minBumpMs]: a bump inside that window is deferred and covers every change until then.
+     */
     private fun bumped() {
-        _epoch.value += 1
-        onChange()
+        val delayMs = synchronized(bumpLock) {
+            val now = support.clock()
+            val wait = lastBump + support.minBumpMs - now
+            if (lastBump == Long.MIN_VALUE || wait <= 0) {
+                lastBump = now
+                0L
+            } else {
+                if (bumpScheduled) return
+                bumpScheduled = true
+                wait
+            }
+        }
+        if (delayMs == 0L) {
+            _epoch.value += 1
+            onChange()
+        } else {
+            support.scope.launch {
+                delay(delayMs)
+                synchronized(bumpLock) { bumpScheduled = false; lastBump = support.clock() }
+                _epoch.value += 1
+                onChange()
+            }
+        }
     }
 
     fun snapshot(tr: TerrainRegion): TerrainSnapshot = synchronized(lock) { tr.snapshot }
@@ -191,6 +221,21 @@ internal class TerrainCoordinator(
     }
 
     // ---- demand and table builds ----------------------------------------------------------------------------------
+
+    /**
+     * True once for a usable region of [k] that has no table demand yet and nobody is computing it: its tiles may be
+     * served from the tile cache (the region was recreated after an eviction), so no render will ask for tables.
+     * Pair with [demandDone].
+     */
+    fun claimDemand(k: TerrainKey?): Boolean {
+        if (k == null) return false
+        return synchronized(lock) {
+            val tr = regionLocked(k)
+            if (tr.retired || !tr.available || tr.demand != null || tr.demandRequested) false else { tr.demandRequested = true; true }
+        }
+    }
+
+    fun demandDone(k: TerrainKey) = synchronized(lock) { regions[k]?.demandRequested = false }
 
     /** Records which tables [tr] wants, from [batch], the first time (the wanted set is stable for a region). */
     fun setDemand(tr: TerrainRegion, batch: CarrierBatch) {
@@ -295,7 +340,11 @@ internal class TerrainCoordinator(
             if (counted) { tr.running--; cancel?.let { tr.tokens -= it } }
             if (failed) tr.failed += key
             if (table != null && !tr.retired && tr.available) tr.staged[key] = table
-            if (!tr.retired && tr.available && tr.staged.isNotEmpty() && (tr.pending.isEmpty() || tr.staged.size >= PUBLISH_BATCH)) {
+            // A cancelled job (null table, no failure) never publishes: a pan must not change versions.
+            val cancelled = table == null && !failed
+            if (!cancelled && !tr.retired && tr.available && tr.staged.isNotEmpty() &&
+                (tr.pending.isEmpty() || tr.staged.size >= PUBLISH_BATCH)
+            ) {
                 published = setSnapshotLocked(tr, tr.snapshot.tables + tr.staged)
                 tr.staged.clear()
             }
@@ -311,9 +360,7 @@ internal class TerrainCoordinator(
     /** Caller holds [lock]. */
     private fun visibleTileOfLocked(tr: TerrainRegion): TileAddress? {
         val ctx = context ?: return null
-        return view?.tiles?.firstOrNull { (z, x, y) ->
-            z >= MIN_TILE_ZOOM && keyFor(ctx.selectionId, ctx.stamp, ctx.etag, z, x, y) == tr.key
-        }
+        return view?.tiles?.firstOrNull { (z, x, y) -> keyFor(ctx.selectionId, ctx.stamp, ctx.etag, z, x, y) == tr.key }
     }
 
     /** Caller holds [lock]: the mosaic is released once nothing builds or waits. */
@@ -352,7 +399,8 @@ internal class TerrainCoordinator(
         if (ctx != null) {
             // Tables of a region whose tile is still on screen may have been dropped with a panned-away tile's job.
             for (t in top) {
-                val tr = synchronized(lock) { regions[keyFor(ctx.selectionId, ctx.stamp, ctx.etag, t.first, t.second, t.third)] }
+                val k = keyFor(ctx.selectionId, ctx.stamp, ctx.etag, t.first, t.second, t.third) ?: continue
+                val tr = synchronized(lock) { regions[k] }
                 if (tr != null) ensureTables(tr, t)
             }
         }
@@ -366,14 +414,14 @@ internal class TerrainCoordinator(
     }
 
     /** Every chunk the current view needs (viewport + 40 km) that is not stored. Null without a view. */
-    private fun missingForView(): Set<ChunkId>? =
-        view?.let { v -> ChunkMath.chunksFor(v.bounds, MARGIN_KM).filter { !support.chunks.has(it) }.toSet() }
+    private fun missingFor(v: View): Set<ChunkId> =
+        ChunkMath.chunksFor(v.bounds, MARGIN_KM).filter { !support.chunks.has(it) }.toSet()
 
     /** Background fetch of the view's missing chunks: only z >= 10, only on an unmetered network, no prompts. */
     private fun autoCache() {
         val v = view ?: return
         if (v.z < TERRAIN_ZOOM || !support.network.unmetered.value) return
-        val need = missingForView() ?: return
+        val need = missingFor(v)
         if (need.isEmpty() || need == autoFailed) return
         synchronized(this) {
             // A fetch that already covers this view keeps going (a second trigger must not restart it).
@@ -398,6 +446,28 @@ internal class TerrainCoordinator(
         }
     }
 
+    /**
+     * Memory pressure: drops the table memory LRU, every mosaic no build is using, and the regions (with their table
+     * snapshots) that are not on screen; disk files stay, so they come back cheaply.
+     */
+    fun trimMemory() {
+        support.tables.dropMemory()
+        synchronized(lock) {
+            val ctx = context
+            val shown = if (ctx == null) emptySet() else view?.tiles?.mapNotNull {
+                keyFor(ctx.selectionId, ctx.stamp, ctx.etag, it.first, it.second, it.third)
+            }?.toSet() ?: emptySet()
+            val it = regions.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                if (e.key !in shown) { it.remove(); retireLocked(e.value) }
+            }
+            for (tr in regions.values) {
+                if (tr.running == 0) { tr.handle?.close(); tr.handle = null }
+            }
+        }
+    }
+
     /** Elevation chunks were stored: regions that were waiting for them become available and change version. */
     fun onChunksChanged() {
         var changed = false
@@ -412,7 +482,8 @@ internal class TerrainCoordinator(
     /** Bytes [increaseResolution] would download; null while offline, without a view, or below z10. */
     suspend fun estimateBytes(): Long? {
         if (!support.network.isOnline()) return null
-        val need = missingForView()?.takeIf { view!!.z >= TERRAIN_ZOOM } ?: return null
+        val v = view?.takeIf { it.z >= TERRAIN_ZOOM } ?: return null
+        val need = missingFor(v)
         return if (need.isEmpty()) 0L else support.source.estimateBytes(need)
     }
 
@@ -424,7 +495,7 @@ internal class TerrainCoordinator(
             v == null -> send(FetchProgress.Failed("no view"))
             v.z < TERRAIN_ZOOM -> send(FetchProgress.Failed("zoom in"))
             else -> {
-                val need = missingForView()!!
+                val need = missingFor(v)
                 if (need.isEmpty()) {
                     send(FetchProgress.Done)
                     return@channelFlow
@@ -455,9 +526,8 @@ internal class TerrainCoordinator(
         /** Elevation margin around a region (Global Constraints: terrain need = tile bounds + 40 km). */
         const val MARGIN_KM = 40.0
         const val TERRAIN_ZOOM = 10
-        const val MIN_TILE_ZOOM = CoverageTileService.MIN_ZOOM
-        const val MAX_REGIONS = 8
-        const val MAX_TABLES_PER_REGION = 256
+        const val MAX_REGIONS = 12
+        const val MAX_TABLES_PER_REGION = 128
         const val PUBLISH_BATCH = 64
         private const val E5 = 100_000.0
         private const val FNV_OFFSET = -3750763034362895579L // 0xcbf29ce484222325
