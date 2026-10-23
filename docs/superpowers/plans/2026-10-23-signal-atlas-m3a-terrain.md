@@ -72,8 +72,8 @@ model still shows instantly wherever terrain isn't downloaded yet.
 1. **Profile:** samples along the great circle from the site (tx) to the point (rx) every 90 m, plus the endpoint.
    - Each sample's height is the DEM, interpolated bilinearly in lat/lon from chunk samples.
    - tx height above sea level = DEM(site) + `h_tx` (ACMA height AGL); rx height = DEM(point) + 1.5 m.
-2. **Earth curvature:** effective radius `a_e = k·6371 km` with `k = 4/3`. A sample's effective height is
-   `h_i − d_i·(d − d_i)/(2·a_e)`, with distances in metres.
+2. **Earth curvature:** effective radius `a_e = k·6371 km` with `k = 4/3`, applied as in P.526: intermediate heights are
+   raised by the bulge `+ d_i·(d − d_i)/(2·a_e)` (equivalently `+500·C_e·d_i(d−d_i)` in P.526 units).
 3. **Bullington, actual profile** (ITU-R P.526-16 §4.5.3, eqs. 41–51). With λ = c/f:
    - `S_tim = max_i (h_i + C_e·d_i·(d − d_i) − h_ts)/d_i` over interior samples, and `S_tr = (h_rs − h_ts)/d`.
    - If `S_tim < S_tr` (line of sight): `ν_max = max_i ((h_i + C_e·d_i(d−d_i)) − (h_ts(d−d_i) + h_rs·d_i)/d) · sqrt(0.002·d/(λ·d_i·(d−d_i)))`,
@@ -84,20 +84,27 @@ model still shows instantly wherever terrain isn't downloaded yet.
    - Distances in km where P.526 uses km. `C_e = 1/a_e`. Follow the recommendation's units exactly and cite equation
      numbers in comments.
    - `L_bulla = L_uc + (1 − exp(−L_uc/6))·(10 + 0.02·d_km)`.
-4. **Bullington, smooth profile:** the same, with all interior heights set to the smooth-earth surface (0 above the
-   straight line between ground ends, per P.526 eq. 52's effective-height construction: `h_ts' = h_ts − h_st`,
-   `h_rs' = h_rs − h_sr`, where `h_st`/`h_sr` come from the least-squares smooth surface). The result is `L_bulls`.
-5. **Terrain excess loss** `L_terr = max(0, L_bulla − L_bulls)`, the loss caused by real terrain beyond what a smooth
-   earth produces. The tile model becomes `RSRP = eirpRe − A − PL_quick − L_terr`. This is a deliberate hybrid with the
-   quick models, which already represent smooth-earth propagation; it replaces the spec's full P.1812 (recorded as a spec
-   update) because it is continuous with M2 predictions and avoids double-counting clutter.
+4. **Reference profile:** the straight ground line between the tx ground elevation `g_t = DEM(site)` and the rx
+   ground elevation `g_r = DEM(point)`, i.e. interior heights `g_t + (g_r − g_t)·d_i/d`. Use the same terminal heights
+   (`g_t + h_tx`, `g_r + 1.5`) and the same earth-curvature term. Compute the uncorrected knife-edge loss `L_uc_ref` with
+   the rule-3 construction on this profile.
+5. **Terrain excess loss** `L_terr = max(0, L_uc_actual − L_uc_ref)`, where `L_uc_actual` is the rule-3 `L_uc` on the real
+   profile. The eq. 49 empirical correction `(1 − exp(−L_uc/6))(10 + 0.02·d)` is **not** applied to either.
+   - The quick models already include the ground and clutter effects near the terminals of a path over gently sloping
+     ground. So only terrain protruding above the terminal-to-terminal ground line adds loss, and the reference cancels
+     near-terminal Fresnel effects.
+   - The tile model becomes `RSRP = eirpRe − A − PL_quick − L_terr`. This is a deliberate hybrid with the quick models
+     (recorded as a spec update). It replaces the spec's full P.1812, because it is continuous with M2 predictions and
+     avoids double-counting clutter. (Amended 2026-10-23 after the reference showed the smooth-earth/eq.-49 form
+     double-counted 6–10 dB in valleys and saturated the cap.)
 6. **Polar table per (site, frequency key):**
    - 360 radials at bearings 0..359 (true north) and 256 range bins at `r_j = 50 m · (80 000/50)^(j/255)`.
    - Each value is `L_terr` quantised to uint8 at 0.25 dB (cap 63.75 dB).
    - The renderer interpolates bilinearly in bearing (wrapped) and `ln r`. At r < 50 m the value is 0.
    - For r beyond the last bin, or points whose profile leaves the fetched chunks, the value is 0 (quick model), and
      the tile is labelled "Terrain" only if ≥ 95% of its covered pixels had full profiles.
-   - Frequency key: the carrier frequency rounded to 10 MHz. Carriers of a site in the same key share a table.
+   - Table key: (site, frequency rounded to 10 MHz, antenna height AGL rounded to 1 m). Carriers sharing a key share a
+     table, and λ uses the key frequency.
 7. **Variability:** σ is unchanged from M2. Probability, legend and codes are unchanged.
 
 ## Review Focus
@@ -153,7 +160,7 @@ data class ChunkId(val latIdx: Int, val lonIdx: Int); object ChunkMath { fun chu
 **Produces:**
 ```cpp
 struct DemGrid { double south, west; double stepDeg /*1/1200*/; int32_t rows, cols; const int16_t* h; }; // mosaic of chunks
-float bullingtonExcessDb(const float* heights, int32_t n, float stepM, float hTxAsl, float hRxAsl, float freqMhz); // rules 2–5
+float bullingtonExcessDb(const float* heights, int32_t n, float stepM, float totalDistM, float gTx, float gRx, float hTxAgl, float hRxAgl, float freqMhz); // rules 2–5
 int32_t buildPolarTable(const DemGrid&, double siteLat, double siteLon, float hTxAgl, float freqMhz, uint8_t* out /*360*256*/, uint8_t* coverageMask /*360*256 bits: profile complete*/, const volatile int32_t* cancel);
 ```
 - [ ] TDD against `profiles.csv` (±0.05 dB) and `tables.json` (±1 code).
