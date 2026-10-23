@@ -22,6 +22,7 @@ import au.signalatlas.core.coverage.CoverageSelection
 import au.signalatlas.core.model.GeoBounds
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SiteSummary
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -37,6 +38,7 @@ import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.tile.TileOperation
 import org.maplibre.android.style.expressions.Expression.color
 import org.maplibre.android.style.expressions.Expression.get
 import org.maplibre.android.style.expressions.Expression.has
@@ -103,28 +105,37 @@ class MapCameraState(initialLat: Double = -27.0, initialLon: Double = 134.0, ini
     }
 }
 
-private const val OVERLAY_SWAP_TIMEOUT_MS = 6_000L
+/** A safety net only: a swap waits for the new tiles (see [CoverageLayer.SwapGate]), however slowly they render. */
+private const val OVERLAY_SWAP_TIMEOUT_MS = 60_000L
 
 /**
- * Suspends until [sourceId] has delivered tiles and a frame has then rendered completely, or [timeoutMs] passes
- * (a swap must not wait forever on a stuck tile: the old pair is replaced anyway).
+ * Suspends until the tiles of [sourceId] are in (see [CoverageLayer.SwapGate]) or [timeoutMs] passes (a swap must not
+ * wait forever on a stuck tile: the old pair is replaced anyway).
  */
 private suspend fun awaitSourceRendered(mapView: MapView, sourceId: String, timeoutMs: Long) {
-    withTimeoutOrNull(timeoutMs) {
-        suspendCancellableCoroutine { cont ->
-            var changed = false
-            val onSource = MapView.OnSourceChangedListener { id -> if (id == sourceId) changed = true }
-            val onFrame = MapView.OnDidFinishRenderingFrameListener { fully, _, _ ->
-                if (fully && changed && cont.isActive) cont.resume(Unit)
-            }
-            mapView.addOnSourceChangedListener(onSource)
-            mapView.addOnDidFinishRenderingFrameListener(onFrame)
-            cont.invokeOnCancellation {
-                mapView.removeOnSourceChangedListener(onSource)
-                mapView.removeOnDidFinishRenderingFrameListener(onFrame)
-            }
-        }
+    val gate = CoverageLayer.SwapGate(sourceId)
+    var waiter: CancellableContinuation<Unit>? = null
+    fun open() { waiter?.takeIf { it.isActive }?.resume(Unit) }
+    val onTile = MapView.OnTileActionListener { op, x, y, z, _, _, source ->
+        if (gate.onTile(op.toTileEvent(), z, x, y, source)) open()
     }
+    val onIdle = MapView.OnDidBecomeIdleListener { if (gate.onIdle()) open() }
+    mapView.addOnTileActionListener(onTile)
+    mapView.addOnDidBecomeIdleListener(onIdle)
+    try {
+        withTimeoutOrNull(timeoutMs) { suspendCancellableCoroutine { waiter = it } }
+    } finally {
+        mapView.removeOnTileActionListener(onTile)
+        mapView.removeOnDidBecomeIdleListener(onIdle)
+    }
+}
+
+private fun TileOperation.toTileEvent(): CoverageLayer.TileEvent = when (this) {
+    TileOperation.RequestedFromNetwork -> CoverageLayer.TileEvent.NETWORK_REQUESTED
+    TileOperation.LoadFromNetwork -> CoverageLayer.TileEvent.NETWORK_LOADED
+    TileOperation.EndParse -> CoverageLayer.TileEvent.PARSED
+    TileOperation.Error, TileOperation.Cancelled -> CoverageLayer.TileEvent.FAILED
+    else -> CoverageLayer.TileEvent.OTHER
 }
 
 private const val SITES_SOURCE = "sites"

@@ -4,6 +4,7 @@ import au.signalatlas.core.data.CarrierBatch
 import au.signalatlas.core.data.PatternStore
 import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.model.Network
+import au.signalatlas.engine.AreaClass
 import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.engine.RenderedTile
@@ -136,15 +137,12 @@ class CoverageTileService internal constructor(
         val tile = Triple(key.z, key.x, key.y)
         pool.submit(
             tile, RenderPool.PRIORITY_TABLE,
-            work = { _ ->
+            work = { cancel ->
                 try {
                     // Not isCurrent: an evicted region peeks as version 0, exactly the case to recover. The region is
                     // recreated (at most once per data key) if the LRU or a trim dropped it meanwhile.
                     val tr = if (isDataCurrent(key)) tc.regionForDemand(tk) else null
-                    if (tr != null) {
-                        tc.setDemand(tr, region(key, sel).batch)
-                        tc.ensureTables(tr, tile)
-                    }
+                    if (tr != null && recordDemand(tc, tr, key, region(key, sel), cancel)) tc.ensureTables(tr, tile)
                 } catch (e: Exception) {
                     // Stale data or a failed region query: the next request asks again.
                 } finally {
@@ -385,13 +383,34 @@ class CoverageTileService internal constructor(
 
     private fun render(key: TileKey, sel: CoverageSelection, cancel: CancelToken): RenderedTile? {
         val region = region(key, sel)
-        val area = towers.withTowers { t ->
-            if (t.stamp != key.towerStamp) throw StaleTileException()
-            AreaClassifier.classify(
-                t.siteCountWithin(TileMath.centreLat(key.z, key.y), TileMath.centreLon(key.z, key.x), AreaClassifier.RADIUS_M),
-            )
-        } ?: throw StaleTileException()
-        return renderer.render(preparedFor(key, sel, region), key.z, key.x, key.y, area, THRESHOLD_DBM, cancel)
+        val area = areaOf(key.towerStamp, key.z, key.x, key.y)
+        return renderer.render(preparedFor(key, sel, region, cancel), key.z, key.x, key.y, area, THRESHOLD_DBM, cancel)
+    }
+
+    private fun areaOf(stamp: String, z: Int, x: Int, y: Int): AreaClass = towers.withTowers { t ->
+        if (t.stamp != stamp) throw StaleTileException()
+        AreaClassifier.classify(t.siteCountWithin(TileMath.centreLat(z, y), TileMath.centreLon(z, x), AreaClassifier.RADIUS_M))
+    } ?: throw StaleTileException()
+
+    /**
+     * Records [tr]'s table demand once. The tables that matter are those of the carriers that serve its pixels, so the
+     * region's z10 tile is rendered with the quick model first and its best servers lead the demand (most pixels
+     * first). False if [cancel] fired meanwhile (nothing recorded; the next render or demand job asks again).
+     */
+    private fun recordDemand(tc: TerrainCoordinator, tr: TerrainRegion, key: TileKey, region: Region, cancel: CancelToken): Boolean {
+        if (!tc.needsDemand(tr)) return true
+        val prepared = region.prepared ?: return true.also { tc.setDemand(tr, region.batch, IntArray(0)) }
+        val k = tr.key
+        val sample = renderer.render(prepared, k.zf, k.rx, k.ry, areaOf(key.towerStamp, k.zf, k.rx, k.ry), THRESHOLD_DBM, cancel)
+        if (sample == null || cancel.isCancelled) return false
+        val pixels = HashMap<Int, Int>()
+        for (i in 0 until RenderedTile.PIXELS) {
+            val c = sample.bestCarrier(i)
+            if (c >= 0) pixels.merge(prepared.batchIndex(c), 1, Int::plus)
+        }
+        val servers = pixels.entries.sortedByDescending { it.value }.map { it.key }.toIntArray()
+        tc.setDemand(tr, region.batch, servers)
+        return true
     }
 
     /**
@@ -399,14 +418,14 @@ class CoverageTileService internal constructor(
      * one built from exactly the tables of that version's snapshot (no mixing). Asks for the region's missing tables.
      * Fails with [TileCancelledException] if the region moved on to another version meanwhile.
      */
-    private fun preparedFor(key: TileKey, sel: CoverageSelection, region: Region): PreparedRegion {
+    private fun preparedFor(key: TileKey, sel: CoverageSelection, region: Region, cancel: CancelToken): PreparedRegion {
         val tc = terrain
         if (tc == null || key.terrainVersion == 0L) return region.prepared!!
         val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y)
             ?: return region.prepared!!
         // Dropped meanwhile (LRU or trim): no tile may be rendered quick under this key's terrain version.
         val tr = tc.existingRegion(tk) ?: throw TileCancelledException()
-        tc.setDemand(tr, region.batch)
+        if (!recordDemand(tc, tr, key, region, cancel)) throw TileCancelledException()
         val snap = tc.snapshot(tr)
         if (snap.version != key.terrainVersion) throw TileCancelledException()
         tc.ensureTables(tr, Triple(key.z, key.x, key.y))

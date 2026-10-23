@@ -1,6 +1,7 @@
 package au.signalatlas.core.coverage
 
 import au.signalatlas.core.geo.InsufficientStorageException
+import au.signalatlas.engine.TerrainTable
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -292,6 +293,33 @@ class TerrainServiceTest {
         assertThat(r.service.increaseResolution(true).toList()).containsExactly(FetchProgress.Done) // nothing left
     }
 
+    /**
+     * Regression (emulator, Canberra z11): the view's fetch must cover the terrain regions of its tiles (the z10 tile +
+     * 40 km), not just the viewport + 40 km. A view smaller than its z10 region left some of the region's chunks unfetched,
+     * so the region never became available and the chip stayed "Quick estimate" forever.
+     */
+    @Test fun increaseResolutionFetchesEveryChunkTheRegionsOfAViewSmallerThanZ10Need(): Unit = runBlocking {
+        val r = rig(chunks = false)
+        val corner = Triple(12, r.at.x * 4, r.at.y * 4) // the north-west z12 tile of the Sydney z10 region
+        r.render(corner.first, corner.second, corner.third)
+        r.service.setVisible(setOf(corner))
+        assertThat(r.service.estimateIncreaseBytes()).isEqualTo(r.regionChunks.size * 1000L)
+        assertThat(r.service.increaseResolution(allowMetered = false).toList().last()).isEqualTo(FetchProgress.Done)
+        assertThat(r.source.fetches.flatten()).containsAtLeastElementsIn(r.regionChunks)
+        assertThat(r.key(corner.first, corner.second, corner.third).terrainVersion).isNotEqualTo(0L)
+        assertThat(r.service.terrainEpoch.value).isAtLeast(1L)
+    }
+
+    @Test fun autoCacheOfAViewSmallerThanZ10FetchesItsWholeRegion() {
+        val r = rig(chunks = false)
+        val corner = Triple(12, r.at.x * 4, r.at.y * 4)
+        r.render(corner.first, corner.second, corner.third)
+        r.service.setVisible(setOf(corner))
+        r.awaitEpochAbove(0)
+        assertThat(r.source.fetches.single()).containsAtLeastElementsIn(r.regionChunks)
+        assertThat(r.key(corner.first, corner.second, corner.third).terrainVersion).isNotEqualTo(0L)
+    }
+
     @Test fun increaseResolutionRefusesMeteredWithoutConsentButStillTellsTheSize(): Unit = runBlocking {
         val r = rig(chunks = false, metered = true)
         r.service.setVisible(setOf(r.tile))
@@ -362,6 +390,25 @@ class TerrainServiceTest {
         r.render()
         assertThat(accuracyOf(r, r.key())).isEqualTo(Accuracy.QUICK)
         assertThat(r.cache.getMemory(r.key())!!.terrainIncompletePixels).isGreaterThan(0)
+    }
+
+    /**
+     * Regression (emulator, Canberra): with more wanted tables than the per-region cap, demand by distance alone left
+     * out the carriers that actually serve the region's pixels, so every tile stayed > 5% terrain-incomplete (QUICK).
+     * The best servers of a quick render of the region come first.
+     */
+    @Test fun theCarriersThatServeTheRegionGetTheirTablesBeforeMerelyNearOnes() {
+        val n = TerrainCoordinator.MAX_TABLES_PER_REGION + 40
+        val towers = FakeTowers().apply {
+            batchFor = { sydneyBatch(FloatArray(n) { 700f + 10 * it }, FloatArray(n) { 30f }, sameSite = true) }
+        }
+        val r = rig(towers = towers)
+        // Every pixel is served by prepared carrier 1 = batch row n - 2 (FakeRenderer), last in distance order.
+        val server = TerrainTable.frequencyKeyMhz(700f + 10 * (n - 2)).toFloat()
+        r.render()
+        waitUntil(timeoutMs = 20_000, what = "all tables") { r.renderer.builds.size == TerrainCoordinator.MAX_TABLES_PER_REGION }
+        assertThat(r.renderer.buildCalls.map { it.first }).contains(server)
+        assertThat(r.renderer.buildCalls.first().first).isEqualTo(server)
     }
 
     @Test fun onlyTheNearestTablesPerRegionAreBuilt() {

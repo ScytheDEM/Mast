@@ -131,4 +131,31 @@ class CoverageLayerTest {
         assertThat(CoverageLayer.sourceId(1)).isNotEqualTo(CoverageLayer.sourceId(0))
         assertThat(CoverageLayer.layerId(1)).isNotEqualTo(CoverageLayer.layerId(0))
     }
+
+    /**
+     * Regression (emulator): the swap waited for a source-changed event MapLibre never sends for raster-dem tile loads,
+     * so every terrain swap hit its 6 s timeout and promoted a half-loaded source; "idle" also comes too early (a cache
+     * miss counts as loaded while the service still renders). The gate opens once every tile the pending source asked
+     * the network for has loaded and parsed, failed or been cancelled.
+     */
+    @Test
+    fun swapGateOpensOnlyWhenEveryRequestedTileOfThePendingSourceIsIn() {
+        val gate = CoverageLayer.SwapGate("coverage-b")
+        assertThat(gate.onTile(CoverageLayer.TileEvent.NETWORK_REQUESTED, 12, 1, 1, "coverage-b")).isFalse()
+        assertThat(gate.onTile(CoverageLayer.TileEvent.NETWORK_REQUESTED, 12, 1, 2, "coverage-b")).isFalse()
+        assertThat(gate.onTile(CoverageLayer.TileEvent.PARSED, 12, 1, 1, "coverage-b")).isFalse() // a cache-miss parse
+        assertThat(gate.onIdle()).isFalse() // idle while the service is still rendering
+        assertThat(gate.onTile(CoverageLayer.TileEvent.NETWORK_LOADED, 12, 1, 1, "coverage-b")).isFalse()
+        assertThat(gate.onTile(CoverageLayer.TileEvent.PARSED, 12, 1, 1, "coverage")).isFalse() // the old source
+        assertThat(gate.onTile(CoverageLayer.TileEvent.PARSED, 12, 1, 1, "coverage-b")).isFalse() // 12/1/2 still out
+        assertThat(gate.onTile(CoverageLayer.TileEvent.FAILED, 12, 1, 2, "coverage-b")).isTrue() // e.g. cancelled
+        assertThat(gate.onIdle()).isTrue()
+    }
+
+    @Test
+    fun aSwapGateWhoseSourceRequestedNothingOpensOnIdle() {
+        val gate = CoverageLayer.SwapGate("coverage-b")
+        gate.onTile(CoverageLayer.TileEvent.NETWORK_REQUESTED, 12, 1, 1, "coverage") // another source
+        assertThat(gate.onIdle()).isTrue()
+    }
 }

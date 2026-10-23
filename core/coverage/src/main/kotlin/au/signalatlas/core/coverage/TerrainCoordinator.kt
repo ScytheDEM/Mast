@@ -90,7 +90,7 @@ internal class TerrainCoordinator(
     /** What the visible tiles belong to; null while coverage is off. */
     class Context(val selectionId: String, val stamp: String, val etag: String)
 
-    private class View(val tiles: Set<TileAddress>, val z: Int, val bounds: GeoBounds)
+    private class View(val tiles: Set<TileAddress>, val z: Int)
 
     private val lock = Any()
     private val regions = object : LinkedHashMap<TerrainKey, TerrainRegion>(16, 0.75f, true) {
@@ -271,14 +271,23 @@ internal class TerrainCoordinator(
 
     fun demandDone(k: TerrainKey) = synchronized(lock) { regions[k]?.demandRequested = false }
 
-    /** Records which tables [tr] wants, from [batch], the first time (the wanted set is stable for a region). */
-    fun setDemand(tr: TerrainRegion, batch: CarrierBatch) {
+    /** True until [setDemand] has recorded what [tr] wants (the caller then computes [setDemand]'s servers). */
+    fun needsDemand(tr: TerrainRegion): Boolean = synchronized(lock) { tr.demand == null }
+
+    /**
+     * Records which tables [tr] wants, from [batch], the first time (the wanted set is stable for a region). [servers]
+     * are batch rows that serve the region's pixels in the quick model, most pixels first: their tables come first,
+     * because a tile is labelled terrain only if >= 95% of its covered pixels' *best servers* have tables (rule 6).
+     * The rest of the [MAX_TABLES_PER_REGION] budget goes to the nearest sites reaching the region (servers that may
+     * take over once terrain loss is applied).
+     */
+    fun setDemand(tr: TerrainRegion, batch: CarrierBatch, servers: IntArray) {
         if (synchronized(lock) { tr.demand != null }) return
-        val list = demandOf(tr, batch)
+        val list = demandOf(tr, batch, servers)
         synchronized(lock) { if (tr.demand == null) tr.demand = list }
     }
 
-    private fun demandOf(tr: TerrainRegion, b: CarrierBatch): List<Demand> {
+    private fun demandOf(tr: TerrainRegion, b: CarrierBatch, servers: IntArray): List<Demand> {
         val cLat = (tr.bounds.south + tr.bounds.north) / 2
         val cLon = (tr.bounds.west + tr.bounds.east) / 2
         val cos = cos(Math.toRadians(cLat))
@@ -287,14 +296,13 @@ internal class TerrainCoordinator(
             val dx = (b.siteLon[row] - cLon) * cos
             return dx * dx + dy * dy
         }
-        val rows = CarrierCulling.reaching(b, tr.bounds)
-            .filter { tr.extent.contains(b.siteLat[it], b.siteLon[it]) }
-            .sortedBy(::d2)
+        val nearest = CarrierCulling.reaching(b, tr.bounds).sortedBy(::d2)
         val seen = LinkedHashMap<TableKey, Demand>()
-        for (row in rows) {
+        for (row in servers.asSequence() + nearest.asSequence()) {
+            if (seen.size >= MAX_TABLES_PER_REGION) break
+            if (!tr.extent.contains(b.siteLat[row], b.siteLon[row])) continue
             val key = tableKey(tr, b, row) ?: continue
             if (key !in seen) seen[key] = Demand(key, b.siteLat[row], b.siteLon[row])
-            if (seen.size >= MAX_TABLES_PER_REGION) break
         }
         return seen.values.toList()
     }
@@ -442,10 +450,7 @@ internal class TerrainCoordinator(
         }
         val z = tiles.maxOf { it.first }
         val top = tiles.filter { it.first == z }
-        val bounds = top.map { (zz, x, y) -> TileMath.bounds(zz, x, y) }.let { bs ->
-            GeoBounds(bs.minOf { it.south }, bs.minOf { it.west }, bs.maxOf { it.north }, bs.maxOf { it.east })
-        }
-        view = View(tiles.toSet(), z, bounds)
+        view = View(tiles.toSet(), z)
         if (ctx != null) {
             // Tables of a region whose tile is still on screen may have been dropped with a panned-away tile's job.
             for (t in top) {
@@ -463,9 +468,18 @@ internal class TerrainCoordinator(
         }
     }
 
-    /** Every chunk the current view needs (viewport + 40 km) that is not stored. Null without a view. */
-    private fun missingFor(v: View): Set<ChunkId> =
-        ChunkMath.chunksFor(v.bounds, MARGIN_KM).filter { !support.chunks.has(it) }.toSet()
+    /**
+     * Every chunk the terrain regions of the view's tiles need that is not stored. A region (the z10 tile + 40 km) only
+     * becomes available once *all* its chunks are in, and a z >= 11 viewport is smaller than its z10 tiles, so fetching
+     * just the viewport + 40 km would leave its regions quick for good.
+     */
+    private fun missingFor(v: View): Set<ChunkId> {
+        val need = HashSet<ChunkId>()
+        for ((rx, ry) in v.tiles.filter { it.first == v.z }.map { (z, x, y) -> (x shr (z - TERRAIN_ZOOM)) to (y shr (z - TERRAIN_ZOOM)) }.toSet()) {
+            need += ChunkMath.chunksFor(TileMath.bounds(TERRAIN_ZOOM, rx, ry), MARGIN_KM)
+        }
+        return need.filterTo(HashSet()) { !support.chunks.has(it) }
+    }
 
     /** Background fetch of the view's missing chunks: only z >= 10, only on an unmetered network, no prompts. */
     private fun autoCache() {

@@ -212,6 +212,41 @@ object CoverageLayer {
         }
     }
 
+    /** What MapLibre reports about one tile (`MapView.OnTileActionListener`), as far as [SwapGate] cares. */
+    enum class TileEvent { NETWORK_REQUESTED, NETWORK_LOADED, PARSED, FAILED, OTHER }
+
+    /**
+     * When a pending overlay source ([CoverageOverlay.sync]) may be promoted: every tile it requested from the coverage
+     * service has arrived and been parsed (or failed / was cancelled). MapLibre 13.7.1 sends no source-changed event
+     * for raster-dem tile loads, and both "fully rendered" frames and "idle" are reported while the service is still
+     * rendering the new tiles (a cache miss counts as loaded), so neither can gate the swap. [onIdle] only opens a gate
+     * whose source asked for nothing (e.g. below the layer's minimum zoom).
+     */
+    class SwapGate(private val sourceId: String) {
+        private val outstanding = HashSet<Triple<Int, Int, Int>>()
+        private val parsing = HashSet<Triple<Int, Int, Int>>()
+        private var requested = false
+
+        /** A tile action of [source] for tile [z]/[x]/[y]; true once the pending source's tiles are all in. */
+        fun onTile(event: TileEvent, z: Int, x: Int, y: Int, source: String?): Boolean {
+            if (source != sourceId) return ready
+            val t = Triple(z, x, y)
+            when (event) {
+                TileEvent.NETWORK_REQUESTED -> { requested = true; outstanding += t; parsing -= t }
+                TileEvent.NETWORK_LOADED -> if (t in outstanding) parsing += t
+                TileEvent.PARSED -> if (t in parsing) { parsing -= t; outstanding -= t }
+                TileEvent.FAILED -> { outstanding -= t; parsing -= t }
+                TileEvent.OTHER -> Unit
+            }
+            return ready
+        }
+
+        /** The map became idle: true when the pending source may be shown. */
+        fun onIdle(): Boolean = ready || !requested
+
+        private val ready: Boolean get() = requested && outstanding.isEmpty()
+    }
+
     private val LABEL_ANCHORS = listOf("water_label", "roads_labels_minor", "places_subplace")
 
     /**
