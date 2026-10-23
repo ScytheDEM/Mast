@@ -117,11 +117,11 @@ class TileCacheTest {
         assertThat(Accuracy.of(key(3), fresh.getDisk(key(3))!!)).isEqualTo(Accuracy.QUICK)
     }
 
-    @Test fun theNinetyFivePercentRuleIsInclusiveAndAnEmptyTileIsTerrain() {
+    @Test fun theNinetyFivePercentRuleIsInclusiveAndAnEmptyTileIsQuick() {
         val k = key(1).copy(terrainVersion = 5)
         assertThat(Accuracy.of(k, counted(1, 1000, 50))).isEqualTo(Accuracy.TERRAIN)
         assertThat(Accuracy.of(k, counted(1, 1000, 51))).isEqualTo(Accuracy.QUICK)
-        assertThat(Accuracy.of(k, counted(1, 0, 0))).isEqualTo(Accuracy.TERRAIN) // nothing covered, nothing the quick model could get wrong
+        assertThat(Accuracy.of(k, counted(1, 0, 0))).isEqualTo(Accuracy.QUICK) // nothing predicted with terrain
         assertThat(Accuracy.of(key(1), counted(1, 0, 0))).isEqualTo(Accuracy.QUICK)
     }
 

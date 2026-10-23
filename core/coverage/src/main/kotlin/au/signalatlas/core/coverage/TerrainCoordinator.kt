@@ -10,6 +10,7 @@ import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.DemGridHandle
 import au.signalatlas.engine.TerrainTable
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -110,8 +111,7 @@ internal class TerrainCoordinator(
     private var autoJob: Job? = null
     private val bumpLock = Any()
     private var lastBump = Long.MIN_VALUE
-    private var bumpScheduled = false
-    private var bumpGeneration = 0L
+    private var bumpJob: Job? = null
     private var autoNeed: Set<ChunkId> = emptySet()
     @Volatile private var autoFailed: Set<ChunkId>? = null
 
@@ -194,40 +194,40 @@ internal class TerrainCoordinator(
             val t = support.clock()
             if (lastBump == Long.MIN_VALUE || t - lastBump >= support.minBumpMs) {
                 lastBump = t
-                bumpGeneration++ // covers a deferred bump that is still waiting
+                // This bump covers every change so far, including the one a waiting deferred bump was for.
+                bumpJob?.cancel()
+                bumpJob = null
                 _epoch.update { it + 1 }
                 true
             } else {
-                if (!bumpScheduled) {
-                    bumpScheduled = true
-                    scheduleBump(lastBump + support.minBumpMs - t, bumpGeneration)
-                }
+                if (bumpJob == null) bumpJob = scheduleBump(lastBump + support.minBumpMs - t)
                 false
             }
         }
         if (now) onChange()
     }
 
-    /** Caller holds [bumpLock]. The deferred bump of the window that ends in [waitMs]. */
-    private fun scheduleBump(waitMs: Long, generation: Long) {
-        support.scope.launch {
+    /** Caller holds [bumpLock]. The deferred bump of the window that ends in [waitMs]; [bumpJob] is it until it fires or is absorbed. */
+    private fun scheduleBump(waitMs: Long): Job {
+        val job = support.scope.launch(start = CoroutineStart.LAZY) {
+            val self = coroutineContext[Job]
+            delay(waitMs)
             var fire = false
-            try {
-                delay(waitMs)
-                synchronized(bumpLock) {
-                    if (bumpGeneration == generation) {
-                        lastBump = support.clock()
-                        bumpGeneration++
-                        _epoch.update { it + 1 }
-                        fire = true
-                    }
+            synchronized(bumpLock) {
+                if (bumpJob === self) {
+                    bumpJob = null
+                    lastBump = support.clock()
+                    _epoch.update { it + 1 }
+                    fire = true
                 }
-            } finally {
-                // Also when the job is cancelled: otherwise no later change could ever schedule a bump.
-                synchronized(bumpLock) { bumpScheduled = false }
             }
             if (fire) onChange()
         }
+        // Cancelled by an absorbing bump (which cleared bumpJob itself) or with the scope: nothing to reset here
+        // unless it is still the registered job.
+        job.invokeOnCompletion { synchronized(bumpLock) { if (bumpJob === job) bumpJob = null } }
+        job.start()
+        return job
     }
 
     fun snapshot(tr: TerrainRegion): TerrainSnapshot = synchronized(lock) { tr.snapshot }
@@ -335,6 +335,11 @@ internal class TerrainCoordinator(
                 }
             }
             failed = false
+        } catch (e: CancellationException) {
+            failed = false // a cancellation is not a failure of the table: it is asked for again
+        } catch (e: InterruptedException) {
+            failed = false
+            Thread.currentThread().interrupt()
         } catch (e: Exception) {
             warn("terrain table ${d.key.fileName} failed: $e")
         } finally {

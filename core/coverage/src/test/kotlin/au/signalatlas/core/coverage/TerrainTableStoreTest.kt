@@ -112,6 +112,17 @@ class TerrainTableStoreTest {
         assertThat(tbl(dir)).hasSize(1)
     }
 
+    @Test fun tablesWithNegativeSiteAndDemIdsSurviveReindexing() {
+        val dir = tmp.newFolder()
+        TerrainTableStore(dir).put(TableKey("s1", -3387000, -15121000, 3500, 30, -5L), table(3))
+        TerrainTableStore(dir).put(TableKey("s1", 3387000, 15121000, 700, 30, Long.MIN_VALUE), table(4))
+        assertThat(tbl(dir)).hasSize(2)
+        val fresh = TerrainTableStore(dir) // re-index
+        assertThat(fresh.get(TableKey("s1", -3387000, -15121000, 3500, 30, -5L))).isNotNull()
+        assertThat(fresh.get(TableKey("s1", 3387000, 15121000, 700, 30, Long.MIN_VALUE))).isNotNull()
+        assertThat(tbl(dir)).hasSize(2)
+    }
+
     @Test fun dropMemoryKeepsTheFiles() {
         val dir = tmp.newFolder()
         val s = TerrainTableStore(dir)

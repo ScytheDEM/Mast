@@ -435,6 +435,86 @@ class TerrainServiceTest {
         assertThat(r.service.terrainEpoch.value).isEqualTo(before + 1) // one bump for both changes
     }
 
+    @Test fun anImmediateBumpThatAbsorbsADeferredOneDoesNotLoseALaterChange() {
+        val now = java.util.concurrent.atomic.AtomicLong(1_000)
+        // One site in each of the next tiles eastwards, so every region has something to build.
+        val towers = FakeTowers().apply {
+            batchFor = { sydneyBatch(FloatArray(5) { 700f }, FloatArray(5) { 30f }).also { b -> for (i in 0 until 5) b.siteLon[i] = 151.21 + 0.3516 * i } }
+        }
+        val r = TerrainRig(tmp, chunksPresent = true, minBumpMs = 10_000, clock = now::get, towers = towers).also { rig = it }
+        fun change(dx: Int) {
+            val x = r.at.x + dx
+            r.putChunks(ChunkMathRegion.of(x, r.at.y))
+            val k0 = r.key(10, x, r.at.y)
+            r.render(10, x, r.at.y)
+            waitUntil(what = "region $dx published") { r.key(10, x, r.at.y) != k0 }
+            Thread.sleep(50) // the epoch step follows the version change by a few instructions
+        }
+        r.render()
+        r.awaitEpochAbove(0) // immediate: epoch 1 at t=1000
+        now.addAndGet(9_500)
+        change(1) // inside the window: deferred (500 ms)
+        now.addAndGet(11_000) // the window is over before the deferred job woke ...
+        change(2) // ... so this one bumps at once and absorbs the waiting job
+        waitUntil(what = "absorbing bump") { r.service.terrainEpoch.value == 2L }
+        now.addAndGet(9_500)
+        change(3) // inside the new window, in the gap where the old deferred job would have been pending
+        waitUntil(timeoutMs = 5_000, what = "bump for the later change") { r.service.terrainEpoch.value == 3L }
+        Thread.sleep(700)
+        assertThat(r.service.terrainEpoch.value).isEqualTo(3L) // exactly one more, and no stale extra
+    }
+
+    @Test fun aCancellationEscapingTheBuildDoesNotMarkTheTableFailedForGood() {
+        val r = rig()
+        r.renderer.throwOnBuild = java.util.concurrent.CancellationException("native cancel")
+        r.service.setVisible(setOf(r.tile))
+        r.render()
+        waitUntil { r.renderer.buildCalls.size >= 2 && r.renderer.builds.isNotEmpty() }
+        Thread.sleep(100)
+        r.service.setVisible(setOf(r.tile)) // asks again for what is still missing
+        waitUntil(what = "both tables built") { r.renderer.builds.size == 2 }
+        waitUntil(what = "both published") { r.render(); r.renderer.preparedTables.lastOrNull()?.size == 2 }
+        assertThat(r.renderer.buildCalls).hasSize(3)
+        assertThat(r.rig.warnings).isEmpty()
+    }
+
+    @Test fun anEmptyTileIsQuickAndLeftOutOfTheViewportSummary() {
+        val r = rig()
+        val b = Triple(10, r.at.x + 1, r.at.y) // a neighbouring region with chunks, where nothing is covered
+        r.putChunks(ChunkMathRegion.of(b.second, b.third))
+        r.render()
+        r.awaitEpochAbove(0)
+        r.render()
+        assertThat(accuracyOf(r, r.key())).isEqualTo(Accuracy.TERRAIN)
+        r.renderer.rsrpCode = 0
+        r.render(b.first, b.second, b.third)
+        val emptyKey = r.key(b.first, b.second, b.third)
+        assertThat(emptyKey.terrainVersion).isNotEqualTo(0L)
+        assertThat(accuracyOf(r, emptyKey)).isEqualTo(Accuracy.QUICK)
+        assertThat(r.service.accuracyFor(setOf(r.tile, b)).value).isEqualTo(Accuracy.TERRAIN)
+        assertThat(r.service.accuracyFor(setOf(b)).value).isEqualTo(Accuracy.QUICK)
+    }
+
+    @Test fun aRegionEvictedBeforeItsQueuedDemandJobRunsIsRecreatedAndStillGetsItsTables() {
+        val r = rig(threads = 1)
+        r.render()
+        r.awaitEpochAbove(0)
+        val far = Triple(10, r.at.x + 40, r.at.y)
+        r.service.setVisible(setOf(far))
+        r.service.onTrimMemory(android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) // drops the tile's region
+        val started = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        r.rig.pool.submit(far, { started.countDown(); release.await() }, {})
+        started.await()
+        r.service.setVisible(setOf(far, r.tile))
+        val epoch = r.service.terrainEpoch.value
+        r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS) // cache hit: the demand job queues
+        repeat(TerrainCoordinator.MAX_REGIONS + 1) { r.key(10, r.at.x + 1 + it, r.at.y) } // evicts the tile's region
+        release.countDown()
+        r.awaitEpochAbove(epoch) // tables come back from disk under a recreated region
+        assertThat(r.renderer.buildCalls).hasSize(2)
+    }
+
     @Test fun belowZ10NoTerrainRegionIsEverCreatedAndTilesAreQuickOnly() {
         val r = rig()
         for (z in 8..9) {

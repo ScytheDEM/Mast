@@ -139,11 +139,9 @@ class CoverageTileService internal constructor(
             work = { _ ->
                 try {
                     if (isCurrent(key)) {
-                        val tr = tc.existingRegion(tk)
-                        if (tr != null) {
-                            tc.setDemand(tr, region(key, sel).batch)
-                            tc.ensureTables(tr, tile)
-                        }
+                        val tr = tc.region(tk) // recreated if the LRU or a trim dropped it meanwhile
+                        tc.setDemand(tr, region(key, sel).batch)
+                        tc.ensureTables(tr, tile)
                     }
                 } catch (e: Exception) {
                     // Stale data or a failed region query: the next request asks again.
@@ -248,9 +246,11 @@ class CoverageTileService internal constructor(
         val top = visible.maxOfOrNull { it.first } ?: return Accuracy.QUICK
         val etag = patternsEtag()
         return Accuracy.summary(
-            visible.filter { it.first == top }.map { (z, x, y) ->
+            visible.filter { it.first == top }.mapNotNull { (z, x, y) ->
                 val key = TileKey(z, x, y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, x, y))
-                cache.getMemory(key)?.let { Accuracy.of(key, it) } ?: Accuracy.QUICK
+                val tile = cache.getMemory(key) ?: return@mapNotNull Accuracy.QUICK
+                // A tile with no coverage has no prediction to label: it neither makes a terrain view partial nor proves it.
+                if (key.terrainVersion != 0L && tile.coveredPixels == 0) null else Accuracy.of(key, tile)
             },
         )
     }
@@ -387,7 +387,8 @@ class CoverageTileService internal constructor(
         if (tc == null || key.terrainVersion == 0L) return region.prepared!!
         val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y)
             ?: return region.prepared!!
-        val tr = tc.existingRegion(tk) ?: return region.prepared!! // dropped meanwhile: quick, and not resurrected
+        // Dropped meanwhile (LRU or trim): no tile may be rendered quick under this key's terrain version.
+        val tr = tc.existingRegion(tk) ?: throw TileCancelledException()
         tc.setDemand(tr, region.batch)
         val snap = tc.snapshot(tr)
         if (snap.version != key.terrainVersion) throw TileCancelledException()

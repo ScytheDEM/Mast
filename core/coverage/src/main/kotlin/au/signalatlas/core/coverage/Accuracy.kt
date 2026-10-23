@@ -11,16 +11,14 @@ enum class Accuracy {
 
     companion object {
         /**
-         * Terrain rule 6 for one tile: [TERRAIN] when its region had complete elevation data (`terrainVersion != 0`)
-         * and at least 95% of its covered pixels had full terrain profiles ([RenderedTile.isTerrainAccurate]); a tile
-         * with no covered pixel at all has nothing the quick model could have got wrong, so it counts as [TERRAIN]
-         * too. Otherwise [QUICK]. The inputs are persisted with the tile, so the label survives the disk cache.
+         * Terrain rule 6 for one tile: [TERRAIN] when its region had complete elevation data (`terrainVersion != 0`),
+         * it has covered pixels and at least 95% of them had full terrain profiles ([RenderedTile.isTerrainAccurate]).
+         * Anything else, including a tile with no coverage (nothing was predicted with terrain), is [QUICK]; the
+         * viewport summary ([CoverageTileService.accuracyFor]) leaves such empty tiles out. The inputs are persisted
+         * with the tile, so the label survives the disk cache.
          */
-        fun of(key: TileKey, tile: RenderedTile): Accuracy = when {
-            key.terrainVersion == 0L -> QUICK
-            tile.coveredPixels == 0 || tile.isTerrainAccurate -> TERRAIN
-            else -> QUICK
-        }
+        fun of(key: TileKey, tile: RenderedTile): Accuracy =
+            if (key.terrainVersion != 0L && tile.isTerrainAccurate) TERRAIN else QUICK
 
         /** The viewport summary: [TERRAIN] only if every tile is, [PARTIAL] if some are, else [QUICK] (also when empty). */
         fun summary(tiles: Collection<Accuracy>): Accuracy = when {
