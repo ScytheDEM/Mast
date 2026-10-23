@@ -57,6 +57,21 @@ class CoverageTileServiceTest {
         assertThat(a.cacheId()).matches("[a-z0-9_]+")
     }
 
+    @Test fun optusAndTpgSelectionsAlsoQueryTheJointVentureCarriers() {
+        val jv = Network.OPTUS_TPG_JV
+        assertThat(rig().selection.networks()).containsExactly(Network.TELSTRA)
+        assertThat(rig().selection.copy(network = Network.NBN).networks()).containsExactly(Network.NBN)
+        for (n in listOf(Network.OPTUS, Network.TPG)) {
+            val r = rig()
+            r.service.selection.value = r.selection.copy(network = n)
+            val sel = r.service.selection.value!!
+            r.towers.networkQueries.clear()
+            val url = "https://${CoverageTileService.HOST}/v1/${sel.cacheId()}/rsrp/stamp1/none/10/900/600.png"
+            r.service.tileFuture(TileUrl.parse(url.toHttpUrl())!!).await()
+            assertThat(r.towers.networkQueries.first()).containsExactly(n, jv)
+        }
+    }
+
     @Test fun rendersAPngAndReusesTheCachedTileForOtherViews() {
         val r = rig()
         val rsrp = r.tile(10, 900, 600).await()

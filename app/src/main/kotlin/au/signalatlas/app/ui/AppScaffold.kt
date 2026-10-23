@@ -84,6 +84,8 @@ fun AppScaffold(container: AppContainer) {
                 onUpdateNow = updateNow,
                 onCancel = vm::cancelUpdate,
                 onBack = { showUpdates = false },
+                patterns = state.patterns,
+                onDownloadPatterns = vm::downloadPatternsNow,
             )
         }
     }

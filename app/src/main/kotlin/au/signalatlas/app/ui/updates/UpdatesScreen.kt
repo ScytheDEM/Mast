@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -24,13 +25,23 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import au.signalatlas.app.R
@@ -38,7 +49,10 @@ import au.signalatlas.app.ui.map.DataSummary
 import au.signalatlas.app.ui.map.isWaiting
 import au.signalatlas.app.ui.map.overallFraction
 import au.signalatlas.app.ui.map.runningLabel
+import au.signalatlas.core.update.HrpStatus
 import au.signalatlas.core.update.UpdateStatus
+import kotlinx.coroutines.launch
+import java.time.Instant
 import java.text.NumberFormat
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -58,13 +72,32 @@ fun UpdatesScreen(
     onCancel: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    patterns: HrpStatus = HrpStatus(null, 0, null),
+    onDownloadPatterns: () -> Unit = {},
 ) {
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var confirmPatterns by rememberSaveable { mutableStateOf(false) }
+    val needWifi = stringResource(R.string.patterns_need_wifi)
     val gate = rememberDownloadGate(network, onUpdateNow)
     gate.Dialog(downloadSizeLabel(status))
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
+    if (confirmPatterns) {
+        AlertDialog(
+            onDismissRequest = { confirmPatterns = false },
+            title = { Text(stringResource(R.string.patterns_confirm_title)) },
+            confirmButton = {
+                TextButton(onClick = { confirmPatterns = false; onDownloadPatterns() }) {
+                    Text(stringResource(R.string.patterns_confirm_download))
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmPatterns = false }) { Text(stringResource(R.string.cancel)) } },
+        )
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize().nestedScroll(scroll.nestedScrollConnection),
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             LargeTopAppBar(
                 title = { Text(stringResource(R.string.updates_title)) },
@@ -118,6 +151,15 @@ fun UpdatesScreen(
                     ) { Text(stringResource(R.string.updates_update_now)) }
                 }
                 Spacer(Modifier.height(24.dp))
+                PatternsSection(
+                    patterns,
+                    onDownload = {
+                        // Patterns are ~1.6 GB: Wi-Fi only, never offered on mobile data.
+                        if (network() == NetworkKind.Unmetered) confirmPatterns = true
+                        else scope.launch { snackbar.showSnackbar(needWifi) }
+                    },
+                )
+                Spacer(Modifier.height(24.dp))
                 Text(
                     stringResource(R.string.updates_source),
                     style = MaterialTheme.typography.bodySmall,
@@ -128,6 +170,43 @@ fun UpdatesScreen(
         }
     }
 }
+
+/** The antenna-pattern import: when it last ran (or that standard patterns are in use) and a Wi-Fi-only download. */
+@Composable
+internal fun PatternsSection(patterns: HrpStatus, onDownload: () -> Unit, modifier: Modifier = Modifier) {
+    val running = patterns.running
+    Column(modifier.fillMaxWidth()) {
+        Text(patternsLine(patterns), style = MaterialTheme.typography.bodyLarge)
+        if (running != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(runningLabel(running), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            if (running.isWaiting()) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(progress = { running.overallFraction() }, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        OutlinedButton(onClick = onDownload, enabled = running == null, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+            Text(stringResource(R.string.patterns_download))
+        }
+    }
+}
+
+@Composable
+private fun patternsLine(patterns: HrpStatus): String {
+    val at = patterns.lastImportedAt ?: return stringResource(R.string.patterns_standard)
+    val transmitters = pluralStringResource(
+        R.plurals.patterns_transmitters, patterns.devices, NumberFormat.getIntegerInstance(Locale.getDefault()).format(patterns.devices),
+    )
+    return stringResource(R.string.patterns_updated, formatDate(at), transmitters)
+}
+
+private val DATE_OUT: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.forLanguageTag("en-AU"))
+
+/** "23 Oct 2026", in Sydney time (the data is Australian). */
+internal fun formatDate(at: Instant): String = DATE_OUT.format(at.atZone(SYDNEY))
 
 @Composable
 private fun StatusLine(status: UpdateStatus) {

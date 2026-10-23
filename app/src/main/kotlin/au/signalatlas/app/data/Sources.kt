@@ -1,16 +1,23 @@
 package au.signalatlas.app.data
 
+import au.signalatlas.core.coverage.CoverageSample
+import au.signalatlas.core.coverage.CoverageSelection
+import au.signalatlas.core.coverage.CoverageTileService
 import au.signalatlas.core.data.DataMeta
+import au.signalatlas.core.data.PatternRepository
 import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.data.TowerStore
 import au.signalatlas.core.map.BasemapLocator
 import au.signalatlas.core.model.SiteDetail
 import au.signalatlas.core.model.SiteSummary
 import au.signalatlas.core.model.TowerFilter
+import au.signalatlas.core.update.HrpStatus
 import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 /*
@@ -45,6 +52,21 @@ interface Updates {
     fun updateNow(allowMetered: Boolean)
     /** Cancels a queued or running manual update. */
     fun cancel()
+    /** The antenna-pattern (`patterns.db`) import: when it last ran and whether one is running. */
+    val patternStatus: StateFlow<HrpStatus>
+    fun downloadPatternsNow()
+}
+
+/** The coverage overlay as the map screen drives it. */
+interface Coverage {
+    /** What the overlay shows; null = off. Setting it is cheap (no tower query). */
+    var selection: CoverageSelection?
+    /** Tile URL template for the current selection and data versions; null when off or without data. */
+    val urlTemplate: Flow<String?>
+    /** The tiles the viewport needs (main-thread cheap). */
+    fun setVisible(tiles: Set<Triple<Int, Int, Int>>)
+    /** The prediction at a point from tiles already rendered, or null while there are none. */
+    fun valueAt(lat: Double, lon: Double): CoverageSample?
 }
 
 fun interface BasemapKeys {
@@ -78,6 +100,29 @@ class ManagerUpdates(private val manager: UpdateManager) : Updates {
     override suspend fun check() = manager.checkOnAppOpen()
     override fun updateNow(allowMetered: Boolean) = manager.updateNow(allowMetered)
     override fun cancel() = manager.cancelManual()
+    override val patternStatus: StateFlow<HrpStatus> get() = manager.hrpStatus
+    override fun downloadPatternsNow() = manager.downloadPatternsNow()
+}
+
+/**
+ * The tile service as a [Coverage]. The template depends on the selection and on the tower and pattern data versions,
+ * so it is re-read whenever any of them changes.
+ */
+class ServiceCoverage(
+    private val service: CoverageTileService,
+    towers: TowerRepository,
+    patterns: PatternRepository,
+) : Coverage {
+    override var selection: CoverageSelection?
+        get() = service.selection.value
+        set(value) { service.selection.value = value }
+
+    override val urlTemplate: Flow<String?> =
+        combine(service.selection, towers.store, patterns.patterns) { _, _, _ -> service.tileUrlTemplate() }
+            .distinctUntilChanged()
+
+    override fun setVisible(tiles: Set<Triple<Int, Int, Int>>) = service.setVisible(tiles)
+    override fun valueAt(lat: Double, lon: Double) = service.valueAt(lat, lon)
 }
 
 class LocatorBasemapKeys(private val locator: BasemapLocator) : BasemapKeys {

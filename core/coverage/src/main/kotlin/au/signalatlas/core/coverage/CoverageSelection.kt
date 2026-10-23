@@ -23,6 +23,13 @@ data class CoverageSelection(
     }
 
     /**
+     * The networks whose carriers are rendered: the Optus–TPG joint venture shares spectrum and sites with both, so
+     * it counts under an Optus and a TPG selection (the selection's [cacheId] is unchanged).
+     */
+    fun networks(): Set<Network> =
+        if (network == Network.OPTUS || network == Network.TPG) setOf(network, Network.OPTUS_TPG_JV) else setOf(network)
+
+    /**
      * Identifies the tiles this selection renders: URL-path safe (`[a-z0-9_]`), independent of set order, and
      * deliberately excluding [view], because cached tiles hold RSRP, SINR and probability codes, so switching view
      * only re-encodes.

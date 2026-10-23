@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -80,6 +82,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.window.core.layout.WindowSizeClass
 import au.signalatlas.app.R
 import au.signalatlas.app.location.DeviceLocationSource
+import au.signalatlas.app.ui.coverage.CoverageActions
+import au.signalatlas.app.ui.coverage.CoverageControlsCard
+import au.signalatlas.app.ui.coverage.CoverageLegend
+import au.signalatlas.app.ui.coverage.CoverageToolbar
+import au.signalatlas.app.ui.coverage.PointReadout
 import au.signalatlas.app.ui.nearby.NearbyContent
 import au.signalatlas.core.map.MapCameraState
 import au.signalatlas.core.map.TowerMap
@@ -124,6 +131,7 @@ fun MapScreen(
     var showNearby by rememberSaveable { mutableStateOf(false) }
     var showBands by rememberSaveable { mutableStateOf(false) }
     var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var coverageOptionsOpen by rememberSaveable { mutableStateOf(true) }
     var rationaleFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var afterGrant by remember { mutableStateOf<(() -> Unit)?>(null) }
 
@@ -132,6 +140,9 @@ fun MapScreen(
         showNearby -> Pane.Nearby
         else -> Pane.None
     }
+
+    // The camera may have been restored (recreation) before the map reports its first idle.
+    LaunchedEffect(Unit) { vm.onZoom(camera.currentZoom) }
 
     // Permission may change in Settings while we are away.
     LifecycleResumeEffect(Unit) {
@@ -213,6 +224,18 @@ fun MapScreen(
         vm.selectSite(s.id)
     }
 
+    val coverageActions = CoverageActions(
+        onToggle = { on ->
+            if (on) coverageOptionsOpen = true
+            vm.setCoverageOn(on)
+        },
+        onOptions = { coverageOptionsOpen = !coverageOptionsOpen },
+        onNetwork = vm::setCoverageNetwork,
+        onFiveGOnly = vm::setCoverageFiveGOnly,
+        onIndoor = vm::setCoverageIndoor,
+        onView = vm::setCoverageView,
+    )
+
     BackHandler(enabled = pane != Pane.None && !searchExpanded) {
         if (pane == Pane.Site) vm.selectSite(null) else showNearby = false
     }
@@ -228,6 +251,12 @@ fun MapScreen(
                 camera = camera,
                 onSiteClick = { vm.selectSite(it) },
                 onCameraIdle = { },
+                coverageUrlTemplate = state.coverage.urlTemplate,
+                coverageView = state.coverage.view,
+                onVisibleTiles = vm::onVisibleTiles,
+                onZoom = vm::onZoom,
+                onLongPress = vm::longPress,
+                onMapTap = vm::onMapTap,
                 selectedColor = MaterialTheme.colorScheme.primary.toArgb(),
                 modifier = Modifier.fillMaxSize(),
                 userLocation = state.location.takeIf { state.locationGranted },
@@ -249,6 +278,8 @@ fun MapScreen(
                 onOpenUpdates = onOpenUpdates,
                 onMyLocation = onMyLocation,
                 onNearby = onNearby,
+                coverageOptionsOpen = coverageOptionsOpen,
+                coverage = coverageActions,
                 snackbar = snackbar,
             )
         }
@@ -424,6 +455,8 @@ private fun MapControls(
     onOpenUpdates: () -> Unit,
     onMyLocation: () -> Unit,
     onNearby: () -> Unit,
+    coverageOptionsOpen: Boolean,
+    coverage: CoverageActions,
     snackbar: SnackbarHostState,
 ) {
     Box(Modifier.fillMaxSize()) {
@@ -452,6 +485,18 @@ private fun MapControls(
                 AnimatedVisibility(state.update.showsChip(), enter = fadeIn(), exit = fadeOut()) {
                     UpdateChip(state.update, onClick = onOpenUpdates, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
+                AnimatedVisibility(state.coverage.needsZoom(state.zoom), enter = fadeIn(), exit = fadeOut()) {
+                    AssistChip(
+                        onClick = { },
+                        label = { Text(stringResource(R.string.coverage_zoom_in)) },
+                        colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                        border = null,
+                        modifier = Modifier.padding(start = 16.dp, top = 4.dp),
+                    )
+                }
+                state.coverage.readout?.let {
+                    PointReadout(it.result, Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
+                }
             }
         }
         Column(
@@ -471,6 +516,22 @@ private fun MapControls(
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
             ) { Icon(painterResource(R.drawable.ic_near_me), stringResource(R.string.fab_nearby)) }
+        }
+        Column(
+            Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (state.coverage.on) {
+                AnimatedVisibility(coverageOptionsOpen, enter = fadeIn(), exit = fadeOut()) {
+                    CoverageControlsCard(state.coverage, coverage)
+                }
+                CoverageLegend(state.coverage.view)
+            }
+            CoverageToolbar(
+                on = state.coverage.on,
+                optionsOpen = coverageOptionsOpen,
+                actions = coverage,
+            )
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 88.dp))
     }

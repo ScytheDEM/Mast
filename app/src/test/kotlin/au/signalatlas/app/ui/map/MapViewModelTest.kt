@@ -36,7 +36,8 @@ class MapViewModelTest {
         updates: Updates = FakeUpdates(),
         basemap: BasemapKeys = FakeBasemap("20261022.pmtiles"),
         location: LocationSource = FakeLocation(),
-    ) = MapViewModel(data, updates, basemap, location, compute = dispatcher, io = dispatcher)
+        coverage: FakeCoverage = FakeCoverage(),
+    ) = MapViewModel(data, updates, basemap, location, coverage, compute = dispatcher, io = dispatcher)
 
     @Test fun noStore_hasNoData() = runTest(dispatcher) {
         val vm = vm(data = FakeData(null))

@@ -69,6 +69,9 @@ class MapCameraState(initialLat: Double = -27.0, initialLon: Double = 134.0, ini
     internal var map: MapLibreMap? = null
     private var pending: Triple<Double, Double, Double>? = null
 
+    /** The last settled zoom (the initial one before the map has been touched). */
+    val currentZoom: Double get() = zoom
+
     fun animateTo(lat: Double, lon: Double, zoom: Double) {
         val m = map
         if (m == null) {
@@ -129,12 +132,21 @@ fun TowerMap(
     coverageOpacity: Float = CoverageLayer.DEFAULT_OPACITY,
     /** On camera idle: the tiles the overlay needs (see [CoverageLayer.visibleTiles]); pass to `setVisible`. */
     onVisibleTiles: (Set<Triple<Int, Int, Int>>) -> Unit = {},
+    /** The settled zoom, on every camera idle (including the initial one). */
+    onZoom: (Double) -> Unit = {},
+    /** A long press on the map at (lat, lon). */
+    onLongPress: (lat: Double, lon: Double) -> Unit = { _, _ -> },
+    /** Any tap on the map (whether or not it hit a site or cluster). */
+    onMapTap: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val currentOnSiteClick by rememberUpdatedState(onSiteClick)
     val currentOnCameraIdle by rememberUpdatedState(onCameraIdle)
     val currentOnVisibleTiles by rememberUpdatedState(onVisibleTiles)
+    val currentOnZoom by rememberUpdatedState(onZoom)
+    val currentOnLongPress by rememberUpdatedState(onLongPress)
+    val currentOnMapTap by rememberUpdatedState(onMapTap)
 
     val mapView = remember { createMapView(context, camera) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
@@ -162,9 +174,17 @@ fun TowerMap(
                 val b = m.projection.visibleRegion.latLngBounds
                 val bounds = GeoBounds(b.getLatSouth(), b.getLonWest(), b.getLatNorth(), b.getLonEast())
                 currentOnCameraIdle(bounds)
+                currentOnZoom(m.cameraPosition.zoom)
                 currentOnVisibleTiles(CoverageLayer.visibleTiles(bounds, m.cameraPosition.zoom))
             }
-            m.addOnMapClickListener { latLng -> handleClick(m, latLng, mapView.context, currentOnSiteClick) }
+            m.addOnMapClickListener { latLng ->
+                currentOnMapTap()
+                handleClick(m, latLng, mapView.context, currentOnSiteClick)
+            }
+            m.addOnMapLongClickListener { latLng ->
+                currentOnLongPress(latLng.latitude, latLng.longitude)
+                true
+            }
             camera.attach(m)
             map = m
         }

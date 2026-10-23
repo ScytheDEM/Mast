@@ -28,7 +28,7 @@ class MapScreenSearchTest {
     @get:Rule val compose = createComposeRule()
 
     private val vm = MapViewModel(
-        FakeData(FakeSnapshot(SITES)), FakeUpdates(), FakeBasemap(null), FakeLocation(),
+        FakeData(FakeSnapshot(SITES)), FakeUpdates(), FakeBasemap(null), FakeLocation(), FakeCoverage(),
         compute = Dispatchers.Unconfined, io = Dispatchers.Unconfined,
     )
 

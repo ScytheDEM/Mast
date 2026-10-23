@@ -291,7 +291,7 @@ class CoverageTileService internal constructor(
         val area = TileMath.bounds(rk.zf, rk.rx, rk.ry)
         var batch = reuse ?: towers.withTowers { t ->
             if (t.stamp != rk.stamp) throw StaleTileException()
-            t.carriersIn(TileMath.expand(area, REGION_MARGIN_M), setOf(sel.network), sel.techs, sel.bands)
+            t.carriersIn(TileMath.expand(area, REGION_MARGIN_M), sel.networks(), sel.techs, sel.bands)
         } ?: throw StaleTileException()
         val patternStore = patterns.value
         if ((patternStore?.etag ?: "none") != rk.etag) throw StaleTileException()

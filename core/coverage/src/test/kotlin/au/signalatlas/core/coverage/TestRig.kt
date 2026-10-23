@@ -48,6 +48,7 @@ internal class FakeTowers(var stampValue: String? = "stamp1", var sites: Int = 0
     /** Overrides the batch returned for a query. */
     var batchFor: (GeoBounds) -> CarrierBatch = { fakeBatch() }
     val queries = CopyOnWriteArrayList<GeoBounds>()
+    val networkQueries = CopyOnWriteArrayList<Set<Network>>()
     override fun stamp() = stampValue
     override fun <T> withTowers(block: (Towers) -> T): T? {
         val s = stampValue ?: return null
@@ -55,6 +56,7 @@ internal class FakeTowers(var stampValue: String? = "stamp1", var sites: Int = 0
             override val stamp = s
             override fun carriersIn(b: GeoBounds, networks: Set<Network>, techs: Set<Tech>, bands: Set<String>?): CarrierBatch {
                 queries += b
+                networkQueries += networks
                 return batchFor(b)
             }
             override fun siteCountWithin(lat: Double, lon: Double, radiusM: Double) = sites

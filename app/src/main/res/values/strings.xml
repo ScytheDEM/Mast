@@ -104,4 +104,41 @@
     <string name="status_available">New data available (%1$s)</string>
     <string name="status_offline">Offline. Can\'t reach ACMA right now.</string>
     <string name="no_data">No tower data yet</string>
+    <!-- Coverage -->
+    <string name="coverage_toolbar">Coverage</string>
+    <string name="coverage_options">Coverage options</string>
+    <string name="coverage_4g_5g">4G + 5G</string>
+    <string name="coverage_5g_only">5G only</string>
+    <string name="coverage_indoor">Indoor</string>
+    <string name="coverage_signal">Signal</string>
+    <string name="coverage_reliability">Reliability</string>
+    <string name="coverage_zoom_in">Zoom in to see coverage</string>
+    <string name="legend_excellent">Excellent ≥ −85 dBm</string>
+    <string name="legend_good">Good</string>
+    <string name="legend_fair">Fair</string>
+    <string name="legend_weak">Weak</string>
+    <string name="legend_reliability_high">≥ 90%</string>
+    <string name="legend_reliability_mid">50–90%</string>
+    <string name="quality_excellent">Excellent</string>
+    <string name="quality_good">Good</string>
+    <string name="quality_fair">Fair</string>
+    <string name="quality_weak">Weak</string>
+    <string name="readout_predicted">Predicted %1$s dBm · %2$s · %3$d%% reliable</string>
+    <string name="readout_predicted_no_reliability">Predicted %1$s dBm · %2$s</string>
+    <string name="readout_best_sector">Best sector: %1$s %2$s · %3$s</string>
+    <string name="readout_calculating">Calculating…</string>
+    <string name="readout_no_prediction">No prediction here</string>
+    <string name="readout_no_coverage">No predicted coverage</string>
+
+    <!-- Antenna patterns (Updates) -->
+    <string name="patterns_updated">Antenna patterns: Updated %1$s (%2$s)</string>
+    <plurals name="patterns_transmitters">
+        <item quantity="one">%1$s transmitter</item>
+        <item quantity="other">%1$s transmitters</item>
+    </plurals>
+    <string name="patterns_standard">Antenna patterns: Using standard patterns until the monthly download runs (Wi-Fi + charging)</string>
+    <string name="patterns_download">Download patterns now</string>
+    <string name="patterns_confirm_title">Download about 1.6 GB on Wi-Fi?</string>
+    <string name="patterns_confirm_download">Download</string>
+    <string name="patterns_need_wifi">Connect to Wi-Fi to download patterns</string>
 </resources>

@@ -1,5 +1,6 @@
 package au.signalatlas.app.ui.map
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -159,16 +160,17 @@ fun NetworkDot(network: Network, modifier: Modifier = Modifier, size: Int = 10) 
     Box(modifier.size(size.dp).background(Color(NetworkColors.argb(network)), CircleShape))
 }
 
+@StringRes
+fun networkNameRes(network: Network): Int = when (network) {
+    Network.TELSTRA -> R.string.network_telstra
+    Network.OPTUS -> R.string.network_optus
+    Network.TPG -> R.string.network_tpg
+    Network.OPTUS_TPG_JV -> R.string.network_optus_tpg_jv
+    Network.NBN -> R.string.network_nbn
+}
+
 @Composable
-fun networkName(network: Network): String = stringResource(
-    when (network) {
-        Network.TELSTRA -> R.string.network_telstra
-        Network.OPTUS -> R.string.network_optus
-        Network.TPG -> R.string.network_tpg
-        Network.OPTUS_TPG_JV -> R.string.network_optus_tpg_jv
-        Network.NBN -> R.string.network_nbn
-    },
-)
+fun networkName(network: Network): String = stringResource(networkNameRes(network))
 
 /** `"n78 · 3.41 GHz · 100 MHz · 61.8 dBm EIRP"`. */
 fun carrierLine(c: Carrier): String =

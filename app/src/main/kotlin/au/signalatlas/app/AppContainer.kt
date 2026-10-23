@@ -6,6 +6,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import au.signalatlas.app.data.LocatorBasemapKeys
+import au.signalatlas.app.data.ServiceCoverage
 import au.signalatlas.app.data.ManagerUpdates
 import au.signalatlas.app.data.RepositoryTowerData
 import au.signalatlas.app.location.DeviceLocationSource
@@ -155,7 +156,9 @@ class AppContainer(context: Context) {
         updateManager.checkOnAppOpen()
     }
 
-    fun mapViewModel() = MapViewModel(towerData, ManagerUpdates(updateManager), LocatorBasemapKeys(basemap), location)
+    fun mapViewModel() = MapViewModel(
+        towerData, ManagerUpdates(updateManager), LocatorBasemapKeys(basemap), location, ServiceCoverage(coverage, repo, patterns),
+    )
 
     private companion object {
         const val TAG = "SignalAtlas"

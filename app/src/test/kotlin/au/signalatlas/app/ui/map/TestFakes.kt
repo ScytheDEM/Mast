@@ -1,11 +1,14 @@
 package au.signalatlas.app.ui.map
 
 import au.signalatlas.app.data.BasemapKeys
+import au.signalatlas.app.data.Coverage
 import au.signalatlas.app.data.LocationSource
 import au.signalatlas.app.data.TowerData
 import au.signalatlas.app.data.TowerSnapshot
 import au.signalatlas.app.data.Updates
 import au.signalatlas.core.acma.ImportReport
+import au.signalatlas.core.coverage.CoverageSample
+import au.signalatlas.core.coverage.CoverageSelection
 import au.signalatlas.core.data.DataMeta
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Site
@@ -13,6 +16,7 @@ import au.signalatlas.core.model.SiteDetail
 import au.signalatlas.core.model.SiteSummary
 import au.signalatlas.core.model.Tech
 import au.signalatlas.core.model.TowerFilter
+import au.signalatlas.core.update.HrpStatus
 import au.signalatlas.core.update.UpdateStatus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,6 +76,30 @@ internal class FakeUpdates : Updates {
     override suspend fun check() { checks++ }
     override fun updateNow(allowMetered: Boolean) { updateCalls += allowMetered }
     override fun cancel() { cancels++ }
+    override val patternStatus = MutableStateFlow(HrpStatus(null, 0, null))
+    var patternDownloads = 0
+    override fun downloadPatternsNow() { patternDownloads++ }
+}
+
+/** Mirrors the real template's shape: `.../<cacheId>/<view>/...`, so a view switch changes it but not the cache id. */
+internal class FakeCoverage : Coverage {
+    private val template = MutableStateFlow<String?>(null)
+    /** Every selection ever set, in order (null = off). */
+    val selections = mutableListOf<CoverageSelection?>()
+    var lastVisible: Set<Triple<Int, Int, Int>>? = null
+    /** Answers for [valueAt]; null = no tile yet. */
+    var sample: CoverageSample? = null
+    var valueAtCalls = 0
+
+    override var selection: CoverageSelection? = null
+        set(value) {
+            field = value
+            selections += value
+            template.value = value?.let { "https://coverage.test/v1/${it.cacheId()}/${it.view.segment}/{z}/{x}/{y}.png" }
+        }
+    override val urlTemplate = template
+    override fun setVisible(tiles: Set<Triple<Int, Int, Int>>) { lastVisible = tiles }
+    override fun valueAt(lat: Double, lon: Double): CoverageSample? { valueAtCalls++; return sample }
 }
 
 internal class FakeBasemap(val key: String?, val delayMs: Long = 0, val failure: Exception? = null) : BasemapKeys {
