@@ -100,6 +100,10 @@ internal class TerrainCoordinator(
             return true
         }
     }
+    /** Keys [regionForDemand] has recreated; guarded by [lock]. */
+    private val demandRecreated = object : LinkedHashMap<TerrainKey, Unit>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TerrainKey, Unit>) = size > MAX_DEMAND_RECREATED
+    }
     private val _epoch = MutableStateFlow(0L)
 
     /** Changes whenever any region's version does; the tile URL carries it. */
@@ -147,7 +151,15 @@ internal class TerrainCoordinator(
     /** The version of an existing region, or 0 without creating one. */
     fun peekVersion(k: TerrainKey?): Long = if (k == null) 0L else synchronized(lock) { regions[k]?.snapshot?.version ?: 0L }
 
-    fun region(k: TerrainKey): TerrainRegion = synchronized(lock) { regionLocked(k) }
+    /**
+     * The region a queued demand job works on: the kept one, or, if the LRU or a trim dropped it before the job ran, a
+     * recreated one, at most once per region and data key (selection, stamp and etag are part of [TerrainKey]). A
+     * region dropped again gets no second resurrection from a job (that could chase the LRU in a loop); the next tile
+     * request recreates it and claims its demand anew. Null when the job should do nothing.
+     */
+    fun regionForDemand(k: TerrainKey): TerrainRegion? = synchronized(lock) {
+        regions[k] ?: if (demandRecreated.put(k, Unit) == null) regionLocked(k) else null
+    }
 
     /** The region if it is still kept (a render in flight must not resurrect one that trim or the LRU dropped). */
     fun existingRegion(k: TerrainKey): TerrainRegion? = synchronized(lock) { regions[k] }
@@ -567,6 +579,8 @@ internal class TerrainCoordinator(
         const val MAX_REGIONS = 12
         const val MAX_TABLES_PER_REGION = 128
         const val PUBLISH_BATCH = 64
+        /** Remembered demand-job recreations; far more than [MAX_REGIONS], so a key leaves only long after its region. */
+        private const val MAX_DEMAND_RECREATED = 256
         private const val E5 = 100_000.0
         private const val FNV_OFFSET = -3750763034362895579L // 0xcbf29ce484222325
         private const val FNV_PRIME = 1099511628211L

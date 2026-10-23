@@ -138,8 +138,10 @@ class CoverageTileService internal constructor(
             tile, RenderPool.PRIORITY_TABLE,
             work = { _ ->
                 try {
-                    if (isCurrent(key)) {
-                        val tr = tc.region(tk) // recreated if the LRU or a trim dropped it meanwhile
+                    // Not isCurrent: an evicted region peeks as version 0, exactly the case to recover. The region is
+                    // recreated (at most once per data key) if the LRU or a trim dropped it meanwhile.
+                    val tr = if (isDataCurrent(key)) tc.regionForDemand(tk) else null
+                    if (tr != null) {
                         tc.setDemand(tr, region(key, sel).batch)
                         tc.ensureTables(tr, tile)
                     }
@@ -265,6 +267,15 @@ class CoverageTileService internal constructor(
     /** Number of terrain regions kept (test hook). */
     internal val terrainRegionCount: Int get() = terrain?.regionCount ?: 0
 
+    /** Whether the terrain region of tile (z, x, y) for the current selection and data is kept (test hook). */
+    internal fun hasTerrainRegion(z: Int, x: Int, y: Int): Boolean {
+        val tc = terrain ?: return false
+        val sel = selection.value ?: return false
+        val stamp = towers.stamp() ?: return false
+        val k = tc.keyFor(sel.cacheId(), stamp, patternsEtag(), z, x, y) ?: return false
+        return tc.existingRegion(k) != null
+    }
+
     /** Bytes [increaseResolution] would download for the current view; null while offline, without a view or below z10. */
     suspend fun estimateIncreaseBytes(): Long? = terrain?.estimateBytes()
 
@@ -361,9 +372,12 @@ class CoverageTileService internal constructor(
         }
     }
 
+    /** Selection, tower stamp and patterns etag are still the current ones (the terrain version is not checked). */
+    private fun isDataCurrent(key: TileKey): Boolean =
+        selection.value?.cacheId() == key.selectionId && towers.stamp() == key.towerStamp && patternsEtag() == key.patternsEtag
+
     private fun isCurrent(key: TileKey): Boolean =
-        selection.value?.cacheId() == key.selectionId && towers.stamp() == key.towerStamp &&
-            patternsEtag() == key.patternsEtag &&
+        isDataCurrent(key) &&
             terrainVersion(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y) == key.terrainVersion
 
     private fun render(key: TileKey, sel: CoverageSelection, cancel: CancelToken): RenderedTile? {

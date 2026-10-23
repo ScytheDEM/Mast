@@ -495,24 +495,76 @@ class TerrainServiceTest {
         assertThat(r.service.accuracyFor(setOf(b)).value).isEqualTo(Accuracy.QUICK)
     }
 
-    @Test fun aRegionEvictedBeforeItsQueuedDemandJobRunsIsRecreatedAndStillGetsItsTables() {
-        val r = rig(threads = 1)
-        r.render()
-        r.awaitEpochAbove(0)
-        val far = Triple(10, r.at.x + 40, r.at.y)
-        r.service.setVisible(setOf(far))
-        r.service.onTrimMemory(android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) // drops the tile's region
+    /** A tile of [key] in the tile cache, so a request for it never renders (and never asks for tables itself). */
+    private fun cacheTile(r: TerrainRig, key: TileKey) {
+        val n = au.signalatlas.engine.RenderedTile.PIXELS
+        r.cache.put(key, au.signalatlas.engine.RenderedTile(key.z, key.x, key.y, ByteArray(n) { 100 }, ByteArray(n), ByteArray(n), ShortArray(n), n, n))
+    }
+
+    /** Creates [MAX_REGIONS] + 1 other regions, which pushes the tile's region out of the coordinator's LRU. */
+    private fun evictTileRegion(r: TerrainRig) {
+        repeat(TerrainCoordinator.MAX_REGIONS + 1) { r.key(10, r.at.x + 1 + it, r.at.y) }
+        assertThat(r.service.hasTerrainRegion(r.tile.first, r.tile.second, r.tile.third)).isFalse()
+    }
+
+    /** Occupies the single pool thread until the returned latch is released. */
+    private fun blockPool(r: TerrainRig): java.util.concurrent.CountDownLatch {
         val started = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
-        r.rig.pool.submit(far, { started.countDown(); release.await() }, {})
-        started.await()
-        r.service.setVisible(setOf(far, r.tile))
-        val epoch = r.service.terrainEpoch.value
+        r.rig.pool.submit(r.tile, { started.countDown(); release.await() }, {})
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue()
+        return release
+    }
+
+    /** A low-priority job queued after everything queued so far; await the latch to know those ran. */
+    private fun marker(r: TerrainRig, run: () -> Unit = {}): java.util.concurrent.CountDownLatch {
+        val done = java.util.concurrent.CountDownLatch(1)
+        r.rig.pool.submit(r.tile, RenderPool.PRIORITY_TABLE, { try { run() } finally { done.countDown() } }, { done.countDown() })
+        return done
+    }
+
+    @Test fun aRegionEvictedBeforeItsQueuedDemandJobRunsIsRecreatedAndAsksForItsTables() {
+        val r = rig(threads = 1)
+        val key0 = r.key()
+        assertThat(key0.terrainVersion).isNotEqualTo(0L)
+        cacheTile(r, key0)
+        r.service.setVisible(setOf(r.tile))
+        val release = blockPool(r)
         r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS) // cache hit: the demand job queues
-        repeat(TerrainCoordinator.MAX_REGIONS + 1) { r.key(10, r.at.x + 1 + it, r.at.y) } // evicts the tile's region
+        evictTileRegion(r) // genuinely gone before the demand job runs
+        val ran = marker(r)
         release.countDown()
-        r.awaitEpochAbove(epoch) // tables come back from disk under a recreated region
-        assertThat(r.renderer.buildCalls).hasSize(2)
+        assertThat(ran.await(5, TimeUnit.SECONDS)).isTrue()
+        assertThat(r.service.hasTerrainRegion(r.tile.first, r.tile.second, r.tile.third)).isTrue() // the job recreated it
+        waitUntil(what = "the recreated region's tables built") { r.renderer.builds.size == 2 }
+        assertThat(r.renderer.buildCalls).containsExactly(3500f to 30f, 700f to 30f)
+        r.awaitEpochAbove(0)
+    }
+
+    @Test fun aDemandJobRecreatesAnEvictedRegionAtMostOncePerDataKey() {
+        val r = rig(threads = 1)
+        val key0 = r.key()
+        cacheTile(r, key0)
+        r.service.setVisible(setOf(r.tile))
+        val release = blockPool(r)
+        r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS) // demand job A queues
+        evictTileRegion(r)
+        // Runs after A recreated the region: evicts it, asks again (job B queues on a fresh region), evicts that too.
+        val churned = marker(r) {
+            evictTileRegion(r)
+            r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS)
+            evictTileRegion(r)
+        }
+        release.countDown()
+        assertThat(churned.await(5, TimeUnit.SECONDS)).isTrue()
+        val after = marker(r) // B has run
+        assertThat(after.await(5, TimeUnit.SECONDS)).isTrue()
+        // B must not resurrect the region a second time (no recreate -> evict -> recreate loop driven by demand jobs).
+        assertThat(r.service.hasTerrainRegion(r.tile.first, r.tile.second, r.tile.third)).isFalse()
+        assertThat(r.renderer.buildCalls).isEmpty()
+        // A real request still recreates it and gets its tables.
+        r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS)
+        waitUntil(what = "tables after a real request") { r.renderer.builds.size == 2 }
     }
 
     @Test fun belowZ10NoTerrainRegionIsEverCreatedAndTilesAreQuickOnly() {
