@@ -374,10 +374,12 @@ def reaches_tile(lat, lon, r_max_km, bounds):
 
 # ---------------------------------------------------------------- tile renderer
 
-def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr):
-    """Best-server RSRP, SINR, probability and carrier index at one point."""
+def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None):
+    """Best-server RSRP, SINR, probability, carrier index and whether the best server's terrain loss
+    came from a complete profile, at one point. `terrain(i, bearing, d2D)` -> (L_terr dB, complete)."""
     rsrp = []
     sigma = []
+    complete = []
     for i in idx:
         h = h_tx_clamped(carriers["hTx"][i])
         d2 = haversine_m(carriers["lat"][i], carriers["lon"][i], lat, lon)
@@ -392,10 +394,12 @@ def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr):
         if indoor:
             pl += o2i_low_loss_db(carriers["freqMhz"][i])
             sg = indoor_sigma(sg)
-        rsrp.append(carriers["eirpRe"][i] - a - pl)
+        l_terr, full = terrain(i, brg, d2) if terrain is not None else (0.0, False)
+        rsrp.append(carriers["eirpRe"][i] - a - pl - l_terr)    # Terrain rule 5
         sigma.append(sg)
+        complete.append(full)
     if not idx:
-        return NO_COVERAGE_DBM, -20.0, 0.0, NO_BEST
+        return NO_COVERAGE_DBM, -20.0, 0.0, NO_BEST, False
     b = 0
     for k in range(1, len(idx)):
         if rsrp[k] > rsrp[b]:        # ties keep the lower carrier index
@@ -409,15 +413,17 @@ def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr):
     scs = scs_khz("NR" if carriers["tech"][best] == 1 else "LTE", carriers["freqMhz"][best]) * 1000
     sinr = rsrp[b] - 10.0 * math.log10(interference + 10.0 ** (noise_dbm(scs) / 10.0))
     prob = coverage_probability(rsrp[b], thr, sigma[b])
-    return rsrp[b], sinr, prob, best
+    return rsrp[b], sinr, prob, best, complete[b]
 
 
-def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-118.0):
+def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-118.0, terrain=None):
     """Rules 8-9: render one 256x256 tile from structure-of-arrays `carriers` (the tile JSON fields).
 
     `patterns[id - 1]` is the 360-entry quantised attenuation of pattern `id`. Returns a dict with
     rsrpCodes / sinrCodes / probCodes / best (row-major, 65536 each) and `evaluated` (carriers that
-    passed culling)."""
+    passed culling). With `terrain(i, bearing, d2D)` -> (L_terr dB, complete) (Terrain rules 5-6) each
+    carrier's RSRP loses L_terr, and `terrainComplete` (65536 bools) says whether the pixel's best server
+    (nearest grid sample, as for `best`) had a complete profile."""
     bounds = tile_bounds(z, x, y)
     idx = [i for i in range(carriers["n"])
            if all(math.isfinite(v) for v in (carriers["lat"][i], carriers["lon"][i]))
@@ -428,19 +434,21 @@ def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-
         row = []
         for i in range(grid):
             lon = tile_lon(x + (i + 0.5) / grid, z)
-            row.append(_sample(carriers, idx, patterns, lat, lon, area, indoor, thr_dbm))
+            row.append(_sample(carriers, idx, patterns, lat, lon, area, indoor, thr_dbm, terrain))
         vals.append(row)
 
-    out = {"rsrpCodes": [], "sinrCodes": [], "probCodes": [], "best": [], "evaluated": len(idx)}
+    out = {"rsrpCodes": [], "sinrCodes": [], "probCodes": [], "best": [], "evaluated": len(idx),
+           "terrainComplete": []}
     if grid == 256:
         for j in range(256):
             for i in range(256):
-                r, s, p, b = vals[j][i]
+                r, s, p, b, full = vals[j][i]
                 c = rsrp_code(r)
                 out["rsrpCodes"].append(c)
                 out["sinrCodes"].append(sinr_code(s))
                 out["probCodes"].append(prob_code(p))
                 out["best"].append(NO_BEST if c == 0 else b)
+                out["terrainComplete"].append(full)
         return out
 
     scale = grid / 256.0
@@ -465,4 +473,5 @@ def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-
             out["sinrCodes"].append(sinr_code(v[1]))
             out["probCodes"].append(prob_code(v[2]))
             out["best"].append(NO_BEST if c == 0 else vals[jn][inn][3])
+            out["terrainComplete"].append(vals[jn][inn][4])
     return out
