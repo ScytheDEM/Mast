@@ -11,3 +11,4 @@ dist/
 .externalNativeBuild/
 **/.externalNativeBuild/
 engine/host/build/
+.DS_Store
