@@ -81,7 +81,7 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
 4. **Vertical attenuation `A_V`:**
    - **Beamwidth:** `θ3dB = clamp(32400 / (10^(G/10) · φ3dB), 4, 30)`. `G` defaults to 15 dBi and `φ3dB` to 65; for
      omni use `φ3dB = 360`.
-   - **Tilt:** ACMA tilt if ≠ 0. Otherwise by `h_tx`: < 15 m → 6°, 15–30 → 4°, 30–50 → 3°, > 50 → 2°. Add 2° for f ≥ 24.25 GHz.
+   - **Tilt (downtilt, positive down):** `min(|ACMA tilt|, 15)` if ACMA tilt ≠ 0 (ACMA uses both signs for downtilt: 39.6k negative vs 21.9k positive in the 2026-10-22 export). Otherwise by `h_tx`: < 15 m → 6°, 15–30 → 4°, 30–50 → 3°, > 50 → 2°. Add 2° for f ≥ 24.25 GHz.
    - **Formula:** `θ = atan2(h_tx − 1.5, d)` in degrees (positive downwards) and `A_V = min(12·((θ − tilt)/θ3dB)², 30)`.
    - **Combined:** `A = min(A_H + A_V, max(FB, 30))`.
 5. **Area class** per tile (from the count of sites within 3 km of the tile centre, any network): ≥ 40 → DENSE_URBAN,
@@ -99,7 +99,7 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
      - DENSE_URBAN and URBAN → UMa; SUBURBAN and RURAL → RMa (h = 5 m, W = 20 m); f ≥ 24.25 GHz → UMi-Street Canyon.
      - **LOS probability (Table 7.4.2-1):** UMa uses the h_UT ≤ 13 m form; RMa uses `1` for d ≤ 10 m, else `exp(−(d−10)/1000)`;
        UMi uses `1` for d ≤ 18 m, else `18/d + exp(−d/36)·(1 − 18/d)`.
-     - **Blend:** `PL = −10·log10(P·10^(−PL_LOS/10) + (1−P)·10^(−PL_NLOS/10))`, with PL_NLOS = max(PL_LOS, PL'_NLOS) as in the table.
+     - **Blend (dB domain, standard planning practice):** `PL = P·PL_LOS + (1−P)·PL_NLOS`, with PL_NLOS = max(PL_LOS, PL'_NLOS) as in the table. A power-domain blend lets a small LOS probability dominate at long range, which over-predicts coverage by about 11 dB at 3 km.
      - **Breakpoint:** `d_BP` uses the table's definition for each scenario.
    - **Shadowing σ (dB):** Hata family 8; UMa 6 (NLOS) / 4 (LOS); RMa 8 / 4; UMi 7.82 / 4. Blended σ =
      `P·σ_LOS + (1−P)·σ_NLOS`.
