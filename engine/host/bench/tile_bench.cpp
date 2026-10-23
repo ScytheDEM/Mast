@@ -70,7 +70,31 @@ Soa build(const std::string& json, int count, bool perCarrierOffset) {
     return s;
 }
 
-double runMs(const Soa& s, const sa::RenderParams& p, int reps, int32_t* evaluated) {
+// Synthetic HRP: 8 sector-shaped 360-bin patterns (0.25 dB steps, relative to the peak) with narrow deep nulls and a
+// weak back lobe, assigned round-robin; the peak bearing is the carrier's azimuth (0 when omni).
+std::vector<uint8_t> hrpTable() {
+    std::vector<uint8_t> t(8 * 360);
+    for (int p = 0; p < 8; ++p) {
+        const double w = 50.0 + 8.0 * p;
+        for (int k = 0; k < 360; ++k) {
+            const double d = std::min(k, 360 - k);
+            double q = std::min(12.0 * (d / w) * (d / w), 28.0) * 4.0;
+            if (k % 40 >= 37) q += 60.0;
+            if (d > 150.0) q = std::max(0.0, q - 40.0);
+            t[static_cast<size_t>(p) * 360 + static_cast<size_t>(k)] = static_cast<uint8_t>(std::min(q, 255.0));
+        }
+    }
+    return t;
+}
+
+void assignHrp(Soa& s) {
+    for (size_t i = 0; i < s.lat.size(); ++i) {
+        s.hrpId[i] = 1 + static_cast<int32_t>(i % 8);
+        s.hrpPeak[i] = std::isnan(s.az[i]) ? int16_t{0} : static_cast<int16_t>(std::lround(s.az[i]));
+    }
+}
+
+double runMs(const Soa& s, const sa::RenderParams& p, int reps, int32_t* evaluated, const sa::PatternTable* pat) {
     const sa::CarrierArrays c{static_cast<int32_t>(s.lat.size()), s.lat.data(), s.lon.data(), s.hTx.data(),
                               s.az.data(), s.tilt.data(), s.eirpRe.data(), s.freqMhz.data(), s.hBw.data(),
                               s.fb.data(), s.gain.data(), s.rMaxKm.data(), s.tech.data(), s.sectorKey.data(),
@@ -78,11 +102,11 @@ double runMs(const Soa& s, const sa::RenderParams& p, int reps, int32_t* evaluat
     static std::vector<uint8_t> r(sa::kTilePixels), si(sa::kTilePixels), pr(sa::kTilePixels);
     static std::vector<uint16_t> b(sa::kTilePixels);
     sa::TileOut out{r.data(), si.data(), pr.data(), b.data()};
-    const sa::PatternTable none{0, nullptr};
+    const sa::PatternTable& table = *pat;
     std::vector<double> times;
     for (int i = 0; i < reps; ++i) {
         const auto t0 = std::chrono::steady_clock::now();
-        *evaluated = sa::renderTile(c, none, p, out, nullptr);
+        *evaluated = sa::renderTile(c, table, p, out, nullptr);
         times.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
     std::sort(times.begin(), times.end());
@@ -100,18 +124,25 @@ int main() {
         int count;
         bool perCarrier;
         bool indoor;
+        bool hrp;
     } cases[] = {
-        {"109 carriers (as in vector)", 109, false, false},
-        {"300 carriers, replicas shifted as sites", 300, false, false},
-        {"300 carriers, every carrier its own site", 300, true, false},
-        {"300 carriers, replicas, indoor", 300, false, true},
+        {"109 carriers (as in vector)", 109, false, false, false},
+        {"300 carriers, replicas shifted as sites", 300, false, false, false},
+        {"300 carriers, every carrier its own site", 300, true, false, false},
+        {"300 carriers, replicas, indoor", 300, false, true, false},
+        {"300 carriers, replicas, HRP", 300, false, false, true},
+        {"300 carriers, own sites, HRP", 300, true, false, true},
+        {"300 carriers, replicas, HRP, indoor", 300, false, true, true},
     };
     for (const Case& c : cases) {
-        const Soa s = build(json, c.count, c.perCarrier);
+        Soa s = build(json, c.count, c.perCarrier);
+        const std::vector<uint8_t> hrp = hrpTable();
+        const sa::PatternTable table{8, hrp.data()};
+        if (c.hrp) assignHrp(s);
         p.indoor = c.indoor;
-        runMs(s, p, 2, &ev);  // warm up
+        runMs(s, p, 2, &ev, &table);  // warm up
         std::printf("%-44s z13 grid128 single thread: %7.2f ms median of 15 (evaluated %d)\n", c.name,
-                    runMs(s, p, 15, &ev), ev);
+                    runMs(s, p, 15, &ev, &table), ev);
     }
     return 0;
 }

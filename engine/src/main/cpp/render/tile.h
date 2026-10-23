@@ -33,6 +33,7 @@ struct RenderParams {
     Area area;     // fixed per tile (derived by the caller, rule 5)
     bool indoor;
     float thrDbm;
+    bool debugNoBounds = false;  // tests only: evaluate every carrier everywhere (no pruning)
 };
 
 // Each buffer is 256 * 256, row-major, row 0 = north edge. `best` is the index into CarrierArrays of the serving

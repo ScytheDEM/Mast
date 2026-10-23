@@ -34,6 +34,7 @@ struct Carrier {
     double eirpRe;
     double hd2;      // (h_tx - h_rx)^2, m^2
     double noiseMw;  // thermal noise for this carrier's sub-carrier spacing, mW
+    double hrpMinDb; // smallest attenuation of the HRP (dB), 0 without one
     int32_t freqKey, sectorKey, orig, group;
 };
 
@@ -93,6 +94,10 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         if (!(merc::haversineM(lat, lon, clampd(lat, south, north), clampd(lon, west, east)) <= rM)) continue;
         alive.push_back(i);
     }
+    if (cancelFlag != nullptr && *cancelFlag != 0) {
+        zeroOutputs(out);
+        return kRenderCancelled;
+    }
     if (alive.empty()) {
         zeroOutputs(out);
         return 0;
@@ -125,6 +130,12 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         cr.eirpRe = c.eirpRe[i];
         const double dh = sanitizeHeight(c.hTx[i]) - kHRx;
         cr.hd2 = dh * dh;
+        cr.hrpMinDb = 0.0;
+        if (hrp != nullptr) {
+            uint8_t lo = 255;
+            for (int32_t q = 0; q < 360; ++q) lo = std::min(lo, hrp[q]);
+            cr.hrpMinDb = lo * 0.25;
+        }
         const Tech tech = c.tech[i] == 1 ? Tech::NR : Tech::LTE;
         const double scsHz = scsKhz(tech, c.freqMhz[i]) * 1000.0;
         cr.noiseMw = std::pow(10.0, (-174.0 + 10.0 * std::log10(scsHz) + 7.0) / 10.0);
@@ -198,6 +209,10 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
     const bool indoor = p.indoor;
 
     for (int32_t bj = 0; bj < kBlocks; ++bj) {
+        if (cancelFlag != nullptr && *cancelFlag != 0) {
+            zeroOutputs(out);
+            return kRenderCancelled;
+        }
         // Bounds and visiting order for the blocks of this block row.
         for (int32_t bi = 0; bi < kBlocks; ++bi) {
             const int32_t jc = bj * B + B / 2, ic = bi * B + B / 2;
@@ -234,7 +249,24 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     // Lower bounds on the antenna attenuation over the block (A = min(A_H + A_V, maxA)).
                     const PreparedAntenna& an = cr.ant;
                     double aH = 0.0;
-                    if (an.hrp == nullptr && !an.omni && halfWidth < 180.0) {
+                    if (an.hrp != nullptr) {
+                        // Smallest HRP attenuation over the integer-degree bins the window can touch (rounded
+                        // outwards by one bin each side, with wrap); the whole pattern when the window is wide.
+                        aH = cr.hrpMinDb;
+                        if (halfWidth < 180.0) {
+                            const int64_t from = static_cast<int64_t>(std::floor(bearingC - halfWidth + 0.5)) - 1;
+                            const int64_t to = static_cast<int64_t>(std::floor(bearingC + halfWidth + 0.5)) + 1;
+                            if (to - from < 359) {
+                                uint8_t lo = 255;
+                                for (int64_t bin = from; bin <= to; ++bin) {
+                                    int64_t idx = (bin - an.hrpPeak) % 360;
+                                    if (idx < 0) idx += 360;
+                                    lo = std::min(lo, an.hrp[idx]);
+                                }
+                                aH = lo * 0.25;
+                            }
+                        }
+                    } else if (!an.omni && halfWidth < 180.0) {
                         double dphi = std::fmod(bearingC - an.azimuth + 180.0, 360.0);
                         if (dphi < 0.0) dphi += 360.0;
                         const double gap = std::fmax(0.0, std::fabs(dphi - 180.0) - halfWidth);
@@ -246,6 +278,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     const double aV = std::fmin(12.0 * (vGap / an.theta3) * (vGap / an.theta3), 30.0);
                     const double aBound = std::fmin(aH + aV, an.maxA);
                     bub[k] = cr.eirpRe - aBound - pl.plDb + kBoundSlackDb;
+                    if (p.debugNoBounds) bub[k] = std::numeric_limits<double>::infinity();
                     blin[k] = kLoad * std::pow(10.0, bub[k] / 10.0);
                     bord[k] = k;
                 }
