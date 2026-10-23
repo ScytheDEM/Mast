@@ -55,8 +55,9 @@ interface HrpDeps {
  * before the install leaves no `.building` file (the importer deletes it, and [PatternInstaller]
  * cleans up after a killed process); once the install begins, install and reload finish together.
  *
- * Ruling BB: a CRC or size mismatch of the zip entry discards the zip and its sidecar and retries,
- * so the next run downloads from byte 0.
+ * Rulings BB/HH: a version change while downloading (412, or a different ETag, Last-Modified or
+ * length) restarts the download from byte 0 after a fresh HEAD; a CRC or size mismatch of the zip
+ * entry discards the zip and its sidecar and retries, so the next run downloads from byte 0.
  */
 class HrpWorker(
     appContext: Context,
@@ -68,6 +69,8 @@ class HrpWorker(
         /** Progress phase while streaming the CSV into `patterns.db.building`. */
         const val PHASE_IMPORT = "patterns"
         const val LOG_TAG = "HrpWorker"
+        /** HEAD + download attempts in one run when the remote version changes underneath. */
+        const val VERSION_ATTEMPTS = 3
 
         /** Process-wide: monthly and manual runs share `patterns.db.building` and the download. */
         private val running = Mutex()
@@ -113,28 +116,38 @@ class HrpWorker(
         val downloaded = withContext(Dispatchers.IO) { if (zip.isFile) zip.length() else 0L }
         if (deps.freeBytes(deps.workDir) + downloaded < UpdatePolicy.HRP_MIN_FREE_BYTES) return Result.retry()
 
-        val info = try {
-            deps.remote.info()
-        } catch (e: RemoteFormatException) {
-            return Result.failure(workDataOf(UpdateWork.KEY_ERROR to "ACMA returned unexpected data: ${e.message}"))
-        } catch (e: IOException) {
-            return retryOrFail(e, "Could not reach ACMA")
-        }
-        if (deps.patterns.patterns.value?.etag == info.etag) {
-            // A finished download of the installed version (left by a stopped run) is useless.
-            if (deps.remote.downloaded(zip)?.etag == info.etag) deps.remote.discard(zip)
-            return Result.success()
-        }
-
-        goForeground()
+        // The CDN's edges can serve two versions at once: a version change between HEAD and GET (or
+        // between resumed requests) discards the bytes, and the download starts again from 0 with a
+        // fresh HEAD, up to [VERSION_ATTEMPTS] times in this run.
+        var info: RemoteFile
+        var attempt = 0
         val started = System.nanoTime()
-        try {
-            zip.parentFile?.mkdirs()
-            deps.remote.download(info, zip) { bytes, total ->
-                progress.value = UpdateWork.PHASE_DOWNLOAD to if (total > 0) bytes.toFloat() / total else 0f
+        while (true) {
+            info = try {
+                deps.remote.info()
+            } catch (e: RemoteFormatException) {
+                return Result.failure(workDataOf(UpdateWork.KEY_ERROR to "ACMA returned unexpected data: ${e.message}"))
+            } catch (e: IOException) {
+                return retryOrFail(e, "Could not reach ACMA")
             }
-        } catch (e: IOException) {
-            return retryOrFail(e, "Could not reach ACMA") // RemoteChangedException already discarded the file.
+            if (deps.patterns.patterns.value?.etag == info.etag) {
+                // A finished download of the installed version (left by a stopped run) is useless.
+                if (deps.remote.downloaded(zip)?.etag == info.etag) deps.remote.discard(zip)
+                return Result.success()
+            }
+            goForeground()
+            try {
+                zip.parentFile?.mkdirs()
+                deps.remote.download(info, zip) { bytes, total ->
+                    progress.value = UpdateWork.PHASE_DOWNLOAD to if (total > 0) bytes.toFloat() / total else 0f
+                }
+                break
+            } catch (e: RemoteChangedException) {
+                // Already discarded: the next attempt starts from byte 0.
+                if (++attempt >= VERSION_ATTEMPTS) return retryOrFail(e, "ACMA's pattern file kept changing")
+            } catch (e: IOException) {
+                return retryOrFail(e, "Could not reach ACMA")
+            }
         }
         Log.i(LOG_TAG, "phase=download ms=${(System.nanoTime() - started) / 1_000_000} bytes=${info.sizeBytes}")
 

@@ -16,6 +16,8 @@ import java.time.Instant
 import java.util.zip.CRC32
 import java.util.zip.ZipException
 import java.util.zip.ZipFile
+import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.floor
 import kotlinx.serialization.json.Json
 
@@ -23,9 +25,13 @@ import kotlinx.serialization.json.Json
  * Builds `patterns.db` (HRP import rules 1–6) by streaming `LICENCE_.csv` out of ACMA's HRP zip,
  * keeping only devices that are carriers in [import]'s `towersDb`.
  *
+ * Rule 2 (rows are angle intervals): each row of a carrier device is rasterised into 360 bins as it
+ * is read, so one device is buffered as 360 doubles, whatever its row count or order; the file keeps
+ * each SDD in one contiguous run.
+ *
  * Memory: the known SDD IDs as one sorted `LongArray` (≈850k), a parallel "stored" flag per SDD,
- * one 360-entry power buffer and the de-duplication map (one 360-byte key per distinct pattern).
- * Rows go straight to SQLite.
+ * the 360-bin raster and the de-duplication map (one 360-byte key per distinct pattern). Rows go
+ * straight to SQLite.
  *
  * Ruling BB: the zip entry's CRC-32 and size are checked while inflating (`ZipFile`'s entry stream
  * does not check them), so a corrupted or spliced download fails with [ZipException] at the end of
@@ -116,7 +122,9 @@ private class HrpRun(
     private val progress: (Float) -> Unit,
 ) {
     private val stored = BooleanArray(known.size)
+    /** The current device rasterised (rule 2): bin k's POWER, valid where [filled]. */
     private val powers = DoubleArray(ANGLES)
+    private val filled = BooleanArray(ANGLES)
     private val q = ByteArray(ANGLES)
     private val patternIds = HashMap<PatternKey, Int>()
 
@@ -126,8 +134,7 @@ private class HrpRun(
 
     // The current run of consecutive rows with one parsed SDD_ID.
     private var runSlot = -1 // index in [known], or -1 when not a carrier
-    private var runRows = 0
-    private var runOk = true
+    private var runOk = true // false once rule 2 rejects the device
 
     private lateinit var insertPattern: SQLiteStatement
     private lateinit var insertDevice: SQLiteStatement
@@ -160,16 +167,7 @@ private class HrpRun(
                     current = sdd
                     startRun(sdd)
                 }
-                if (runSlot >= 0) {
-                    if (runOk) {
-                        if (runRows < ANGLES && parser.valid && parser.startAngle == runRows) {
-                            powers[runRows] = parser.power
-                        } else {
-                            runOk = false
-                        }
-                    }
-                    runRows++
-                }
+                if (runSlot >= 0 && runOk) rasterise(parser)
             }
             if (started) finishRun(current)
             input.verify() // the parser read to EOF, which already verified; never skip it
@@ -187,8 +185,63 @@ private class HrpRun(
 
     private fun startRun(sdd: Long) {
         runSlot = if (sdd == HrpStreamParser.INVALID_SDD) -1 else known.binarySearch(sdd).coerceAtLeast(-1)
-        runRows = 0
         runOk = true
+        if (runSlot >= 0) filled.fill(false)
+    }
+
+    /**
+     * Rule 2 for one row, applied as it streams (the rule is order-independent): the row is the
+     * half-open interval `[START, STOP)` (STOP < START wraps through 360) and gives its POWER to bin
+     * `d mod 360` for every integer d in it, at most 360. A malformed row, POWER > 200 or a bin given
+     * two different POWERs rejects the device.
+     */
+    private fun rasterise(row: HrpStreamParser) {
+        val power = row.power
+        if (!row.valid || power > MAX_POWER) {
+            runOk = false
+            return
+        }
+        val start = row.startAngle
+        var stop = row.stopAngle
+        if (stop < start) stop += 360.0
+        if (abs(start) > MAX_ABS_ANGLE || abs(stop) > MAX_ABS_ANGLE) {
+            runOk = false // absurd angles (never in ACMA data); also keeps the Long arithmetic exact
+            return
+        }
+        val first = ceil(start).toLong()
+        val last = minOf(ceil(stop).toLong(), first + ANGLES)
+        var d = first
+        while (d < last) {
+            val k = Math.floorMod(d, ANGLES.toLong()).toInt()
+            if (!filled[k]) {
+                powers[k] = power
+                filled[k] = true
+            } else if (powers[k] != power) {
+                runOk = false
+                return
+            }
+            d++
+        }
+    }
+
+    /** Rule 2: fills up to [MAX_EMPTY_BINS] empty bins by circular linear interpolation; false if more are empty. */
+    private fun fillGaps(): Boolean {
+        var empty = 0
+        for (k in 0 until ANGLES) if (!filled[k]) empty++
+        if (empty == 0) return true
+        if (empty > MAX_EMPTY_BINS) return false
+        // Neighbours are looked up among the bins filled by rows ([filled] is not updated here).
+        for (k in 0 until ANGLES) {
+            if (filled[k]) continue
+            var a = 1
+            while (!filled[(k - a + ANGLES) % ANGLES]) a++
+            var b = 1
+            while (!filled[(k + b) % ANGLES]) b++
+            val lo = powers[(k - a + ANGLES) % ANGLES]
+            val hi = powers[(k + b) % ANGLES]
+            powers[k] = lo + (hi - lo) * a / (a + b) // the reference's double arithmetic, in its order
+        }
+        return true
     }
 
     /** Rules 2–4 for one run; [sdd] is the run's SDD_ID. */
@@ -196,7 +249,7 @@ private class HrpRun(
         val slot = runSlot
         when {
             slot < 0 -> skippedUnknown++
-            !runOk || runRows != ANGLES -> skippedIncomplete++
+            !runOk || !fillGaps() -> skippedIncomplete++
             stored[slot] -> Unit // a repeated complete run: the first wins, not counted
             else -> {
                 stored[slot] = true
@@ -260,6 +313,10 @@ private class HrpRun(
 
     private companion object {
         const val ANGLES = PatternsDbSchema.PATTERN_BYTES
+        /** Rule 2: POWER above this is a sentinel (e.g. 2400), not a pattern value. */
+        const val MAX_POWER = 200.0
+        const val MAX_EMPTY_BINS = 3
+        const val MAX_ABS_ANGLE = 1e9
     }
 }
 

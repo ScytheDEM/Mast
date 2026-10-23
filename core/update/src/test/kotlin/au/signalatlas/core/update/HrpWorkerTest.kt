@@ -52,7 +52,7 @@ class HrpWorkerTest {
         assertThat(run()).isEqualTo(Result.success())
         val store = checkNotNull(env.patterns.patterns.value)
         assertThat(store.deviceCount).isEqualTo(12)
-        assertThat(store.patternCount).isEqualTo(4)
+        assertThat(store.patternCount).isEqualTo(7)
         assertThat(store.etag).isEqualTo(env.hrpEtag)
         assertThat(store.towerStamp).isEqualTo("202610221934")
         assertThat(live.isFile).isTrue()
@@ -172,6 +172,26 @@ class HrpWorkerTest {
         env.hrpBytes = env.hrpFixture
         assertThat(run(attempt = 1)).isEqualTo(Result.success())
         assertThat(env.hrpGets()).isEqualTo(2)
+    }
+
+    // The CDN's edges mix versions: a GET answering with another ETag than the HEAD restarts from 0
+    // with a fresh HEAD in the same run.
+    @Test fun aVersionChangeBetweenHeadAndGetRestartsFromZeroInTheSameRun() {
+        env.seed("202610221934")
+        env.hrpGetEtags += "\"other-edge\""
+        assertThat(run()).isEqualTo(Result.success())
+        assertThat(env.hrpGets()).isEqualTo(2)
+        assertThat(env.requests.count { it.url.encodedPath == "/hrp" && it.method == "HEAD" }).isEqualTo(2)
+        assertThat(env.patterns.patterns.value!!.etag).isEqualTo(env.hrpEtag)
+    }
+
+    @Test fun aVersionThatKeepsChangingRetriesLater() {
+        env.seed("202610221934")
+        repeat(HrpWorker.VERSION_ATTEMPTS) { env.hrpGetEtags += "\"other-edge-$it\"" }
+        assertThat(run()).isEqualTo(Result.retry())
+        assertThat(env.hrpZip.exists()).isFalse()
+        assertThat(sidecar.exists()).isFalse()
+        assertThat(live.exists()).isFalse()
     }
 
     @Test fun sidecarRecordsEtagSizeAndLastModified() {

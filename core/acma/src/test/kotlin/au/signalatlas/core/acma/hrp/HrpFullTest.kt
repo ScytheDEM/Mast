@@ -56,9 +56,10 @@ class HrpFullTest {
             ),
         )
 
-        // hrp_reference.py on the same files (zip ETag 0x8DF2EDC716D83D0, entry 2026-10-21, export 2026-10-22).
+        // hrp_reference.py (rule 2: rows are angle intervals) on the same files (zip ETag 0x8DF2EDC716D83D0,
+        // entry 2026-10-21, export 2026-10-22).
         assertThat(report).isEqualTo(
-            HrpReport(devices = 95319, patterns = 3390, skippedIncomplete = 741534, skippedUnknown = 17857, rows = 280553129),
+            HrpReport(devices = 836256, patterns = 14507, skippedIncomplete = 597, skippedUnknown = 17857, rows = 280553129),
         )
         BundledSQLiteDriver().open(out.path).use { db ->
             db.prepare("SELECT d.pattern_id, d.peak_bearing, d.peak_dbw, p.att FROM device_pattern d " +

@@ -26,7 +26,11 @@ data class RemoteFile(val etag: String, val sizeBytes: Long, val lastModified: S
  * A resumable, byte-exact download of one URL into a local file, shared by [AcmaRemote] and
  * [HrpRemote]. It never retries (WorkManager owns that) and never splices two versions: the bytes in
  * `dest` are only resumed when the sidecar `<dest>.etag` records exactly the [RemoteFile] asked for,
- * and the server confirms it (`If-Range`, then ETag / Last-Modified / Content-Range on the answer).
+ * and the server confirms it. A resumed request is pinned (`If-Range`, `If-Match`,
+ * `If-Unmodified-Since`); a 412 discards the partial file and restarts from byte 0. Any answer
+ * whose ETag, Last-Modified or length differs from the [RemoteFile] discards [dest] and throws
+ * [RemoteChangedException] (the CDN's edges have served two versions at once): the caller re-reads
+ * the version (HEAD) and starts again from 0.
  *
  * Sidecar format: three lines, ETag, size, Last-Modified (empty when unknown). It is written and
  * synced before the first byte, so the provenance of a partial file is never lost.
@@ -104,10 +108,17 @@ internal class ResumableDownload(private val http: OkHttpClient, private val url
                 if (offset > 0) {
                     header("Range", "bytes=$offset-")
                     header("If-Range", file.etag)
+                    // Pin the version: an edge serving another one answers 412 instead of a mixed range.
+                    header("If-Match", file.etag)
+                    file.lastModified?.let { header("If-Unmodified-Since", it) }
                 }
             }
             .build()
         return http.cancellableCall(request) { response ->
+            if (response.code == 412 && offset > 0) {
+                discard(dest) // the partial bytes may belong to another version: restart from 0
+                return@cancellableCall false
+            }
             if (response.code != 200 && !(response.code == 206 && offset > 0) && !(response.code == 416 && offset > 0)) {
                 throw IOException("Download failed: HTTP ${response.code}")
             }
@@ -136,7 +147,14 @@ internal class ResumableDownload(private val http: OkHttpClient, private val url
                     }
                     append = true
                 }
-                200 -> append = false // Range ignored or If-Range failed: whole body from 0.
+                200 -> {
+                    append = false // Range ignored or If-Range failed: whole body from 0.
+                    val length = response.header("Content-Length")?.trim()?.toLongOrNull()
+                    if (length != null && length != total) {
+                        discard(dest)
+                        throw RemoteChangedException("Remote file changed during download (length $length, expected $total)")
+                    }
+                }
                 else -> return@cancellableCall false // 416
             }
             if (!append) writeSidecar(dest, file)
@@ -152,8 +170,9 @@ internal class ResumableDownload(private val http: OkHttpClient, private val url
                         currentCoroutineContext().ensureActive()
                         val n = source.read(buffer)
                         if (n < 0) break
-                        out.write(buffer, 0, n)
                         written += n
+                        if (written > total) break
+                        out.write(buffer, 0, n)
                         if (written - lastReported >= PROGRESS_STEP_BYTES) {
                             lastReported = written
                             onProgress(written, total)
@@ -164,6 +183,10 @@ internal class ResumableDownload(private val http: OkHttpClient, private val url
                 // call.cancel() surfaces as IOException("Canceled"); report the cancellation instead.
                 currentCoroutineContext().ensureActive()
                 throw e
+            }
+            if (written > total) {
+                discard(dest)
+                throw RemoteChangedException("Remote file changed during download (more than $total bytes)")
             }
             if (dest.length() != total) {
                 throw IOException("Download incomplete: ${dest.length()} of $total bytes")

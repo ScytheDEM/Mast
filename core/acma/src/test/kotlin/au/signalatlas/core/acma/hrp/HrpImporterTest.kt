@@ -5,6 +5,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import au.signalatlas.core.acma.AcmaImporter
 import au.signalatlas.core.acma.ImportCancelledException
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
@@ -174,20 +175,85 @@ class HrpImporterTest {
     }
 
     @Test fun parserReadsFieldsByPosition() {
-        val p = HrpStreamParser(ByteArrayInputStream("$HEADER\r\n2909149471,9001,265,266,-33.6\r\n,x,360,0,7\r\n5,R,1,2\r\n".toByteArray()))
+        val p = HrpStreamParser(
+            ByteArrayInputStream("$HEADER\r\n2909149471,9001,265,266,-33.6\r\n,x,359.5,0.5,7\r\n5,R,1,2\r\n6,R,a,2,1\r\n".toByteArray()),
+        )
         assertThat(p.next()).isTrue()
         assertThat(p.sddId).isEqualTo(2909149471L)
-        assertThat(p.startAngle).isEqualTo(265)
+        assertThat(p.startAngle).isEqualTo(265.0)
+        assertThat(p.stopAngle).isEqualTo(266.0)
         assertThat(p.powerDbw).isEqualTo(-33.6f)
         assertThat(p.power).isEqualTo(-33.6)
         assertThat(p.valid).isTrue()
         assertThat(p.next()).isTrue()
         assertThat(p.sddId).isEqualTo(HrpStreamParser.INVALID_SDD)
-        assertThat(p.valid).isFalse() // angle 360 is out of range
+        assertThat(p.startAngle).isEqualTo(359.5) // half-degree grid
+        assertThat(p.stopAngle).isEqualTo(0.5)
+        assertThat(p.valid).isTrue()
         assertThat(p.next()).isTrue()
         assertThat(p.sddId).isEqualTo(5L)
         assertThat(p.valid).isFalse() // four fields
+        assertThat(p.next()).isTrue()
+        assertThat(p.startAngle.isNaN()).isTrue()
+        assertThat(p.valid).isFalse() // non-numeric START
         assertThat(p.next()).isFalse()
+    }
+
+    // Rule 2: one shape written as 1° rows, as merged half-degree rows in shuffled order with a wrap,
+    // and with [0,1) missing all give the same raster up to the interpolated bin.
+    @Test fun intervalsAreRasterisedWhateverTheirGridWidthOrOrder() {
+        val sdds = withDb(towersDb) { db ->
+            db.prepare("SELECT sdd_id FROM carrier ORDER BY sdd_id LIMIT 3").use { st -> List(3) { st.step(); st.getLong(0) } }
+        }
+        fun power(k: Int) = if (k in 100..109) 40.0 else 30.0 - (k % 90) * 0.1
+        val plain = (0 until 360).joinToString("") { "${sdds[0]},R,$it,${it + 1},${fmt(power(it))}\r\n" }
+        // Half grid: [k-0.5, k+0.5) carries bin k; the flat top 100..109 is one merged row; [359.5,0.5) wraps.
+        val half = buildList {
+            add("${sdds[1]},R,359.5,0.5,${fmt(power(0))}")
+            for (k in 1 until 360) if (k !in 101..109) add("${sdds[1]},R,${k - 0.5},${if (k == 100) "109.5" else "${k + 0.5}"},${fmt(power(k))}")
+        }.shuffled(Random(7)).joinToString("") { "$it\r\n" }
+        val missing0 = (1 until 360).joinToString("") { "${sdds[2]},R,$it,${it + 1},${fmt(power(it))}\r\n" }
+        val (report, out) = import(zipOf("$HEADER\r\n$plain$half$missing0"))
+        assertThat(report.devices).isEqualTo(3)
+        assertThat(report.skippedIncomplete).isEqualTo(0)
+        withDb(out) { db ->
+            val ids = sdds.map { sdd ->
+                db.prepare("SELECT pattern_id, peak_bearing FROM device_pattern WHERE sdd_id = $sdd").use { st ->
+                    check(st.step()); st.getLong(0) to st.getLong(1)
+                }
+            }
+            assertThat(ids[1]).isEqualTo(ids[0]) // same pattern and peak bearing
+            assertThat(ids[0].second).isEqualTo(100L)
+            // Bin 0 interpolated from bins 359 and 1: (21.1 + 29.9) / 2 = 25.5, not the plain 30.0.
+            assertThat(ids[2].first).isNotEqualTo(ids[0].first)
+        }
+    }
+
+    @Test fun rule2Rejections() {
+        val sdd = knownSdd()
+        fun device(edit: (MutableList<String>) -> Unit): String {
+            val rows = (0 until 360).map { "$sdd,R,$it,${it + 1},${fmt(20.0 + (it % 10))}" }.toMutableList()
+            edit(rows)
+            return rows.joinToString("") { "$it\r\n" }
+        }
+        val cases = mapOf(
+            "4 empty bins" to device { it.subList(100, 104).clear() },
+            "conflicting overlap" to device { it += "$sdd,R,10,12,99.0" },
+            "sentinel POWER" to device { it[5] = "$sdd,R,5,6,2400" },
+            "malformed row" to device { it[5] = "$sdd,R,5,6" },
+        )
+        for ((name, rows) in cases) {
+            val (report, _) = import(zipOf("$HEADER\r\n$rows"))
+            assertWithMessage(name).that(report.skippedIncomplete).isEqualTo(1)
+            assertWithMessage(name).that(report.devices).isEqualTo(0)
+        }
+        // An overlap with the same POWER, 3 empty bins and POWER exactly 200 are all accepted.
+        val ok = device {
+            it += "$sdd,R,10,11,${fmt(20.0)}" // bin 10 again, same POWER
+            it.subList(200, 203).clear() // bins 200..202 empty
+            it[0] = "$sdd,R,0,1,200"
+        }
+        assertThat(import(zipOf("$HEADER\r\n$ok")).first.devices).isEqualTo(1)
     }
 
     @Test fun parserReachesAMillionRowsPerSecond() {
@@ -195,7 +261,7 @@ class HrpImporterTest {
         fun run(repeats: Int): Pair<Long, Long> {
             val p = HrpStreamParser(RepeatingStream(HEADER_BYTES, block, repeats))
             var n = 0L
-            var sum = 0L
+            var sum = 0.0
             val start = System.nanoTime()
             while (p.next()) {
                 n++
@@ -213,6 +279,8 @@ class HrpImporterTest {
     }
 
     // --- helpers ---
+
+    private fun fmt(x: Double) = String.format(Locale.ROOT, "%.2f", x)
 
     private fun knownSdd(): Long = withDb(towersDb) { it.long("SELECT MIN(sdd_id) FROM carrier") }
 

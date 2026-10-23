@@ -12,10 +12,9 @@ class HrpFormatException(message: String) : Exception(message)
  * The header must equal [HEADER] exactly (else [HrpFormatException]). For each row [next] sets:
  * - [sddId]: field 1 as an ASCII decimal integer (surrounding whitespace allowed, ≤ 2^63−1), or
  *   [INVALID_SDD] when unparseable;
- * - [startAngle]: field 3, 0..359, or −1;
- * - [power] / [powerDbw]: field 5, a decimal number (`[+-]digits[.digits]`, whitespace allowed),
- *   or NaN;
- * - [valid]: the row has exactly five fields and a usable angle and power.
+ * - [startAngle], [stopAngle], [power]: fields 3–5 as decimal numbers (`[+-]digits[.digits]`,
+ *   whitespace allowed; the half-degree grid has `0.5`), each NaN when unparseable;
+ * - [valid]: the row has exactly five fields and all three numbers parse.
  *
  * Quoting follows Python's `csv` defaults (a field opening with `"` is quoted, `""` is a literal
  * quote), so a quoted identifier cannot shift the field positions. A malformed row never throws;
@@ -30,22 +29,23 @@ class HrpStreamParser(private val input: InputStream) {
 
     var sddId: Long = INVALID_SDD
         private set
-    var startAngle: Int = -1
+    /** START_ANGLE in degrees (the interval is `[startAngle, stopAngle)`), or NaN. */
+    var startAngle: Double = Double.NaN
         private set
-    /** POWER in dBW, parsed exactly as Python's `float()` (correctly rounded double). */
+    var stopAngle: Double = Double.NaN
+        private set
+    /** POWER (nominally dBW), parsed exactly as Python's `float()` (correctly rounded double), or NaN. */
     var power: Double = Double.NaN
         private set
     val powerDbw: Float get() = power.toFloat()
     var valid: Boolean = false
         private set
 
-    // Per-row field accumulators.
+    // Per-row field accumulators: SDD_ID digits, and the raw bytes of fields 3–5.
     private var sddState = LEAD
     private var sddValue = 0L
-    private var angleState = LEAD
-    private var angleValue = 0
-    private val powerText = ByteArray(MAX_POWER_BYTES)
-    private var powerLen = 0
+    private val numText = Array(3) { ByteArray(MAX_NUMBER_BYTES) }
+    private val numLen = IntArray(3)
 
     /** Advances to the next data row; false at end of input. */
     fun next(): Boolean {
@@ -55,9 +55,7 @@ class HrpStreamParser(private val input: InputStream) {
 
         sddState = LEAD
         sddValue = 0L
-        angleState = LEAD
-        angleValue = 0
-        powerLen = 0
+        numLen.fill(0)
         var field = 0
         var fieldStart = true
         var quoted = false
@@ -99,17 +97,26 @@ class HrpStreamParser(private val input: InputStream) {
         }
 
         sddId = if (sddState == DIGITS || sddState == TRAIL) sddValue else INVALID_SDD
-        startAngle = if (angleState == DIGITS || angleState == TRAIL) angleValue else -1
-        power = parsePower()
-        valid = field == 4 && startAngle >= 0 && !power.isNaN()
+        startAngle = parseNumber(0)
+        stopAngle = parseNumber(1)
+        power = parseNumber(2)
+        valid = field == 4 && !startAngle.isNaN() && !stopAngle.isNaN() && !power.isNaN()
         return true
     }
 
     private fun feed(field: Int, b: Int) {
         when (field) {
             0 -> feedSdd(b)
-            2 -> feedAngle(b)
-            4 -> if (powerLen < MAX_POWER_BYTES) powerText[powerLen++] = b.toByte() else powerLen = TOO_LONG
+            2, 3, 4 -> {
+                val i = field - 2
+                val n = numLen[i]
+                if (n < MAX_NUMBER_BYTES) {
+                    numText[i][n] = b.toByte()
+                    numLen[i] = n + 1
+                } else {
+                    numLen[i] = TOO_LONG
+                }
+            }
         }
     }
 
@@ -130,32 +137,21 @@ class HrpStreamParser(private val input: InputStream) {
         }
     }
 
-    private fun feedAngle(b: Int) {
-        val d = b - '0'.code
-        when (angleState) {
-            LEAD, DIGITS -> when {
-                d in 0..9 -> {
-                    angleValue = angleValue * 10 + d
-                    angleState = if (angleValue > MAX_ANGLE) BAD else DIGITS
-                }
-                isSpace(b) -> if (angleState == DIGITS) angleState = TRAIL
-                else -> angleState = BAD
-            }
-            TRAIL -> if (!isSpace(b)) angleState = BAD
-        }
-    }
-
-    /** `[+-]?digits*(.digits*)?` with at least one digit, surrounded by optional whitespace; else NaN. */
-    private fun parsePower(): Double {
-        var end = powerLen
+    /**
+     * Field `3 + i` as `[+-]?digits*(.digits*)?` with at least one digit, surrounded by optional
+     * whitespace; else NaN.
+     */
+    private fun parseNumber(field: Int): Double {
+        val text = numText[field]
+        var end = numLen[field]
         if (end <= 0 || end == TOO_LONG) return Double.NaN
         var i = 0
-        while (i < end && isSpace(powerText[i].toInt() and 0xFF)) i++
-        while (end > i && isSpace(powerText[end - 1].toInt() and 0xFF)) end--
+        while (i < end && isSpace(text[i].toInt() and 0xFF)) i++
+        while (end > i && isSpace(text[end - 1].toInt() and 0xFF)) end--
         if (i == end) return Double.NaN
         val start = i
         var negative = false
-        val sign = powerText[i].toInt()
+        val sign = text[i].toInt()
         if (sign == '-'.code || sign == '+'.code) {
             negative = sign == '-'.code
             i++
@@ -165,7 +161,7 @@ class HrpStreamParser(private val input: InputStream) {
         var fraction = 0
         var dot = false
         while (i < end) {
-            val c = powerText[i].toInt()
+            val c = text[i].toInt()
             if (c == '.'.code && !dot) {
                 dot = true
             } else if (c in '0'.code..'9'.code) {
@@ -180,7 +176,7 @@ class HrpStreamParser(private val input: InputStream) {
         if (digits == 0) return Double.NaN
         if (digits > MAX_EXACT_DIGITS) {
             // Not exactly representable by the fast path (never in ACMA data): let the JDK round it.
-            return String(powerText, start, end - start, Charsets.ISO_8859_1).toDouble()
+            return String(text, start, end - start, Charsets.ISO_8859_1).toDouble()
         }
         // Both operands are exact doubles, so the IEEE quotient is the correctly rounded value.
         val v = mantissa.toDouble() / POW10[fraction]
@@ -231,13 +227,12 @@ class HrpStreamParser(private val input: InputStream) {
         const val HEADER = "SDD_ID,DEVICE_REGISTRATION_IDENTIFIER,START_ANGLE,STOP_ANGLE,POWER"
         /** [sddId] of a row whose SDD_ID does not parse (real IDs are ≥ 0). */
         const val INVALID_SDD = -1L
-        const val MAX_ANGLE = 359
 
         private val HEADER_BYTES = HEADER.toByteArray(Charsets.ISO_8859_1)
         private const val BUFFER_BYTES = 64 * 1024
-        private const val MAX_POWER_BYTES = 64
-        /** [powerLen] of a POWER field longer than [MAX_POWER_BYTES] (rejected). */
-        private const val TOO_LONG = MAX_POWER_BYTES + 1
+        private const val MAX_NUMBER_BYTES = 64
+        /** [numLen] of a numeric field longer than [MAX_NUMBER_BYTES] (rejected). */
+        private const val TOO_LONG = MAX_NUMBER_BYTES + 1
         /** Up to 15 digits the mantissa is below 2^53 and therefore exact. */
         private const val MAX_EXACT_DIGITS = 15
         private val POW10 = DoubleArray(MAX_EXACT_DIGITS + 1) { Math.pow(10.0, it.toDouble()) } // exact (≤ 1e22)

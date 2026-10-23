@@ -269,9 +269,11 @@ class AcmaRemoteTest {
 
     @Test fun truncatedResponseThrowsAndKeepsPartialFile() = runTest {
         serve {
+            // The full length is declared (after body(), which would set the truncated one), then the
+            // connection drops after 300 000 bytes.
             MockResponse.Builder().code(200).addHeader("ETag", etag)
-                .setHeader("Content-Length", body.size.toString())
                 .body(bytes(body.copyOf(300_000)))
+                .setHeader("Content-Length", body.size.toString())
                 .onResponseEnd(SocketEffect.ShutdownConnection).build()
         }
         assertThrows(IOException::class.java) { runBlocking { remote.download(info, dest) { _, _ -> } } }

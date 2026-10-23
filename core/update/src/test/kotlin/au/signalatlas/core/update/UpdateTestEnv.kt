@@ -76,6 +76,8 @@ class UpdateTestEnv(
     @Volatile var hrpEtagOverride: String? = null
     val hrpEtag get() = hrpEtagOverride ?: "\"hrp-${hrpBytes.contentHashCode()}\""
     @Volatile var hrpLastModified = "Tue, 20 Oct 2026 19:00:44 GMT"
+    /** ETags the next HRP GETs answer with instead of [hrpEtag] (one per GET), as a CDN edge serving another version. */
+    val hrpGetEtags = java.util.concurrent.ConcurrentLinkedQueue<String>()
     /** Free bytes the HRP worker sees (fake StatFs). */
     @Volatile var freeBytes: Long = 64L shl 30
     /** Called with every HRP importer timing line, on the importing thread. */
@@ -90,7 +92,8 @@ class UpdateTestEnv(
             override fun dispatch(request: RecordedRequest): MockResponse {
                 requests += request
                 if (request.url.encodedPath == "/hrp") {
-                    val r = MockResponse.Builder().addHeader("ETag", hrpEtag).addHeader("Last-Modified", hrpLastModified)
+                    val tag = if (request.method == "GET") hrpGetEtags.poll() ?: hrpEtag else hrpEtag
+                    val r = MockResponse.Builder().addHeader("ETag", tag).addHeader("Last-Modified", hrpLastModified)
                     return if (request.method == "HEAD") {
                         r.addHeader("Content-Length", hrpBytes.size.toString()).build()
                     } else {

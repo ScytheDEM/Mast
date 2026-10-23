@@ -177,24 +177,32 @@ samples are 8 SDDs: one base device, wrap, half, merged, shuffled, missing-0, an
 entry `LICENCE_.csv` 10,060,668,828 bytes, entry timestamp 2026-10-21 00:00, CRC-32 `0xcde3120b`, against the
 towers.db built from the 2026-10-22 export (852,634 carriers).
 
+Rule 2 as amended 2026-10-23 (rows are angle intervals, commit 9de290b; reference 9483d80):
+
 ```
-devices 95319, patterns 3390, skippedIncomplete 741534, skippedUnknown 17857, rows 280553129
+devices 836256, patterns 14507, skippedIncomplete 597, skippedUnknown 17857, rows 280553129
 SDD 2909149471: pattern 1, peak bearing 265, peak 33.6 dBW, floor code 100 (peak - 25.0 dB)
 ```
 
-- `hrp_reference.py`: 611 s wall-clock, 1.1 GB peak RSS.
-- Kotlin `HrpImporter` (host JVM, 256 MB heap cap): 32.3 s (towers 0.05 s, stream 32.3 s); `patterns.db` 3.73 MB;
-  peak heap used 31.6 MB (baseline 4.9 MB). Byte parser alone: ~14 M rows/s on the host.
+- `hrp_reference.py`: 857 s wall-clock, 1.0 GB peak RSS; identical counts.
+- Kotlin `HrpImporter` (host JVM, 256 MB heap cap): 45.9 s (towers 0.05 s, stream 45.9 s); `patterns.db` 27.1 MB;
+  peak heap used 30.9 MB (baseline 4.9 MB). Byte parser alone: ~11 M rows/s on the host.
 - Run: `ACMA_HRP_ZIP=<scratch>/hrp/spectra_licence_hrp.zip ACMA_FULL_ZIP=<scratch>/acma/spectra_rrl.zip ./gradlew :core:acma:test --tests '*HrpFullTest*'`
-
-**Data shape (2026-10-23 scan of all 854,710 runs, not only carriers).** Contrary to the earlier "verified fact",
-most devices are *not* in angle order: 96,697 runs are 360 rows in order 0..359; 315,528 are 360 rows covering
-0..359 exactly once in another order; 51,980 are 359 rows missing angle 0; 390,505 are other shapes (split runs,
-gaps). Rule 2 as written (and the reference) keeps only the first group, hence 741,534 `skippedIncomplete`.
-This was measured before the 2026-10-23 amendment of rule 2 (rows are angle intervals; commit 9de290b). The
-reference now rasterises intervals, and these full-file counts must be re-measured.
+- 836,256 of the 852,634 carriers get a pattern (98.1%); 15,781 carriers have no HRP rows.
+- The shape analysis (`.superpowers/sdd/2026-10-23-signal-atlas-m2-coverage-engine/hrp-shape-analysis.md`)
+  predicted 836,137 because it excluded |POWER| > 200. Rule 2 rejects only POWER > 200, so the 119 carriers
+  whose only out-of-range values are *negative* sentinels (e.g. −2,146,826,368, −380.3) are accepted: their
+  sentinel bins quantise to 255 (≥ 63.75 dB down). The 597 rejected carriers: 596 with positive sentinels (2400
+  etc.; the real 60°-only sectors are among them) and 1 conflicting overlap.
+- Before the amendment (rows read as 1° samples in order): devices 95,319, patterns 3,390, skippedIncomplete
+  741,534; Kotlin 32.3 s, patterns.db 3.73 MB.
 
 **Ruling BB, as implemented.** `java.util.zip.ZipFile`'s entry stream does *not* check the CRC (verified on JDK 17:
 a zip with a flipped CRC reads without error; only `ZipInputStream` checks). `HrpImporter` therefore CRC-32s and
 counts the inflated bytes itself and throws `ZipException` at end of stream on a CRC or size mismatch; `HrpWorker`
 then discards the zip and its sidecar (`<zip>.etag`: ETag, Content-Length, Last-Modified) and retries.
+
+**Download pinning (Rulings BB/HH; the CDN's edges mix versions).** A resumed request sends `Range`, `If-Range`,
+`If-Match` and `If-Unmodified-Since`; a 412 discards the partial file and restarts from byte 0. A response whose
+ETag, Last-Modified or length differs from the HEAD discards the file (`RemoteChangedException`); `HrpWorker` then
+HEADs again and downloads from 0, up to 3 times per run, before retrying later.
