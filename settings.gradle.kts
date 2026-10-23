@@ -24,4 +24,4 @@ rootProject.name = "signal-atlas"
 
 include(":app")
 include(":core:model", ":core:acma", ":core:data", ":core:update", ":core:map")
-include(":engine")
+include(":engine", ":core:coverage")
