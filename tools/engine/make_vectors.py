@@ -3,7 +3,7 @@
 Usage: python3 -I tools/engine/make_vectors.py <rrl_fixture.zip> <out_dir>
 
 Writes pathloss.csv, antenna.csv, patterns.csv, eirp_re.csv, tile_canberra_z13.json,
-tile_canberra_z13_urban_indoor.json and tile_edge_z12.json (the first fringe tile found outward from Canberra) into
+tile_canberra_z13_urban_indoor_{hi,mid}.json and tile_edge_z12.json (the first fringe tile found outward from Canberra) into
 <out_dir> (normally engine/host/test/vectors). Floats are written with 6 decimals, "nan" (CSV) or
 null (JSON) means "not supplied". Output is deterministic.
 """
@@ -111,10 +111,16 @@ def eirp_rows():
             yield (tech, f, bw, eirp, ref.eirp_per_re(eirp, tech, f, bw))
 
 
-def tile_carriers(model, networks):
+def family(f_mhz):
+    """Path-loss model family of a frequency: Hata, COST-231 or TR 38.901."""
+    return "<1500" if f_mhz < 1500.0 else "1500-2200" if f_mhz <= 2200.0 else ">2200"
+
+
+def tile_carriers(model, networks, families=None):
     sites = model["sites"]
     antennas = model["antennas"]
-    kept = sorted((c for c in model["carriers"] if c["network"] in networks),
+    kept = sorted((c for c in model["carriers"] if c["network"] in networks
+                   and (families is None or family(c["freq_hz"] / 1e6) in families)),
                   key=lambda c: (c["site_id"], c["sdd_id"]))
     cols = {k: [] for k in ("sddId", "band", "lat", "lon", "hTx", "az", "tilt", "eirpDbm", "bwHz", "eirpRe",
                             "freqMhz", "hBw", "fb", "gain", "rMaxKm", "tech", "sectorKey", "freqKey",
@@ -139,7 +145,7 @@ def tile_carriers(model, networks):
         cols["hBw"].append(r6(ant["hbw"]))
         cols["fb"].append(r6(ant["f2b"]))
         cols["gain"].append(r6(ant["gain"]))
-        cols["rMaxKm"].append(r6(ref.max_range_km(e_re, f_mhz, h, "RURAL")))  # Ruling FF
+        cols["rMaxKm"].append(r6(ref.culling_range_km(e_re, f_mhz, h)))  # rule 9: max over area classes
         cols["tech"].append(TECH_ORDINAL[c["tech"]])
         cols["sectorKey"].append(c["sector_id"])
         cols["freqKey"].append(NETWORK_ORDINAL[c["network"]] * 1_000_000 + (c["freq_hz"] + 50_000) // 100_000)
@@ -167,15 +173,15 @@ def json_value(v):
     raise TypeError(type(v))
 
 
-def render(model, z, x, y, grid=None, networks=("TELSTRA",), area=None, indoor=False):
+def render(model, z, x, y, grid=None, networks=("TELSTRA",), area=None, indoor=False, families=None):
     """Render a tile; `area` overrides the rule-5 class (the renderer takes area as an input)."""
     derived, n_sites = ref.tile_area(model["sites"].values(), z, x, y)
     area = area or derived
     grid = grid or (128 if z <= 13 else 256)
-    carriers = tile_carriers(model, networks)
+    carriers = tile_carriers(model, networks, families)
     out = ref.render_tile(carriers, [], z, x, y, grid, area, indoor, -118.0)
     return {"area": area, "derivedArea": derived, "sites": n_sites, "grid": grid, "networks": list(networks),
-            "indoor": indoor, "carriers": carriers, "out": out}
+            "families": None if families is None else list(families), "indoor": indoor, "carriers": carriers, "out": out}
 
 
 def uncovered_share(out):
@@ -202,6 +208,8 @@ def write_tile(path, z, x, y, rendered):
     area, n_sites, grid, carriers, out = (rendered[k] for k in ("area", "sites", "grid", "carriers", "out"))
     selection = {"networks": rendered["networks"], "hrp": False,
                  "source": "core/acma/src/test/resources/acma/fixture.zip"}
+    if rendered["families"] is not None:
+        selection["families"] = rendered["families"]
     if area != rendered["derivedArea"]:
         selection["areaForced"] = True
         selection["derivedArea"] = rendered["derivedArea"]
@@ -242,11 +250,14 @@ def main():
     model = acma.load(fixture)
     x, y = ref.tile_for(TILE_POINT[0], TILE_POINT[1], TILE_Z)
     write_tile(os.path.join(out_dir, "tile_canberra_z13.json"), TILE_Z, x, y, render(model, TILE_Z, x, y))
-    urban = render(model, TILE_Z, x, y, networks=("TELSTRA", "OPTUS"), area="URBAN", indoor=True)
-    families = {("<1500" if f < 1500 else "1500-2200" if f <= 2200 else ">2200") for f in urban["carriers"]["freqMhz"]}
-    if len(families) != 3:
-        raise ValueError("urban+indoor selection lacks a model family: %s" % sorted(families))
-    write_tile(os.path.join(out_dir, "tile_canberra_z13_urban_indoor.json"), TILE_Z, x, y, urban)
+    for suffix, fam in (("hi", ">2200"), ("mid", "1500-2200")):
+        urban = render(model, TILE_Z, x, y, networks=("TELSTRA", "OPTUS"), area="URBAN", indoor=True,
+                       families=(fam,))
+        best = [b for b in urban["out"]["best"] if b != ref.NO_BEST]
+        share = sum(1 for b in best if family(urban["carriers"]["freqMhz"][b]) == fam) / max(len(best), 1)
+        if not best or share < 0.9:
+            raise ValueError("%s tile: best server from %s on only %.1f%% of covered pixels" % (suffix, fam, share * 100))
+        write_tile(os.path.join(out_dir, "tile_canberra_z13_urban_indoor_%s.json" % suffix), TILE_Z, x, y, urban)
     x, y, rendered = find_fringe_tile(model, FRINGE_Z)
     write_tile(os.path.join(out_dir, "tile_edge_z12.json"), FRINGE_Z, x, y, rendered)
 

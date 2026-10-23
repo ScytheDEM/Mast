@@ -275,10 +275,10 @@ def coverage_probability(rsrp_dbm, thr_dbm, sigma_db):
     return 0.5 * math.erfc((thr_dbm - rsrp_dbm) / (sigma_db * math.sqrt(2.0)))
 
 
-def max_range_km(eirp_re_dbm, f_mhz, h_tx, area="RURAL"):
+def max_range_km(eirp_re_dbm, f_mhz, h_tx, area):
     """Rule 9 culling radius: the 3D distance where eirpRe - PL (A = 0, outdoor) falls to -140 dBm,
     by 60 bisection steps on [0.02, 80] km; 80 when still above at 80 km, 0 when below at 0.02 km.
-    Per Ruling FF the engine always uses the RURAL class (independent of the tile's area)."""
+    The culling radius itself is `culling_range_km` (the maximum over the area classes)."""
     def margin(d):
         return eirp_re_dbm - path_loss(f_mhz, d, h_tx, area)[0] - RSRP_FLOOR_DBM
     lo, hi = 0.02, R_MAX_CAP_KM
@@ -293,6 +293,12 @@ def max_range_km(eirp_re_dbm, f_mhz, h_tx, area="RURAL"):
         else:
             hi = mid
     return lo
+
+
+def culling_range_km(eirp_re_dbm, f_mhz, h_tx):
+    """Rule 9 R_max, once per carrier: the maximum of `max_range_km` over all four area classes, so
+    culling never drops a carrier that the tile's class would reach."""
+    return max(max_range_km(eirp_re_dbm, f_mhz, h_tx, a) for a in AREAS)
 
 
 # ---------------------------------------------------------------- rule 9: codes

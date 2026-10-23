@@ -29,7 +29,8 @@ Floats have 6 decimals. In CSVs, `nan` means "not supplied" (NaN in `AntennaPara
 | `patterns.csv` | `id,att`: two synthetic relative patterns, 360 space-separated quantised values (0.25 dB). |
 | `eirp_re.csv` | `tech,f_mhz,bw_hz,eirp_dbm,eirp_re_dbm`: every table bandwidth, non-table bandwidths (fallback formula, minimum 6), bandwidth 0, and the SCS frequency edges. |
 | `tile_canberra_z13.json` | One rendered tile (below). |
-| `tile_canberra_z13_urban_indoor.json` | The Canberra tile, URBAN, indoor, TELSTRA + OPTUS (below). |
+| `tile_canberra_z13_urban_indoor_hi.json` | The Canberra tile, URBAN, indoor, > 2200 MHz carriers only (UMa) (below). |
+| `tile_canberra_z13_urban_indoor_mid.json` | The same, 1500–2200 MHz carriers only (COST-231) (below). |
 | `tile_edge_z12.json` | A fringe tile, same format (below). |
 
 ### `tile_canberra_z13.json`
@@ -47,8 +48,9 @@ every TELSTRA carrier of the M1 fixture (`core/acma/src/test/resources/acma/fixt
   - `hTx` is the stored height. The model clamps it to ≥ 3 m where it is used.
   - `tech`: 0 LTE, 1 NR. `sectorKey`: the sector id from the reference importer (first-seen order in the export).
   - `freqKey` = `networkOrdinal·1 000 000 + round(freq_hz / 100 000)`, i.e. network plus frequency in 0.1 MHz.
-  - `rMaxKm` = `max_range_km(eirpRe, freqMhz, hTx, RURAL)`. Per Ruling FF it is computed once per carrier with
-    the RURAL class, independent of the tile's area.
+  - `rMaxKm` = `culling_range_km(eirpRe, freqMhz, hTx)`: the maximum of `max_range_km` over all four area
+    classes (rule 9), computed once per carrier and independent of the tile's area. RURAL alone is not enough:
+    a 3.5 GHz carrier at h 3 m with eirpRe 45 reaches 12.9 km in URBAN (UMa) but only 3.9 km in RURAL (RMa).
 - `rsrpCodes, sinrCodes, probCodes, best`: 65536 values each, row-major (row 0 is the north edge). `best` is
   the carrier index, or 65535.
 
@@ -57,20 +59,21 @@ the reference used. Area: no fixture site lies within 3 km of the tile centre (t
 so the tile is **RURAL** (Okumura-Hata/COST-231 rural and RMa). All 109 carriers pass culling; every pixel
 is covered (RSRP codes 69..113).
 
-### `tile_canberra_z13_urban_indoor.json`
+### `tile_canberra_z13_urban_indoor_hi.json` and `_mid.json`
 
-The same tile, rendered with `area` forced to **URBAN** (its derived class is RURAL) and `indoor = true`
-(O2I low loss, σ in quadrature).
+These are the same tile, rendered with `area` forced to **URBAN** (its derived class is RURAL) and
+`indoor = true` (O2I low loss, σ in quadrature). Each is limited to one path-loss family, so that model
+decides the outputs. Carriers come from TELSTRA and OPTUS; B40 is OPTUS-only in the fixture.
+`selection.families` records the family.
 
-- The selection is every TELSTRA and OPTUS carrier of the fixture: 176 carriers, all evaluated. It covers
-  all three model families:
-  - < 1500 MHz, Hata: B28, B8, n5, n26, B26.
-  - 1500–2200 MHz, COST-231: B1, B3.
-  - > 2200 MHz, UMa: n78, B7, B40. B40 is OPTUS, hence the second network.
-- `make_vectors.py` fails if a family is missing.
-- Every pixel is covered: RSRP codes 22..63, SINR codes 60..119, probability codes 28..216.
-- Caveat: the best server is B28 at every pixel. The UMa and COST-231 carriers are evaluated but do not
-  reach the outputs, because SINR only counts the best server's `freqKey`.
+| File | Family / model | Carriers | Covered pixels | Best server |
+|---|---|---|---|---|
+| `_hi` | > 2200 MHz, UMa | 59 (n78, B7, B40) | 24 960 / 65 536, RSRP codes 0..32 | B7 22 769, n78 2 191 |
+| `_mid` | 1500–2200 MHz, COST-231 | 81 (B1, B3) | 36 587 / 65 536, RSRP codes 0..28 | B3 34 715, B1 1 872 |
+
+`make_vectors.py` checks that the best server comes from the intended family on ≥ 90% of covered pixels
+(here 100%, since the selection is filtered). Both tiles also exercise code 0 / `best` 65535 inside the
+coverage area. The B28-dominated outdoor tile `tile_canberra_z13.json` is unchanged.
 
 ### `tile_edge_z12.json`
 
@@ -174,6 +177,7 @@ h_UT < 13 m):
 - **Culling.** A carrier is evaluated when the haversine distance from the site to the nearest point of
   the tile's lat/lon box (the site clamped into the box) is ≤ `rMaxKm`.
 - **`max_range_km`.**
-  - The search runs on the 3D distance, with A = 0, outdoors, in the RURAL class (Ruling FF).
+  - The search runs on the 3D distance, with A = 0, outdoors, for one area class. R_max
+    (`culling_range_km`) is the maximum over the four classes.
   - It returns 80 when `eirpRe − PL(80 km) ≥ −140`, and 0 when the margin is negative at 0.02 km.
   - Otherwise it runs 60 bisection steps on [0.02, 80] and returns the last distance with a margin ≥ 0.

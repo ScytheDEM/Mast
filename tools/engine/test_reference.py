@@ -166,6 +166,16 @@ class MaxRange(unittest.TestCase):
         self.assertEqual(ref.max_range_km(60.0, 700.0, 60.0, "RURAL"), 80.0)
 
 
+    def test_culling_range_is_max_over_classes(self):
+        # Low-mounted 3.5 GHz carrier (h 3 m, eirpRe 45): UMa (URBAN) reaches ~12.9 km, RMa (RURAL) only ~3.9 km.
+        urban = ref.max_range_km(45.0, 3500.0, 3.0, "URBAN")
+        rural = ref.max_range_km(45.0, 3500.0, 3.0, "RURAL")
+        self.assertGreater(urban, rural)
+        r = ref.culling_range_km(45.0, 3500.0, 3.0)
+        self.assertGreaterEqual(r, urban)
+        self.assertEqual(r, max(ref.max_range_km(45.0, 3500.0, 3.0, a) for a in ref.AREAS))
+
+
 class Geometry(unittest.TestCase):
     def test_tile_of_canberra(self):
         self.assertEqual(ref.tile_for(-35.2809, 149.1300, 13), (7489, 4954))
