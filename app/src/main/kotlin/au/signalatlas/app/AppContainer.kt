@@ -1,6 +1,7 @@
 package au.signalatlas.app
 
 import android.content.Context
+import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
@@ -109,11 +110,12 @@ class AppContainer(context: Context) {
         )
     }
 
-    /** One render thread when the device is running hot, otherwise min(4, cores - 2), at least 1. */
     private fun renderThreads(): Int {
-        val hot = app.getSystemService(PowerManager::class.java)?.getThermalHeadroom(THERMAL_FORECAST_S)
-            ?.let { !it.isNaN() && it >= THERMAL_HEADROOM_LIMIT } == true
-        return if (hot) 1 else (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, 4)
+        val pm = app.getSystemService(PowerManager::class.java)
+        val sdk = Build.VERSION.SDK_INT
+        // getThermalHeadroom is API 30; API 29 only has the coarse status.
+        val headroom = if (sdk >= Build.VERSION_CODES.R) pm?.getThermalHeadroom(THERMAL_FORECAST_S) else null
+        return RenderThreads.budget(sdk, headroom, pm?.currentThermalStatus ?: 0, Runtime.getRuntime().availableProcessors())
     }
 
     private val basemap = BasemapLocator(
@@ -158,7 +160,6 @@ class AppContainer(context: Context) {
     private companion object {
         const val TAG = "SignalAtlas"
         const val THERMAL_FORECAST_S = 10
-        const val THERMAL_HEADROOM_LIMIT = 0.85f
         /** Per-phase import timings: `phase=<name> ms=<elapsed>`, then `phase=total`. */
         const val IMPORT_LOG_TAG = "AcmaImporter"
         /** HRP import timings: `phase=towers|stream|total ms=<elapsed>`. */

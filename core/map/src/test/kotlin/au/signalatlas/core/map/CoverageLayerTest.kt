@@ -88,7 +88,9 @@ class CoverageLayerTest {
 
     @Test
     fun visibleTilesAreClampedToTheServedZooms() {
-        assertThat(CoverageLayer.visibleTiles(sydney, 3.0).map { it.first }.toSet()).containsExactly(8)
+        assertThat(CoverageLayer.visibleTiles(sydney, 3.0)).isEmpty()
+        assertThat(CoverageLayer.visibleTiles(sydney, 7.4)).isEmpty()
+        assertThat(CoverageLayer.visibleTiles(sydney, 7.6).map { it.first }.toSet()).containsExactly(8)
         assertThat(CoverageLayer.visibleTiles(sydney, 19.0).map { it.first }.max()).isEqualTo(16)
         assertThat(CoverageLayer.visibleTiles(sydney, Double.NaN)).isEmpty()
     }

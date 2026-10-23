@@ -120,7 +120,8 @@ object CoverageLayer {
      * requested ones are rendered.
      */
     fun visibleTiles(bounds: GeoBounds, cameraZoom: Double): Set<Triple<Int, Int, Int>> {
-        if (cameraZoom.isNaN()) return emptySet()
+        // The layer is hidden below z8 (minzoom), so nothing is requested there.
+        if (cameraZoom.isNaN() || cameraZoom < MIN_ZOOM - 0.5) return emptySet()
         val out = HashSet<Triple<Int, Int, Int>>()
         val zooms = setOf(
             cameraZoom.roundToInt().coerceIn(MIN_ZOOM, MAX_ZOOM),
