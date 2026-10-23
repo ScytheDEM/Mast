@@ -29,12 +29,59 @@ def _parse_int(s, hi):
     return v if v <= hi else None
 
 
-def _parse_power(s):
+def _parse_number(s):
+    """A finite decimal number, or None."""
     try:
         v = float(s.strip())
-    except ValueError:
+    except (ValueError, AttributeError):
         return None
     return v if math.isfinite(v) else None
+
+
+MAX_POWER = 200.0
+MAX_EMPTY_BINS = 3
+
+
+def rasterise(rows):
+    """Rule 2: a device's rows -> 360 per-degree POWER values, or None when the device is rejected.
+
+    Each row is (START_ANGLE, STOP_ANGLE, POWER) text, read as the half-open interval [START, STOP)
+    in degrees; STOP < START wraps through 360. Bin k takes the POWER of the row containing an angle
+    congruent to k (mod 360), i.e. every integer d with START <= d < STOP (STOP + 360 when wrapping).
+    Rejected: an unparseable / non-finite field, POWER > 200, two rows giving one bin different
+    POWERs, or more than 3 empty bins. Up to 3 empty bins are filled by circular linear
+    interpolation between the nearest filled bins on either side."""
+    bins = [None] * 360
+    for row in rows:
+        if len(row) != 3:
+            return None
+        start, stop, power = (_parse_number(v) for v in row)
+        if start is None or stop is None or power is None or power > MAX_POWER:
+            return None
+        if stop < start:
+            stop += 360.0
+        first, last = math.ceil(start), math.ceil(stop)   # integers d with start <= d < stop
+        last = min(last, first + 360)
+        for d in range(first, last):
+            k = d % 360
+            if bins[k] is None:
+                bins[k] = power
+            elif bins[k] != power:
+                return None
+    empty = [k for k in range(360) if bins[k] is None]
+    if len(empty) > MAX_EMPTY_BINS:
+        return None
+    out = list(bins)
+    for k in empty:
+        a = 1
+        while bins[(k - a) % 360] is None:
+            a += 1
+        b = 1
+        while bins[(k + b) % 360] is None:
+            b += 1
+        lo, hi = bins[(k - a) % 360], bins[(k + b) % 360]
+        out[k] = lo + (hi - lo) * a / (a + b)
+    return out
 
 
 def normalise(powers):
@@ -49,7 +96,8 @@ def normalise(powers):
 
 
 def run(hrp_zip, known_sdds):
-    """Apply rules 1-4 and 6. `hrp_zip` is a path or binary file object.
+    """Apply rules 1-4 and 6. `hrp_zip` is a path or binary file object. A device is a run of
+    consecutive rows with the same parsed SDD_ID (the file keeps each SDD in one run).
 
     Returns (report, devices, patterns): devices maps sdd -> (pattern id, peak bearing, peak dBW)
     in first-seen order; patterns[id - 1] is the 360-entry quantised attenuation."""
@@ -59,15 +107,15 @@ def run(hrp_zip, known_sdds):
     pattern_ids = {}
     patterns = []
 
-    def finish(sdd, angles, powers):
+    def finish(sdd, rows):
         if sdd is None or sdd not in known_sdds:
             counts["skippedUnknown"] += 1
             return
-        complete = len(angles) == 360 and all(a == i for i, a in enumerate(angles)) and None not in powers
-        if not complete:
+        powers = rasterise(rows)
+        if powers is None:
             counts["skippedIncomplete"] += 1
             return
-        if sdd in devices:  # a repeated complete run of a stored SDD: the first wins
+        if sdd in devices:  # a repeated accepted run of a stored SDD: the first wins
             return
         peak, peak_bearing, q = normalise(powers)
         key = bytes(q)
@@ -83,23 +131,19 @@ def run(hrp_zip, known_sdds):
             raise ValueError("unexpected header %r" % header)
         started = False
         current = None      # parsed SDD_ID of the current run (None = unparseable)
-        angles, powers = [], []
+        rows = []
         for row in reader:
             counts["rows"] += 1
-            if len(row) != 5:
-                row = (row + [""] * 5)[:5]
-            sdd = _parse_int(row[0], INT64_MAX)
+            sdd = _parse_int(row[0], INT64_MAX) if row else None
             if not started or sdd != current:
                 if started:
-                    finish(current, angles, powers)
+                    finish(current, rows)
                 started = True
                 current = sdd
-                angles, powers = [], []
-            angle = _parse_int(row[2], 359)
-            angles.append(-1 if angle is None else angle)
-            powers.append(_parse_power(row[4]))
+                rows = []
+            rows.append(tuple(row[2:5]) if len(row) == 5 else ())   # () = malformed row
         if started:
-            finish(current, angles, powers)
+            finish(current, rows)
 
     counts["devices"] = len(devices)
     counts["patterns"] = len(patterns)

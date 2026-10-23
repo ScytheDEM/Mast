@@ -83,61 +83,93 @@ Python reference for the "HRP import rules" 1-6. The Kotlin `HrpImporter` must r
   - It writes the HrpReport and, for each SDD given, `sdd, patternId, peakBearing, peakDbw, att0_10`
     (the first 11 quantised values) and `att` (all 360).
 - `make_hrp_fixture.py <hrp.zip URL or file> <rrl_fixture.zip> <out.zip> [<prefix.bin>]`
-  - Reads the real zip from offset 0 with HTTP Range requests (256 KiB each) and inflates the single
-    entry from its local header. It stops after the first 40 complete devices.
-  - The 2026-10-23 build read 262 144 bytes (one request) of `https://cdn.acma.gov.au/rrl/spectra_licence_hrp.zip`,
-    entry timestamp 2026-10-21 00:00.
-  - `<prefix.bin>` keeps those bytes (in the scratchpad, never the repo). Rebuilding from it is byte-identical.
-- `test_hrp_reference.py`: unit checks of the rules on synthetic zips.
+  - Inflates the single entry from its local header and scans it device by device. It stops once it has
+    the first 40 devices that rule 2 accepts, plus the first real example of each interval shape and of
+    the sentinel rejection (`MAX_BYTES` 256 MiB at most).
+  - **Range reads (1 MiB each) are pinned.** The first response's ETag and Last-Modified are sent as
+    `If-Match` / `If-Unmodified-Since`. A 412, a changed ETag / Last-Modified / Content-Range total, or a
+    range not starting where asked aborts the scan. It then restarts from offset 0, up to 3 attempts, so
+    every byte comes from one version.
+  - **The 2026-10-23 build** read 139 460 608 bytes: ETag `0x8DF2EDC716D83D0`, Last-Modified 2026-10-20
+    19:00:44 GMT, entry timestamp 2026-10-21 00:00.
+    - The first two attempts hit 412s: the CDN was serving a newer zip, ETag `0x8DF307A679241A2`,
+      Last-Modified 2026-10-22 20:23:59 GMT, 1 562 257 938 bytes.
+    - The bytes read equal the first 139 460 608 bytes of the full 2026-10-21 copy (sha256 `847f73ee…1aa4`),
+      so the fixture can be rebuilt from either.
+  - `<prefix.bin>` keeps the bytes read (in the scratchpad, never the repo). Rebuilding from it is byte-identical.
+- `test_hrp_reference.py`: unit checks of the rules on synthetic zips (rasterising, gap fill, every rejection).
 
 ## Regenerate
 
 ```
 python3 -I tools/acma/test_hrp_reference.py
 python3 -I tools/acma/make_hrp_fixture.py https://cdn.acma.gov.au/rrl/spectra_licence_hrp.zip \
-    core/acma/src/test/resources/acma/fixture.zip core/acma/src/test/resources/acma/hrp_fixture.zip <scratch>/hrp/prefix.bin
+    core/acma/src/test/resources/acma/fixture.zip core/acma/src/test/resources/acma/hrp_fixture.zip <scratch>/hrp/prefix2.bin
+# or, offline: make_hrp_fixture.py <scratch>/hrp/prefix2.bin (or the full 2026-10-21 zip) ... (same output)
 python3 -I tools/acma/hrp_reference.py core/acma/src/test/resources/acma/hrp_fixture.zip \
     core/acma/src/test/resources/acma/fixture.zip core/acma/src/test/resources/acma/hrp_expected.json \
-    2908964477 2909790812 2908989497 2909001795 2909790836
+    2908964477 2909790823 2908976001 2909790824 2908989497 2909790832 2909790836 2909006783
 ```
 
-**Caution.** The CDN has served two different zips under the same ETag `0x8DF2EDC716D83D0`. They have
-entry timestamps 2026-10-23 and 2026-10-21, and a different device order from the fourth device on. Use
-the saved prefix to reproduce the committed fixture.
+**Caution.** The CDN has served different zips under the same ETag `0x8DF2EDC716D83D0` (entry timestamps
+2026-10-23 and 2026-10-21). Since 2026-10-23 it also serves a newer zip (`0x8DF307A679241A2`), with edges
+mixing versions. Use the saved prefix to reproduce the committed fixture.
 
 Ruling BB (for Task 4): the on-device HRP download must verify the entry CRC-32 (from the central
 directory or data descriptor) against the inflated bytes, because an ETag match does not guarantee the same
 bytes. A mismatch fails the import and keeps the existing `patterns.db` (see "Ruling BB, as implemented" below).
 
-## Fixture contents (`hrp_fixture.zip`, entry `LICENCE_.csv`, CRLF, 16 199 rows)
+## Fixture contents (`hrp_fixture.zip`, entry `LICENCE_.csv`, CRLF, 18 044 rows, 52 devices)
+
+Fixture SDD_IDs are TELSTRA/OPTUS carriers of the tower fixture, interleaved, in this order.
 
 | Devices | SDD_ID | Exercises |
 |---|---|---|
-| 40 real complete devices, in file order | 30 keep their real SDD_IDs | `skippedUnknown` (30) |
-| ... of which devices 0, 4, ..., 36 | 2908964477, 2909790812, 2908970467, 2909790822, 2908975948, 2909790823, 2908976001, 2909790824, 2908989497, 2909790832 (fixture TELSTRA/OPTUS carriers, interleaved) | kept devices; the real shapes de-duplicate to 4 patterns (pattern 3 is shared by 6 devices with different peak bearings) |
-| copy of real device 1, angle 359 dropped | 2908994717 | incomplete (359 rows) -> `skippedIncomplete` |
-| copy of real device 2, rows for angles 10 and 11 swapped | 2909790833 | out of order -> `skippedIncomplete` |
-| copy of real device 3 | 999999999 | SDD not in the tower fixture -> `skippedUnknown` |
-| one real shape rotated by +90° / +200° | 2909001795 / 2909790836 | identical `q`, different peak bearings (211 / 321) -> one pattern, shared with 2909790812 |
+| 40 real accepted devices, in file order (integer grid, sorted) | 35 keep their real SDD_IDs | `skippedUnknown` (35) |
+| ... of which devices 0, 8, 16, 24, 32 | 2908964477, 2909790812, 2908970467, 2909790822, 2908975948 | kept; patterns 1, 2, 2, 2, 3 |
+| real 2909253965 (361 rows, integer grid, a row wrapping past 360, starts at 211°) | 2909790823 | wrap; pattern 5 |
+| real 2909304224 (353 rows, half-degree grid `[0,0.5)`, `[0.5,1.5)`, ... `[359.5,360)`) | 2908976001 | half grid; pattern 6 |
+| real 2909304226 (353 rows, half grid with rows wider than 1°) | 2909790824 | merged rows; pattern 6 (same shape as the half example) |
+| real 2909149665 (360 rows, not a rotation of sorted order) | 2908989497 | shuffled; pattern 2 |
+| real 2909149801 (359 rows, `[0,1)` missing) | 2909790832 | degree 0 filled by interpolation; pattern 4 |
+| real 2909202009 (1 row `330,30`, POWER 2400) | 2908994717 | sentinel (and 60°) -> `skippedIncomplete` |
+| copy of a plain real device with degrees 100-103 removed | 2909790833 | 4 empty bins -> `skippedIncomplete` |
+| copy of a plain real device plus a row `[10,12)` with POWER + 1.0 | 2909001795 | conflicting overlap -> `skippedIncomplete` |
+| copy of a plain real device | 999999999 | SDD not in the tower fixture -> `skippedUnknown` |
+| one plain real shape rotated by +90° / +200°, the second listed in reverse order | 2909790836 / 2909006783 | identical `q`, peak bearings 211 / 321 -> one pattern (7) |
+| rows 0..59 of a plain real device | 2909790842 | 60°-only sector (300 empty bins) -> `skippedIncomplete` |
 
-`hrp_expected.json`: devices 12, patterns 4, skippedIncomplete 2, skippedUnknown 31, rows 16 199.
+The 60°-only device is synthetic. The real 60° devices seen in the scan carry the 2400 sentinel, and the
+first one is the sentinel example above.
+
+`hrp_expected.json`: devices 12, patterns 7, skippedIncomplete 4, skippedUnknown 36, rows 18 044. The
+samples are 8 SDDs: one base device, wrap, half, merged, shuffled, missing-0, and the de-duplication pair.
 
 ## Interpretation notes (the Kotlin importer must match)
 
-- **Runs.** A device is a maximal run of consecutive rows with the same parsed SDD_ID. An unparseable
-  SDD_ID is its own unknown run.
-- **Order of checks.** A run whose SDD is not a carrier counts once in `skippedUnknown`, before any
-  completeness check.
-- **Complete run.** Exactly 360 rows, where row i has `START_ANGLE == i`, and every `POWER` parses as a
-  finite number. Anything else counts once in `skippedIncomplete`. `STOP_ANGLE` is not checked.
-- **Repeats.** A later complete run for an SDD that is already stored is ignored (the first wins). It is
+- **Runs.** A device is a maximal run of consecutive rows with the same parsed SDD_ID. The file keeps each
+  SDD in one run. An unparseable SDD_ID is its own unknown run.
+- **Order of checks.** A run whose SDD is not a carrier counts once in `skippedUnknown`, before rule 2.
+- **Rasterising (rule 2).**
+  - START, STOP and POWER are decimal numbers. A row with ≠ 5 fields, or a field that does not parse as a
+    finite number, rejects the device.
+  - When STOP < START, STOP += 360. Bin `d mod 360` takes the row's POWER for every integer d with
+    `START ≤ d < STOP`: `d` runs from `ceil(START)` to `ceil(STOP) − 1`, at most 360 values.
+  - So `[0,0.5)` holds degree 0, `[359.5,360)` holds none, `[359.5,0.5)` holds 0, and a full-circle row
+    `[0,360)` holds all 360. A zero-width row (START = STOP) holds none.
+  - Reject the device when a bin gets two different POWERs (exact comparison of the parsed doubles), when
+    any POWER > 200, or when more than 3 bins are empty.
+  - Each empty bin k is filled from the nearest *filled* bins L = k − a and R = k + b (circular):
+    `P[L] + (P[R] − P[L])·a/(a + b)`, in double, in that operation order.
+- **Repeats.** A later accepted run for an SDD that is already stored is ignored (the first wins). It is
   not counted.
 - **`rows`** is every data row read (the header excluded).
-- **Quantisation.** `q = clamp(floor((peak − P)·4 + 0.5), 0, 255)` in double. Real POWER values have at
-  most one decimal, so `(peak − P)·4` is never within rounding error of a .5 tie, and float32 parsing gives
-  the same codes.
-- **Pattern ids** are assigned 1..N in first-seen order of the kept devices. `peakDbw` is the parsed
-  maximum POWER.
+- **Quantisation.** `q = clamp(floor((peak − P)·4 + 0.5), 0, 255)` in double, over the 360 rasterised values.
+  - Real POWER values have at most two decimals, so `(peak − P)·4` is never near a .5 tie for raw bins.
+  - Interpolated bins can land near a tie, so the importer must use double, not float32, for POWER,
+    interpolation and quantisation.
+- **Pattern ids** are assigned 1..N in first-seen order of the kept devices. `peakDbw` is the maximum
+  rasterised POWER (diagnostic only; see rule 2).
 
 ## Full HRP file (Task 4 `HrpFullTest`)
 
@@ -159,6 +191,8 @@ SDD 2909149471: pattern 1, peak bearing 265, peak 33.6 dBW, floor code 100 (peak
 most devices are *not* in angle order: 96,697 runs are 360 rows in order 0..359; 315,528 are 360 rows covering
 0..359 exactly once in another order; 51,980 are 359 rows missing angle 0; 390,505 are other shapes (split runs,
 gaps). Rule 2 as written (and the reference) keeps only the first group, hence 741,534 `skippedIncomplete`.
+This was measured before the 2026-10-23 amendment of rule 2 (rows are angle intervals; commit 9de290b). The
+reference now rasterises intervals, and these full-file counts must be re-measured.
 
 **Ruling BB, as implemented.** `java.util.zip.ZipFile`'s entry stream does *not* check the CRC (verified on JDK 17:
 a zip with a flipped CRC reads without error; only `ZipInputStream` checks). `HrpImporter` therefore CRC-32s and
