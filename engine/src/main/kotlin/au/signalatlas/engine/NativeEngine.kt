@@ -28,15 +28,31 @@ object NativeEngine {
     ): Int
 
     /**
-     * Renders one tile from [fields] (one buffer per [CarrierField], in ordinal order). [patterns] is null or
-     * `patternCount * 360` bytes; [cancel] is null or a 4-byte buffer the engine polls. The outputs are direct
-     * buffers of 65536 bytes (rsrp, sinr, prob) and 131072 bytes (best, uint16). Returns the number of
-     * carriers evaluated (>= 0), -1 when cancelled, or -2 for bad arguments.
+     * Renders one tile from [fields] (one buffer per [CarrierField], in ordinal order). [tables] / [masks] are the
+     * distinct terrain tables of the carriers (same length, 92160 / 11520 bytes each; empty = none), which the
+     * `TERRAIN_SLOT` field indexes (0 = none, k = entry k - 1). [patterns] is null or `patternCount * 360` bytes;
+     * [cancel] is null or a 4-byte buffer the engine polls. The outputs are direct buffers of 65536 bytes (rsrp,
+     * sinr, prob) and 131072 bytes (best, uint16); [outStats] (null or 8 bytes) receives two int32: pixels covered
+     * (RSRP code != 0) and, among them, pixels whose best server had no complete terrain lookup. Returns the
+     * number of carriers evaluated (>= 0), -1 when cancelled, or -2 for bad arguments.
      */
     @JvmStatic
     external fun nativeRender(
-        fields: Array<ByteBuffer>, n: Int, patterns: ByteBuffer?, patternCount: Int, z: Int, x: Int, y: Int,
+        fields: Array<ByteBuffer>, n: Int, tables: Array<ByteBuffer>, masks: Array<ByteBuffer>,
+        patterns: ByteBuffer?, patternCount: Int, z: Int, x: Int, y: Int,
         grid: Int, area: Int, indoor: Boolean, thrDbm: Float, cancel: ByteBuffer?,
-        outRsrp: ByteBuffer, outSinr: ByteBuffer, outProb: ByteBuffer, outBest: ByteBuffer,
+        outRsrp: ByteBuffer, outSinr: ByteBuffer, outProb: ByteBuffer, outBest: ByteBuffer, outStats: ByteBuffer?,
+    ): Int
+
+    /**
+     * Builds one polar terrain table (92160 bytes) and its mask (11520 bytes) from the int16 mosaic [dem] (native
+     * order, `rows * cols` samples, row 0 = south; node (r, c) at ((southIdx + r) / 1200, (westIdx + c) / 1200)
+     * degrees). [hTxAgl] and [freqMhz] are the table-key height and frequency. Returns 0, -1 when [cancel] (null or
+     * a 4-byte buffer polled once per radial) fired (outputs zeroed), or -2 for bad arguments.
+     */
+    @JvmStatic
+    external fun nativeBuildTerrain(
+        dem: ByteBuffer, southIdx: Int, westIdx: Int, rows: Int, cols: Int, lat: Double, lon: Double,
+        hTxAgl: Float, freqMhz: Float, outTable: ByteBuffer, outMask: ByteBuffer, cancel: ByteBuffer?,
     ): Int
 }

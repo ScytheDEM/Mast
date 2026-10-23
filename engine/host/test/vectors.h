@@ -109,6 +109,21 @@ inline std::string jsonString(const std::string& json, const std::string& key) {
     return end == std::string::npos ? "" : json.substr(q + 1, end - q - 1);
 }
 
+// The JSON text of each object that starts with `marker` (e.g. {"name"), up to the next marker.
+inline std::vector<std::string> objectsStartingWith(const std::string& json, const std::string& arrayKey,
+                                             const std::string& marker) {
+    std::vector<std::string> out;
+    size_t at = json.find("\"" + arrayKey + "\"");
+    if (at == std::string::npos) return out;
+    at = json.find(marker, at);
+    while (at != std::string::npos) {
+        const size_t next = json.find(marker, at + marker.size());
+        out.push_back(json.substr(at, next == std::string::npos ? std::string::npos : next - at));
+        at = next;
+    }
+    return out;
+}
+
 // Decodes standard base64 (padding optional, whitespace and unknown characters skipped).
 inline std::vector<uint8_t> base64Decode(const std::string& text) {
     std::vector<uint8_t> out;

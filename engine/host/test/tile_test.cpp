@@ -16,6 +16,7 @@
 
 #include "render/mercator.h"
 #include "render/tile.h"
+#include "terrain/polar_table.h"
 #include "vectors.h"
 
 namespace {
@@ -33,11 +34,13 @@ struct Vec {
     std::vector<int32_t> sectorKey, freqKey, hrpId;
     std::vector<int16_t> hrpPeak;
     std::vector<double> rsrp, sinr, prob, best;
+    std::vector<const uint8_t*> terrainTable, terrainMask;  // per carrier (empty = no terrain)
 
     sa::CarrierArrays arrays() const {
         return {n, lat.data(), lon.data(), hTx.data(), az.data(), tilt.data(), eirpRe.data(), freqMhz.data(),
                 hBw.data(), fb.data(), gain.data(), rMaxKm.data(), tech.data(), sectorKey.data(), freqKey.data(),
-                hrpId.data(), hrpPeak.data()};
+                hrpId.data(), hrpPeak.data(), terrainTable.empty() ? nullptr : terrainTable.data(),
+                terrainMask.empty() ? nullptr : terrainMask.data()};
     }
 };
 
@@ -92,7 +95,8 @@ struct Out {
     std::vector<uint8_t> sinr = std::vector<uint8_t>(sa::kTilePixels, 0xAA);
     std::vector<uint8_t> prob = std::vector<uint8_t>(sa::kTilePixels, 0xAA);
     std::vector<uint16_t> best = std::vector<uint16_t>(sa::kTilePixels, 0x1234);
-    sa::TileOut view() { return {rsrp.data(), sinr.data(), prob.data(), best.data()}; }
+    int32_t covered = -1, incomplete = -1;  // terrain statistics (-1 = not written)
+    sa::TileOut view() { return {rsrp.data(), sinr.data(), prob.data(), best.data(), &covered, &incomplete}; }
 };
 
 const sa::PatternTable kNoPatterns{0, nullptr};
@@ -401,6 +405,204 @@ TEST(Tile, PrunedRenderEqualsBruteForce) {
         }
         EXPECT_GT(covered, 0u) << "tile " << t << " is empty";
     }
+}
+
+
+// ---------------------------------------------------------------- terrain (Terrain rules 5-6)
+
+// Owns decoded polar tables; `assign` points the carriers of a Vec at them.
+struct Tables {
+    std::vector<std::vector<uint8_t>> codes, mask;
+    void assign(Vec& v, const std::vector<int>& carrierTable) const {
+        v.terrainTable.assign(carrierTable.size(), nullptr);
+        v.terrainMask.assign(carrierTable.size(), nullptr);
+        for (size_t i = 0; i < carrierTable.size(); ++i) {
+            if (carrierTable[i] < 0) continue;
+            v.terrainTable[i] = codes[static_cast<size_t>(carrierTable[i])].data();
+            v.terrainMask[i] = mask[static_cast<size_t>(carrierTable[i])].data();
+        }
+    }
+};
+
+TEST(TileTerrain, CanberraTerrainTileMatchesReference) {
+    const std::string file = "terrain/tile_canberra_terrain_z12.json";
+    Vec v = loadVec(file);
+    const std::string json = sa_test::readFile(file);
+    ASSERT_EQ(65536u, v.rsrp.size());
+    Tables t;
+    for (const std::string& obj : sa_test::objectsStartingWith(json, "tables", "{\"siteLat\"")) {
+        t.codes.push_back(sa_test::base64Decode(sa_test::jsonString(obj, "codes")));
+        t.mask.push_back(sa_test::base64Decode(sa_test::jsonString(obj, "mask")));
+        ASSERT_EQ(static_cast<size_t>(sa::kPolarTableCells), t.codes.back().size());
+        ASSERT_EQ(static_cast<size_t>(sa::kPolarMaskBytes), t.mask.back().size());
+    }
+    const std::vector<double> ct = jsonArray(json, "carrierTable");
+    ASSERT_EQ(static_cast<size_t>(v.n), ct.size());
+    ASSERT_EQ(32u, t.codes.size());
+    t.assign(v, std::vector<int>(ct.begin(), ct.end()));
+
+    Out o;
+    EXPECT_EQ(v.evaluated, render(v, o));
+    compareCodes("rsrp", o.rsrp, v.rsrp);
+    compareCodes("sinr", o.sinr, v.sinr);
+    compareCodes("prob", o.prob, v.prob);
+    size_t coveredMismatch = 0;
+    for (size_t i = 0; i < v.best.size(); ++i) {
+        if (v.rsrp[i] != 0.0 && o.rsrp[i] != 0 && static_cast<double>(o.best[i]) != v.best[i]) ++coveredMismatch;
+    }
+    EXPECT_LE(static_cast<double>(coveredMismatch), 0.001 * static_cast<double>(v.best.size()));
+
+    // The terrain statistics agree with the reference's accuracy bookkeeping (the TERRAIN label rule).
+    const int32_t refCovered = static_cast<int32_t>(sa_test::jsonNumber(json, "coveredPixels"));
+    const int32_t refTerrain = static_cast<int32_t>(sa_test::jsonNumber(json, "terrainPixels"));
+    EXPECT_NEAR(o.covered, refCovered, 0.001 * 65536);
+    EXPECT_NEAR(o.covered - o.incomplete, refTerrain, 0.001 * 65536);
+    EXPECT_EQ("TERRAIN", sa_test::jsonString(json, "accuracy"));
+    EXPECT_GE(o.covered - o.incomplete, 0.95 * o.covered);
+
+    // And the tables really matter: without them the tile is the M2 quick-model tile.
+    Vec quick = v;
+    quick.terrainTable.clear();
+    quick.terrainMask.clear();
+    Out q;
+    ASSERT_EQ(v.evaluated, render(quick, q));
+    size_t changed = 0;
+    for (int i = 0; i < sa::kTilePixels; ++i) changed += o.rsrp[i] != q.rsrp[i];
+    EXPECT_NEAR(static_cast<double>(changed), sa_test::jsonNumber(json, "pixelsChangedFromQuick"), 0.002 * 65536);
+    EXPECT_GT(changed, 30000u);
+    EXPECT_EQ(q.covered, q.incomplete) << "without tables every covered pixel is terrain-incomplete";
+}
+
+TEST(TileTerrain, UniformLossShiftsEveryPixelAndIncompleteRulesHold) {
+    Vec v = loadVec("tile_canberra_z13.json");
+    Out plain;
+    ASSERT_EQ(v.evaluated, render(v, plain));
+    ASSERT_GT(plain.covered, 1000);
+    EXPECT_EQ(plain.covered, plain.incomplete);  // no tables: quick model everywhere
+
+    // 10 dB (code 40) everywhere, complete: every pixel loses 10 dB = 20 RSRP codes (all ranges here are < 50 m or
+    // within the bins, none beyond 80 km).
+    Tables t;
+    t.codes.push_back(std::vector<uint8_t>(sa::kPolarTableCells, 40));
+    t.mask.push_back(std::vector<uint8_t>(sa::kPolarMaskBytes, 0xFF));
+    t.codes.push_back(std::vector<uint8_t>(sa::kPolarTableCells, 0));
+    t.mask.push_back(std::vector<uint8_t>(sa::kPolarMaskBytes, 0x00));  // incomplete everywhere
+    t.assign(v, std::vector<int>(static_cast<size_t>(v.n), 0));
+    Out lossy;
+    ASSERT_EQ(v.evaluated, render(v, lossy));
+    int shifted = 0, strong = 0;
+    for (int i = 0; i < sa::kTilePixels; ++i) {
+        if (plain.rsrp[i] < 30) continue;
+        ++strong;
+        if (std::abs(static_cast<int>(lossy.rsrp[i]) - (static_cast<int>(plain.rsrp[i]) - 20)) <= 1) ++shifted;
+    }
+    ASSERT_GT(strong, 1000);
+    EXPECT_GE(shifted, strong - strong / 200) << "pixels shifted by 20 codes";
+    EXPECT_LT(lossy.incomplete, lossy.covered / 20) << "complete lookups almost everywhere (only r < 50 m is free)";
+
+    // A fully masked table is the quick model with every pixel incomplete.
+    t.assign(v, std::vector<int>(static_cast<size_t>(v.n), 1));
+    Out masked;
+    ASSERT_EQ(v.evaluated, render(v, masked));
+    EXPECT_EQ(plain.rsrp, masked.rsrp);
+    EXPECT_EQ(plain.sinr, masked.sinr);
+    EXPECT_EQ(plain.best, masked.best);
+    EXPECT_EQ(masked.covered, masked.incomplete);
+
+    // A table with a null mask and a null table entry behave as "no terrain" (no crash, quick model).
+    for (auto& m : v.terrainMask) m = nullptr;
+    Out nomask;
+    ASSERT_EQ(v.evaluated, render(v, nomask));
+    EXPECT_EQ(plain.rsrp, nomask.rsrp);
+    EXPECT_EQ(nomask.covered, nomask.incomplete);
+}
+
+TEST(TileTerrain, StatsAreZeroedWhenOutputsAre) {
+    Vec v = loadVec("tile_canberra_z13.json");
+    const volatile int32_t flag = 1;
+    Out o;
+    EXPECT_EQ(sa::kRenderCancelled, render(v, o, &flag));
+    EXPECT_EQ(0, o.covered);
+    EXPECT_EQ(0, o.incomplete);
+    v.n = 0;
+    Out e;
+    EXPECT_EQ(0, render(v, e));
+    EXPECT_EQ(0, e.covered);
+    EXPECT_EQ(0, e.incomplete);
+    // Null stats pointers are allowed.
+    Vec w = loadVec("tile_canberra_z13.json");
+    Out n;
+    sa::TileOut view{n.rsrp.data(), n.sinr.data(), n.prob.data(), n.best.data()};
+    EXPECT_EQ(w.evaluated, sa::renderTile(w.arrays(), kNoPatterns, w.params, view, nullptr));
+}
+
+// Random synthetic tables: bumpy codes (up to 40 dB) with random masked holes, shared between carriers or absent.
+Tables randomTables(std::mt19937& rng, int count) {
+    Tables t;
+    for (int k = 0; k < count; ++k) {
+        std::vector<uint8_t> codes(sa::kPolarTableCells), mask(sa::kPolarMaskBytes, 0xFF);
+        const double a = 0.02 + 0.03 * static_cast<double>(rng() % 5), b = 0.3 + 0.1 * static_cast<double>(rng() % 5);
+        const double ph = static_cast<double>(rng() % 628) / 100.0;
+        for (int r = 0; r < sa::kTerrainRadials; ++r) {
+            for (int j = 0; j < sa::kTerrainBins; ++j) {
+                const double v = 80.0 * (0.5 + 0.5 * std::sin(a * r + ph) * std::cos(b * j * 0.1 + ph)) * j / 255.0;
+                codes[static_cast<size_t>(r * sa::kTerrainBins + j)] = static_cast<uint8_t>(std::clamp(v, 0.0, 160.0));
+            }
+        }
+        for (int h = 0; h < 40; ++h) {  // masked holes: whole wedges plus single cells
+            const int r0 = static_cast<int>(rng() % 360), j0 = static_cast<int>(rng() % 256);
+            const int dr = h % 4 == 0 ? 6 : 1, dj = h % 4 == 0 ? 20 : 1;
+            for (int r = r0; r < r0 + dr; ++r) {
+                for (int j = j0; j < std::min(256, j0 + dj); ++j) {
+                    const int cell = (r % 360) * sa::kTerrainBins + j;
+                    mask[static_cast<size_t>(cell >> 3)] = static_cast<uint8_t>(mask[static_cast<size_t>(cell >> 3)] & ~(1 << (cell & 7)));
+                }
+            }
+        }
+        t.codes.push_back(std::move(codes));
+        t.mask.push_back(std::move(mask));
+    }
+    return t;
+}
+
+// The branch and bound keeps L_terr = 0 in its upper bound; with arbitrary non-negative tables the pruned render
+// must still equal the brute-force one (Review Focus 2).
+TEST(TileTerrain, PrunedRenderEqualsBruteForceWithRandomTables) {
+    std::mt19937 rng(20261024);
+    size_t changedByTables = 0;
+    for (int t = 0; t < 12; ++t) {
+        Scenario sc = randomScenario(rng, t);
+        const Tables tables = randomTables(rng, 4);
+        std::vector<int> assignment(static_cast<size_t>(sc.v.n));
+        for (int& a : assignment) a = static_cast<int>(rng() % 5) - 1;  // -1 (no table) or tables 0..3
+        tables.assign(sc.v, assignment);
+        const sa::PatternTable table{sc.patternCount, sc.patterns.data()};
+        Out fast, brute;
+        const int32_t a = render(sc.v, fast, nullptr, table);
+        sc.v.params.debugNoBounds = true;
+        const int32_t b = render(sc.v, brute, nullptr, table);
+        ASSERT_EQ(a, b) << t;
+        size_t covered = 0;
+        for (int i = 0; i < sa::kTilePixels; ++i) {
+            ASSERT_EQ(brute.rsrp[i], fast.rsrp[i]) << "tile " << t << " px " << i;
+            ASSERT_EQ(brute.prob[i], fast.prob[i]) << "tile " << t << " px " << i;
+            ASSERT_EQ(brute.best[i], fast.best[i]) << "tile " << t << " px " << i;
+            ASSERT_LE(std::abs(static_cast<int>(brute.sinr[i]) - static_cast<int>(fast.sinr[i])), 1)
+                << "tile " << t << " px " << i;
+            if (brute.rsrp[i] != 0) ++covered;
+        }
+        EXPECT_GT(covered, 0u) << "tile " << t << " is empty";
+        EXPECT_EQ(brute.covered, fast.covered) << t;
+        EXPECT_EQ(brute.incomplete, fast.incomplete) << t;
+        EXPECT_EQ(static_cast<size_t>(brute.covered), covered) << t;
+        // The tables bite: the render differs from the same scenario without them somewhere.
+        sc.v.terrainTable.clear();
+        sc.v.terrainMask.clear();
+        Out quick;
+        ASSERT_EQ(a, render(sc.v, quick, nullptr, table));
+        for (int i = 0; i < sa::kTilePixels; ++i) changedByTables += quick.rsrp[i] != fast.rsrp[i];
+    }
+    EXPECT_GT(changedByTables, 10000u);
 }
 
 }  // namespace

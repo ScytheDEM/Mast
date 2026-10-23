@@ -13,12 +13,12 @@
 #include "model/pathloss.h"
 #include "model/stats.h"
 #include "render/mercator.h"
+#include "terrain/polar_table.h"
 
 namespace sa {
 namespace {
 
 using merc::kDegToRad;
-using merc::kEarthRadiusM;
 using merc::kRadToDeg;
 
 constexpr double kNoCoverageSinrDb = -20.0;
@@ -35,6 +35,8 @@ struct Carrier {
     double hd2;      // (h_tx - h_rx)^2, m^2
     double noiseMw;  // thermal noise for this carrier's sub-carrier spacing, mW
     double hrpMinDb; // smallest attenuation of the HRP (dB), 0 without one
+    const uint8_t* terrainTable;  // polar table / mask (terrain/polar_table.h), null = quick model only
+    const uint8_t* terrainMask;
     int32_t freqKey, sectorKey, orig, group;
 };
 
@@ -50,6 +52,8 @@ void zeroOutputs(const TileOut& out) {
     if (out.sinr) std::memset(out.sinr, 0, kTilePixels);
     if (out.prob) std::memset(out.prob, 0, kTilePixels);
     if (out.best) std::fill(out.best, out.best + kTilePixels, kNoBest);
+    if (out.terrainCoveredPx) *out.terrainCoveredPx = 0;
+    if (out.terrainIncompletePx) *out.terrainIncompletePx = 0;
 }
 
 inline double clampd(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -139,6 +143,8 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         const Tech tech = c.tech[i] == 1 ? Tech::NR : Tech::LTE;
         const double scsHz = scsKhz(tech, c.freqMhz[i]) * 1000.0;
         cr.noiseMw = std::pow(10.0, (-174.0 + 10.0 * std::log10(scsHz) + 7.0) / 10.0);
+        cr.terrainTable = c.terrainTable ? c.terrainTable[i] : nullptr;
+        cr.terrainMask = c.terrainMask ? c.terrainMask[i] : nullptr;
         cr.freqKey = c.freqKey[i];
         cr.sectorKey = c.sectorKey[i];
         cr.orig = i;
@@ -178,7 +184,8 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
     // eirpRe - PL(shortest possible distance) - (a lower bound of the antenna attenuation over the block; PL grows
     // with distance). Carriers are visited in decreasing bound; once a bound falls below the best RSRP found at the point,
     // no remaining carrier can be the best server, so the exact (expensive) antenna + path loss runs only for the
-    // few contenders. The best server and its RSRP are therefore exactly the reference's. The interference sum over
+    // few contenders. The bound ignores the terrain loss (L_terr >= 0 only lowers a carrier's RSRP, so the bound
+    // stays valid, merely looser where terrain matters). The best server and its RSRP are therefore exactly the reference's. The interference sum over
     // the best server's frequency group is visited in the same order and stops once the rest (bounded by the group
     // size times the next bound) is under 1e-5 of noise + interference, i.e. under 5e-5 dB of SINR.
     const int32_t N = p.grid;
@@ -186,6 +193,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
     const size_t NN = static_cast<size_t>(N) * static_cast<size_t>(N);
     std::vector<double> gR(NN), gS(NN), gP(NN);
     std::vector<uint16_t> gB(NN);
+    std::vector<uint8_t> gInc(NN, 0);  // 1 = the best server's L_terr was not a complete table lookup
 
     std::vector<double> colSh(static_cast<size_t>(N)), colCh(static_cast<size_t>(N));
     std::vector<double> colLonDeg(static_cast<size_t>(N)), rowLatDeg(static_cast<size_t>(N));
@@ -238,7 +246,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     const double p1 = sLat * kDegToRad, p2 = cLat * kDegToRad, dl = (cLon - sLon) * kDegToRad;
                     bearingC = std::atan2(std::sin(dl) * std::cos(p2),
                                           std::cos(p1) * std::sin(p2) - std::sin(p1) * std::cos(p2) * std::cos(dl)) * kRadToDeg;
-                    const double ratio = std::sin(radius / kEarthRadiusM) / std::sin(dc / kEarthRadiusM);
+                    const double ratio = std::sin(radius / merc::kEarthRadiusM) / std::sin(dc / merc::kEarthRadiusM);
                     halfWidth = std::asin(std::fmin(1.0, ratio)) * kRadToDeg * 1.01 + 0.01;
                 }
                 const Site& st = sites[static_cast<size_t>(s)];
@@ -313,6 +321,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 double bestR = -std::numeric_limits<double>::infinity();
                 float bestSigma = 8.0f;
                 int32_t bestK = -1, nEval = 0;
+                bool bestInc = true;
 
                 // Exact RSRP of carrier k at this point (the geometry of its site is computed once per point).
                 auto evaluate = [&](int32_t k) {
@@ -324,7 +333,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                         const double sh = cs * st.chL - cc * st.shL;
                         const double ch = cc * st.chL + cs * st.shL;
                         const double a = std::fmin(1.0, rowSy2[s] + rowCC[s] * sh * sh);
-                        sd2[s] = 2.0 * kEarthRadiusM * std::asin(std::sqrt(a));
+                        sd2[s] = 2.0 * merc::kEarthRadiusM * std::asin(std::sqrt(a));
                         const double by = 2.0 * sh * ch * cosP2;
                         const double bx = rowXa[s] - rowXb[s] * (1.0 - 2.0 * sh * sh);
                         double brg = std::atan2(by, bx) * kRadToDeg;
@@ -335,7 +344,15 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     const float aDb = cr.ant.evaluate(static_cast<float>(sbrg[s]), static_cast<float>(d2));
                     const float d3Km = static_cast<float>(std::sqrt(d2 * d2 + cr.hd2) / 1000.0);
                     const PathLoss pl = indoor ? cr.pl.evaluateIndoor(d3Km) : cr.pl.evaluate(d3Km);
-                    const double r = cr.eirpRe - aDb - pl.plDb;
+                    // Terrain rule 5: RSRP = eirpRe - A - PL_quick - L_terr. A carrier without a table keeps the quick
+                    // model and counts as incomplete.
+                    bool inc = true;
+                    float lTerr = 0.0f;
+                    if (cr.terrainTable != nullptr) {
+                        lTerr = terrainLookup(cr.terrainTable, cr.terrainMask, static_cast<float>(sbrg[s]),
+                                              static_cast<float>(d2), &inc);
+                    }
+                    const double r = cr.eirpRe - aDb - pl.plDb - lTerr;
                     evalStamp[static_cast<size_t>(k)] = stamp;
                     rs[static_cast<size_t>(k)] = r;
                     evk[static_cast<size_t>(nEval++)] = k;
@@ -343,6 +360,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                         bestR = r;
                         bestK = k;
                         bestSigma = pl.sigmaDb;
+                        bestInc = inc;
                     }
                 };
 
@@ -386,19 +404,27 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 gS[at] = sinr;
                 gP[at] = prob;
                 gB[at] = bestIdx;
+                gInc[at] = bestIdx == kNoBest ? 0 : (bestInc ? 1 : 0);
             }
         }
     }
 
     // ---- Quantise (and bilinearly upsample 128 -> 256, floats before codes; `best` takes the nearest sample).
+    int32_t covered = 0, incomplete = 0;
     if (N == 256) {
         for (size_t q = 0; q < NN; ++q) {
             const uint8_t code = rsrpCode(gR[q]);
+            if (code != 0) {
+                ++covered;
+                incomplete += gInc[q];
+            }
             if (out.rsrp) out.rsrp[q] = code;
             if (out.sinr) out.sinr[q] = sinrCode(gS[q]);
             if (out.prob) out.prob[q] = probCode(gP[q]);
             if (out.best) out.best[q] = code == 0 ? kNoBest : gB[q];
         }
+        if (out.terrainCoveredPx) *out.terrainCoveredPx = covered;
+        if (out.terrainIncompletePx) *out.terrainIncompletePx = incomplete;
         return K;
     }
     Axis axis[256];
@@ -417,6 +443,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         const double* p0 = &gP[static_cast<size_t>(ay.i0) * N];
         const double* p1 = &gP[static_cast<size_t>(ay.i1) * N];
         const uint16_t* bn = &gB[static_cast<size_t>(ay.nearest) * N];
+        const uint8_t* inc = &gInc[static_cast<size_t>(ay.nearest) * N];
         for (int32_t px = 0; px < 256; ++px) {
             const Axis& ax = axis[px];
             const double tx = ax.t, ty = ay.t;
@@ -428,12 +455,18 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                               (p1[ax.i0] * (1.0 - tx) + p1[ax.i1] * tx) * ty;
             const size_t q = static_cast<size_t>(py) * 256 + static_cast<size_t>(px);
             const uint8_t code = rsrpCode(vr);
+            if (code != 0) {
+                ++covered;
+                incomplete += inc[ax.nearest];  // as `best`: the nearest grid sample's server
+            }
             if (out.rsrp) out.rsrp[q] = code;
             if (out.sinr) out.sinr[q] = sinrCode(vs);
             if (out.prob) out.prob[q] = probCode(vp);
             if (out.best) out.best[q] = code == 0 ? kNoBest : bn[ax.nearest];
         }
     }
+    if (out.terrainCoveredPx) *out.terrainCoveredPx = covered;
+    if (out.terrainIncompletePx) *out.terrainIncompletePx = incomplete;
     return K;
 }
 

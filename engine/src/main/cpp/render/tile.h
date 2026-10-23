@@ -20,6 +20,14 @@ struct CarrierArrays {
     const int32_t* freqKey;  // network + frequency (0.1 MHz): carriers sharing it and not the sectorKey interfere
     const int32_t* hrpId;    // 1-based into PatternTable, 0 = none; out-of-range = none
     const int16_t* hrpPeak;
+    // Terrain (Terrain rules 5-6): per carrier, the polar table (kPolarTableCells bytes) and its coverage mask
+    // (kPolarMaskBytes) built by buildPolarTable; carriers of one site/frequency/height key share a pointer. Either
+    // array may be null (= no terrain for any carrier) and so may each entry (= quick model only for that carrier;
+    // its pixels count as terrain-incomplete). A non-null table with a null mask is treated as no terrain data.
+    // The tables must stay valid for the duration of the call. L_terr is subtracted from that carrier's RSRP before
+    // the best server, SINR and probability are derived, exactly like the reference.
+    const uint8_t* const* terrainTable = nullptr;
+    const uint8_t* const* terrainMask = nullptr;
 };
 
 struct PatternTable {
@@ -43,6 +51,12 @@ struct TileOut {
     uint8_t* sinr;
     uint8_t* prob;
     uint16_t* best;
+    // Terrain statistics (either may be null): `terrainCoveredPx` = pixels with RSRP code != 0; `terrainIncompletePx`
+    // = those among them whose best server's L_terr was not a complete table lookup (no table, masked cell, or
+    // range beyond the last bin). The caller labels the tile "Terrain" when covered > 0 and
+    // covered - incomplete >= 95% of covered. Both are set to 0 when the outputs are zeroed (cancel, no carrier).
+    int32_t* terrainCoveredPx = nullptr;
+    int32_t* terrainIncompletePx = nullptr;
 };
 
 constexpr uint16_t kNoBest = 0xFFFF;

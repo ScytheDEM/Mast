@@ -62,7 +62,9 @@ add_executable(saengine_tile_bench
     "${ENGINE_DIR}/model/eirp.cpp"
     "${ENGINE_DIR}/model/antenna.cpp"
     "${ENGINE_DIR}/model/pathloss.cpp"
-    "${ENGINE_DIR}/render/tile.cpp")
+    "${ENGINE_DIR}/render/tile.cpp"
+    "${ENGINE_DIR}/terrain/bullington.cpp"
+    "${ENGINE_DIR}/terrain/polar_table.cpp")
 target_include_directories(saengine_tile_bench PRIVATE "${ENGINE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")
 target_compile_definitions(saengine_tile_bench PRIVATE
     SA_VECTOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/vectors")

@@ -23,7 +23,18 @@ class RenderedTile(
     val sinr: ByteArray,
     val prob: ByteArray,
     val best: ShortArray,
+    /** Pixels with RSRP code != 0 (the terrain label's denominator). 0 for a tile that was not just rendered. */
+    val coveredPixels: Int = 0,
+    /** Of [coveredPixels], those whose best server had no complete terrain lookup (no table, masked cell, > 80 km). */
+    val terrainIncompletePixels: Int = 0,
 ) {
+    /**
+     * Terrain rule 6: the tile may be labelled "Terrain" when at least 95% of its covered pixels had full profiles
+     * (and there are some).
+     */
+    val isTerrainAccurate: Boolean
+        get() = coveredPixels > 0 && (coveredPixels - terrainIncompletePixels).toLong() * 100 >= coveredPixels.toLong() * 95
+
     /** Index into the prepared carriers of the server at [pixel] (0 until 65536), or -1 for none. */
     fun bestCarrier(pixel: Int): Int = (best[pixel].toInt() and 0xFFFF).let { if (it == NO_BEST) -1 else it }
 
@@ -55,6 +66,9 @@ class CancelToken {
 internal enum class CarrierField(val elemBytes: Int) {
     LAT(8), LON(8), H_TX(4), AZ(4), TILT(4), EIRP_RE(4), FREQ_MHZ(4), H_BW(4), FB(4), GAIN(4), R_MAX_KM(4),
     TECH(1), SECTOR_KEY(4), FREQ_KEY(4), HRP_ID(4), HRP_PEAK(2),
+
+    /** 0 = no terrain table; k = entry k - 1 of the prepared carriers' table pool. */
+    TERRAIN_SLOT(4),
 }
 
 /** The pattern table uploaded for a [PatternStore][au.signalatlas.core.data.PatternStore]: see [CoverageEngine]. */
@@ -90,7 +104,15 @@ class PreparedCarriers internal constructor(
     private val batchRows: IntArray,
     internal val fields: Array<ByteBuffer>,
     internal val patterns: PatternUpload?,
+    /**
+     * The distinct terrain tables the carriers use (`TERRAIN_SLOT` indexes it). Held so the direct buffers stay
+     * reachable for as long as this object can be rendered.
+     */
+    internal val terrainPool: List<TerrainTable> = emptyList(),
 ) : AutoCloseable {
+    internal val terrainTables: Array<ByteBuffer> = Array(terrainPool.size) { terrainPool[it].table }
+    internal val terrainMasks: Array<ByteBuffer> = Array(terrainPool.size) { terrainPool[it].mask }
+
     private val closed = AtomicBoolean(false)
 
     val isClosed: Boolean get() = closed.get()
@@ -107,6 +129,13 @@ class PreparedCarriers internal constructor(
     internal fun sectorKeyAt(i: Int): Int = fields[CarrierField.SECTOR_KEY.ordinal].getInt(i * 4)
     internal fun hrpIdAt(i: Int): Int = fields[CarrierField.HRP_ID.ordinal].getInt(i * 4)
     internal fun hrpPeakAt(i: Int): Short = fields[CarrierField.HRP_PEAK.ordinal].getShort(i * 2)
+
+    /** The terrain table of carrier [i], or null. */
+    fun terrainTableAt(i: Int): TerrainTable? {
+        require(i in 0 until size) { "carrier index $i out of 0 until $size" }
+        val slot = fields[CarrierField.TERRAIN_SLOT.ordinal].getInt(i * 4)
+        return if (slot == 0) null else terrainPool[slot - 1]
+    }
 
     override fun close() {
         closed.set(true)
@@ -135,7 +164,10 @@ class PreparedCarriers internal constructor(
 
         private fun direct(bytes: Int): ByteBuffer = ByteBuffer.allocateDirect(bytes).order(ByteOrder.nativeOrder())
 
-        internal fun build(batch: CarrierBatch, patterns: PatternUpload?, indoor: Boolean, derive: Derive): PreparedCarriers {
+        internal fun build(
+            batch: CarrierBatch, patterns: PatternUpload?, indoor: Boolean, derive: Derive,
+            terrain: ((batchRow: Int) -> TerrainTable?)? = null,
+        ): PreparedCarriers {
             val total = batch.size
             require(total <= MAX_CARRIERS) {
                 "batch of $total carriers exceeds the engine's limit of $MAX_CARRIERS; prepare per region"
@@ -161,6 +193,9 @@ class PreparedCarriers internal constructor(
             val fKey = buf(CarrierField.FREQ_KEY).asIntBuffer()
             val hrpIdBuf = buf(CarrierField.HRP_ID).asIntBuffer()
             val hrpPeakBuf = buf(CarrierField.HRP_PEAK).asShortBuffer()
+            val slotBuf = buf(CarrierField.TERRAIN_SLOT).asIntBuffer()
+            val pool = ArrayList<TerrainTable>()
+            val slotOf = java.util.IdentityHashMap<TerrainTable, Int>()
 
             val eirpDbm = FloatArray(m)
             val bwHz = IntArray(m)
@@ -182,6 +217,7 @@ class PreparedCarriers internal constructor(
                 eirpDbm[k] = batch.eirpDbm[r]
                 bwHz[k] = batch.bandwidthHz[r]
                 sdd[k] = batch.sddId[r]
+                terrain?.invoke(r)?.let { t -> slotBuf.put(k, slotOf.getOrPut(t) { pool.add(t); pool.size }) }
             }
             if (patterns != null && m > 0) {
                 val ids = IntArray(m)
@@ -194,7 +230,7 @@ class PreparedCarriers internal constructor(
                 derive.derive(m, eirpDbm, bwHz, buf(CarrierField.FREQ_MHZ), buf(CarrierField.H_TX), tech,
                     buf(CarrierField.EIRP_RE), buf(CarrierField.R_MAX_KM))
             }
-            return PreparedCarriers(m, indoor, kept, f, patterns)
+            return PreparedCarriers(m, indoor, kept, f, patterns, pool)
         }
     }
 }

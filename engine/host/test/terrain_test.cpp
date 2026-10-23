@@ -38,21 +38,6 @@ TestDem demFromJson(const std::string& json) {
     return d;
 }
 
-// The JSON text of each object that starts with `marker` (e.g. {"name"), up to the next marker.
-std::vector<std::string> objectsStartingWith(const std::string& json, const std::string& arrayKey,
-                                             const std::string& marker) {
-    std::vector<std::string> out;
-    size_t at = json.find("\"" + arrayKey + "\"");
-    if (at == std::string::npos) return out;
-    at = json.find(marker, at);
-    while (at != std::string::npos) {
-        const size_t next = json.find(marker, at + marker.size());
-        out.push_back(json.substr(at, next == std::string::npos ? std::string::npos : next - at));
-        at = next;
-    }
-    return out;
-}
-
 struct Diff {
     int32_t maskMismatch = 0, codeOff1 = 0, codeBad = 0;
     int32_t firstBad = -1;
@@ -168,7 +153,7 @@ TEST(PolarTable, MatchesSyntheticReferenceTables) {
     ASSERT_FALSE(json.empty());
     const TestDem dem = demFromJson(json.substr(0, json.find("\"tables\"")));
     ASSERT_EQ(dem.h.size(), 361u * 361u);
-    const auto tables = objectsStartingWith(json, "tables", "{\"name\"");
+    const auto tables = sa_test::objectsStartingWith(json, "tables", "{\"name\"");
     ASSERT_EQ(tables.size(), 2u);
     for (const std::string& t : tables) {
         const std::string name = sa_test::jsonString(t, "name");
@@ -188,7 +173,7 @@ TEST(PolarTable, MatchesCanberraTileTables) {
     ASSERT_FALSE(demJson.empty());
     const TestDem dem = demFromJson(demJson);
     ASSERT_EQ(dem.h.size(), 951u * 1170u);
-    const auto tables = objectsStartingWith(json, "tables", "{\"siteLat\"");
+    const auto tables = sa_test::objectsStartingWith(json, "tables", "{\"siteLat\"");
     ASSERT_EQ(tables.size(), 32u);
     int64_t off1 = 0;
     for (size_t i = 0; i < tables.size(); ++i) {
@@ -325,7 +310,7 @@ TEST(PolarTable, InvalidArguments) {
 
 TEST(TerrainLookup, MatchesReferenceAndEdgeRules) {
     const std::string json = sa_test::readFile("terrain/tables.json");
-    const auto tables = objectsStartingWith(json, "tables", "{\"name\"");
+    const auto tables = sa_test::objectsStartingWith(json, "tables", "{\"name\"");
     ASSERT_EQ(tables.size(), 2u);
     const std::vector<uint8_t> codes = sa_test::base64Decode(sa_test::jsonString(tables[0], "codes"));
     const std::vector<uint8_t> mask = sa_test::base64Decode(sa_test::jsonString(tables[0], "mask"));

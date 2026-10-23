@@ -21,11 +21,45 @@ class CoverageEngine {
      * pattern ids and peak bearings from [patterns] (null = parametric patterns only), sector key = the batch's
      * sector id, frequency key from (network, frequency). Unusable carriers are dropped, see [PreparedCarriers].
      *
+     * [terrain] (null = the quick model everywhere) is asked once per kept carrier for its terrain table, with the
+     * carrier's row in [batch] (not its index among the kept carriers, which the caller cannot know in advance); null
+     * means that carrier has none. Carriers may share a [TerrainTable] (same object), which is then uploaded once.
+     * The tables are held by the result, so they stay alive for as long as it can render.
+     *
      * @throws IllegalArgumentException if the batch has more than [PreparedCarriers.MAX_CARRIERS] carriers (callers
      * prepare per region) or the store's pattern bytes are not `patternCount * 360` long.
      */
-    fun prepare(batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean): PreparedCarriers =
-        PreparedCarriers.build(batch, patterns?.let(::upload), indoor, NATIVE_DERIVE)
+    fun prepare(
+        batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean,
+        terrain: ((batchRow: Int) -> TerrainTable?)? = null,
+    ): PreparedCarriers = PreparedCarriers.build(batch, patterns?.let(::upload), indoor, NATIVE_DERIVE, terrain)
+
+    /**
+     * Builds the polar terrain table of one site (Terrain rule 6) from [dem]: 360 radials x 256 range bins of
+     * `L_terr`, about 15-150 ms of native work on the calling thread (call it off the main thread). [hTxAgl] and
+     * [freqMhz] must be the table-key values ([TerrainTable.heightKeyM], [TerrainTable.frequencyKeyMhz]); carriers
+     * sharing a key share the table. Cells whose profile leaves [dem] are masked and render with the quick model.
+     * Returns null when [cancel] fired.
+     *
+     * @throws IllegalArgumentException if the site is not finite, [dem] is incomplete (see [DemGridHandle.missing]),
+     * or the native stage rejects the grid.
+     * @throws IllegalStateException if [dem] is closed.
+     */
+    fun buildTerrainTable(
+        dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,
+    ): TerrainTable? {
+        check(!dem.isClosed) { "DemGridHandle is closed" }
+        require(dem.isComplete) { "DEM is missing chunks ${dem.missing}" }
+        require(siteLat.isFinite() && siteLon.isFinite()) { "site ($siteLat, $siteLon) is not finite" }
+        val out = TerrainTable.allocate()
+        val r = NativeEngine.nativeBuildTerrain(
+            dem.samples, dem.southIdx, dem.westIdx, dem.rows, dem.cols, siteLat, siteLon, hTxAgl, freqMhz,
+            out.table, out.mask, cancel.buffer,
+        )
+        if (r == CANCELLED) return null
+        require(r == 0) { "invalid terrain arguments ($r)" }
+        return out
+    }
 
     private fun upload(store: PatternStore): PatternUpload {
         require(store.patternBytes.size.toLong() == store.patternCount.toLong() * 360) {
@@ -61,8 +95,9 @@ class CoverageEngine {
         val patterns = prepared.patterns
         val grid = if (z <= 13) 128 else 256
         val r = NativeEngine.nativeRender(
-            prepared.fields, prepared.size, patterns?.buffer, patterns?.count ?: 0, z, x, y, grid, area.ordinal,
-            prepared.indoor, thrDbm, cancel.buffer, s.rsrp, s.sinr, s.prob, s.best,
+            prepared.fields, prepared.size, prepared.terrainTables, prepared.terrainMasks, patterns?.buffer,
+            patterns?.count ?: 0, z, x, y, grid, area.ordinal, prepared.indoor, thrDbm, cancel.buffer,
+            s.rsrp, s.sinr, s.prob, s.best, s.stats,
         )
         if (r == CANCELLED) return null
         require(r >= 0) { "invalid render arguments: z=$z x=$x y=$y area=$area" }
@@ -75,7 +110,8 @@ class CoverageEngine {
         s.sinr.rewind(); s.sinr.get(sinr)
         s.prob.rewind(); s.prob.get(prob)
         s.best.rewind(); s.best.asShortBuffer().get(best)
-        return RenderedTile(z, x, y, rsrp, sinr, prob, best)
+        val stats = s.stats.asIntBuffer()
+        return RenderedTile(z, x, y, rsrp, sinr, prob, best, stats.get(0), stats.get(1))
     }
 
     private class Scratch {
@@ -83,6 +119,7 @@ class CoverageEngine {
         val sinr = direct(RenderedTile.PIXELS)
         val prob = direct(RenderedTile.PIXELS)
         val best = direct(RenderedTile.PIXELS * 2)
+        val stats = direct(8)
     }
 
     private companion object {

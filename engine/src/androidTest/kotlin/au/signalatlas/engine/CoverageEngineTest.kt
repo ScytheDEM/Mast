@@ -1,67 +1,19 @@
 package au.signalatlas.engine
 
 import android.os.Debug
-import androidx.test.platform.app.InstrumentationRegistry
 import au.signalatlas.core.data.CarrierBatch
 import com.google.common.truth.Truth.assertThat
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.math.abs
-import org.json.JSONArray
-import org.json.JSONObject
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 /** Runs the real `libsaengine.so` through JNI. The vectors are the host GoogleTest vectors (Python reference). */
 class CoverageEngineTest {
-    private class Vector(val json: JSONObject, val batch: CarrierBatch) {
-        val z = json.getInt("z")
-        val x = json.getInt("x")
-        val y = json.getInt("y")
-        val area = AreaClass.valueOf(json.getString("area"))
-        val indoor = json.getBoolean("indoor")
-        val thr = json.getDouble("thrDbm").toFloat()
-        val carriers: JSONObject = json.getJSONObject("carriers")
-        fun codes(key: String): IntArray = json.getJSONArray(key).let { a -> IntArray(a.length()) { a.getInt(it) } }
-    }
-
-    private fun loadVector(name: String): Vector {
-        val text = InstrumentationRegistry.getInstrumentation().context.assets.open(name).bufferedReader().use { it.readText() }
-        val json = JSONObject(text)
-        val c = json.getJSONObject("carriers")
-        val n = c.getInt("n")
-        fun f(k: String) = c.getJSONArray(k).let { a -> FloatArray(n) { a.optDouble(it, Double.NaN).toFloat() } }
-        fun d(k: String) = c.getJSONArray(k).let { a -> DoubleArray(n) { a.getDouble(it) } }
-        fun i(k: String) = c.getJSONArray(k).let { a -> IntArray(n) { a.getInt(it) } }
-        fun l(k: String) = c.getJSONArray(k).let { a -> LongArray(n) { a.getLong(it) } }
-        val batch = CarrierBatch(
-            size = n, siteLat = d("lat"), siteLon = d("lon"), heightM = f("hTx"), azimuthDeg = f("az"),
-            tiltDeg = f("tilt"), eirpDbm = f("eirpDbm"), freqMhz = f("freqMhz"), bandwidthHz = i("bwHz"),
-            tech = ByteArray(n) { c.getJSONArray("tech").getInt(it).toByte() },
-            network = ByteArray(n),  // the vectors are single-network: freqKey classes match the reference's
-            hBeamwidthDeg = f("hBw"), frontToBackDb = f("fb"), gainDbi = f("gain"),
-            sectorId = i("sectorKey"), sddId = l("sddId"), bandIdx = ByteArray(n), bandLabels = listOf("B"),
-        )
-        return Vector(json, batch)
-    }
-
-    private fun assertCodes(what: String, got: ByteArray, ref: IntArray) {
-        assertThat(got.size).isEqualTo(ref.size)
-        var diff = 0
-        var worst = 0
-        for (k in ref.indices) {
-            val d = abs((got[k].toInt() and 0xFF) - ref[k])
-            if (d != 0) diff++
-            worst = maxOf(worst, d)
-        }
-        assertThat(worst).isAtMost(1)
-        assertThat(diff.toDouble()).isAtMost(0.001 * ref.size)
-    }
-
     private fun checkAgainstReference(file: String) {
-        val v = loadVector(file)
+        val v = TileVectors.load(file)
         val engine = CoverageEngine()
         val prepared = engine.prepare(v.batch, null, v.indoor)
         assertThat(prepared.size).isEqualTo(v.batch.size)  // no carrier of the vector is unusable
@@ -75,9 +27,9 @@ class CoverageEngineTest {
         }
         val tile = engine.render(prepared, v.z, v.x, v.y, v.area, v.thr, CancelToken())!!
         assertThat(tile.z).isEqualTo(v.z)
-        assertCodes("rsrp", tile.rsrp, v.codes("rsrpCodes"))
-        assertCodes("sinr", tile.sinr, v.codes("sinrCodes"))
-        assertCodes("prob", tile.prob, v.codes("probCodes"))
+        TileVectors.assertCodes("rsrp", tile.rsrp, v.codes("rsrpCodes"))
+        TileVectors.assertCodes("sinr", tile.sinr, v.codes("sinrCodes"))
+        TileVectors.assertCodes("prob", tile.prob, v.codes("probCodes"))
         // best: the same server wherever both cover (at most 0.1% of pixels apart), none exactly where RSRP code = 0.
         val refRsrp = v.codes("rsrpCodes")
         val refBest = v.codes("best")
@@ -105,7 +57,7 @@ class CoverageEngineTest {
     @Test fun urbanIndoorTileMatchesTheReference() = checkAgainstReference("tile_canberra_z13_urban_indoor_mid.json")
 
     /** The Canberra carriers repeated to [n], as a cost-heavy region for the cancel test. */
-    private fun heavy(v: Vector, n: Int): CarrierBatch {
+    private fun heavy(v: TileVector, n: Int): CarrierBatch {
         val b = v.batch
         return CarrierBatch(
             size = n, siteLat = DoubleArray(n) { b.siteLat[it % b.size] }, siteLon = DoubleArray(n) { b.siteLon[it % b.size] },
@@ -121,7 +73,7 @@ class CoverageEngineTest {
     }
 
     @Test fun cancelTokenStopsAPreCancelledRenderImmediately() {
-        val v = loadVector("tile_canberra_z13.json")
+        val v = TileVectors.load("tile_canberra_z13.json")
         val engine = CoverageEngine()
         val prepared = engine.prepare(v.batch, null, false)
         val token = CancelToken()
@@ -132,7 +84,7 @@ class CoverageEngineTest {
     }
 
     @Test fun cancelTokenCancelsALongRenderInFlight() {
-        val v = loadVector("tile_canberra_z13.json")
+        val v = TileVectors.load("tile_canberra_z13.json")
         val engine = CoverageEngine()
         val prepared = engine.prepare(heavy(v, 60_000), null, false)
         assertThat(prepared.size).isEqualTo(60_000)
@@ -158,7 +110,7 @@ class CoverageEngineTest {
     }
 
     @Test fun invalidArgumentsAndClosedCarriersAreRejected() {
-        val v = loadVector("tile_canberra_z13.json")
+        val v = TileVectors.load("tile_canberra_z13.json")
         val engine = CoverageEngine()
         val prepared = engine.prepare(v.batch, null, false)
         assertThrows(IllegalArgumentException::class.java) {
@@ -175,7 +127,7 @@ class CoverageEngineTest {
     }
 
     @Test fun anEmptySelectionRendersAnEmptyTile() {
-        val v = loadVector("tile_canberra_z13.json")
+        val v = TileVectors.load("tile_canberra_z13.json")
         val b = v.batch
         val none = CarrierBatch(
             0, DoubleArray(0), DoubleArray(0), FloatArray(0), FloatArray(0), FloatArray(0), FloatArray(0), FloatArray(0),
@@ -189,7 +141,7 @@ class CoverageEngineTest {
     }
 
     @Test fun concurrentRendersOfTheSamePreparedCarriersAgree() {
-        val v = loadVector("tile_canberra_z13.json")
+        val v = TileVectors.load("tile_canberra_z13.json")
         val engine = CoverageEngine()
         val prepared = engine.prepare(v.batch, null, false)
         val expected = engine.render(prepared, v.z, v.x, v.y, v.area, v.thr, CancelToken())!!
@@ -211,7 +163,7 @@ class CoverageEngineTest {
     }
 
     @Test fun twoHundredRendersDoNotGrowTheNativeHeap() {
-        val v = loadVector("tile_canberra_z13.json")
+        val v = TileVectors.load("tile_canberra_z13.json")
         val engine = CoverageEngine()
         val prepared = engine.prepare(v.batch, null, false)
         repeat(10) { engine.render(prepared, v.z, v.x, v.y, v.area, v.thr, CancelToken()) }  // warm-up: thread scratch

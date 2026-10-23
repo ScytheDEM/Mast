@@ -25,6 +25,11 @@ android {
         }
     }
 
+    sourceSets {
+        // The terrain vectors (a DEM crop and the Canberra terrain tile) are shared with the host GoogleTest suite.
+        getByName("androidTest").assets.srcDir("host/test/vectors/terrain")
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -39,6 +44,8 @@ dependencies {
     // Kotlin side only: the C++ engine stays pure (it never sees these types).
     implementation(project(":core:data"))
     implementation(project(":core:model"))
+    // DemGridHandle's API is a DemChunkStore and ChunkIds (geo -> model, so no cycle).
+    api(project(":core:geo"))
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

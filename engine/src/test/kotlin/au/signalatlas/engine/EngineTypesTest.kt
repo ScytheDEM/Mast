@@ -205,4 +205,86 @@ class EngineTypesTest {
         assertThat(t.bestCarrier(1)).isEqualTo(0xFFFE)
         assertThat(t.bestCarrier(2)).isEqualTo(7)
     }
+
+    // ---- terrain marshalling
+
+    private fun table() = TerrainTable.allocate()
+
+    @Test fun terrainProviderGetsBatchRowsAndSharedTablesAreUploadedOnce() {
+        val a = table()
+        val b = table()
+        val asked = mutableListOf<Int>()
+        // Kept rows are 0, 2, 5 (see dropsUnusableCarriersAndMapsIndicesBack). Row 0 and 5 share a; row 2 has none.
+        val p = PreparedCarriers.build(batch(), null, false, FakeDerive()) { row ->
+            asked += row
+            when (row) { 0 -> a; 5 -> a; else -> null }
+        }
+        assertThat(asked).containsExactly(0, 2, 5).inOrder()
+        assertThat(p.terrainPool).hasSize(1)
+        assertThat(p.terrainTableAt(0)).isSameInstanceAs(a)
+        assertThat(p.terrainTableAt(1)).isNull()
+        assertThat(p.terrainTableAt(2)).isSameInstanceAs(a)
+        assertThat(p.terrainTables.size).isEqualTo(1)
+        assertThat(p.terrainMasks[0]).isSameInstanceAs(a.mask)
+        assertThrows(IllegalArgumentException::class.java) { p.terrainTableAt(3) }
+
+        val two = PreparedCarriers.build(batch(), null, false, FakeDerive()) { row -> if (row == 2) b else a }
+        assertThat(two.terrainPool).containsExactly(a, b).inOrder()
+        assertThat(two.fields[CarrierField.TERRAIN_SLOT.ordinal].getInt(4)).isEqualTo(2)
+    }
+
+    @Test fun noTerrainProviderMeansNoSlotsAndNoPool() {
+        val p = PreparedCarriers.build(batch(), null, false, FakeDerive())
+        assertThat(p.terrainPool).isEmpty()
+        assertThat((0 until p.size).map(p::terrainTableAt)).containsExactly(null, null, null)
+        assertThat(p.terrainTables).isEmpty()
+    }
+
+    @Test fun terrainTableValidatesItsBuffers() {
+        assertThrows(IllegalArgumentException::class.java) {
+            TerrainTable(ByteBuffer.allocate(TerrainTable.CELLS), ByteBuffer.allocateDirect(TerrainTable.MASK_BYTES))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            TerrainTable(ByteBuffer.allocateDirect(TerrainTable.CELLS - 1), ByteBuffer.allocateDirect(TerrainTable.MASK_BYTES))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            TerrainTable(ByteBuffer.allocateDirect(TerrainTable.CELLS), ByteBuffer.allocateDirect(TerrainTable.MASK_BYTES - 1))
+        }
+        assertThat(TerrainTable.CELLS).isEqualTo(92_160)
+        assertThat(TerrainTable.MASK_BYTES).isEqualTo(11_520)
+    }
+
+    @Test fun cellDbReadsCodesAndHonoursTheMask() {
+        val t = table()
+        val k = 7 * 256 + 100
+        t.table.put(k, 41.toByte())
+        t.mask.put(k shr 3, (1 shl (k and 7)).toByte())
+        assertThat(t.cellDb(7, 100)).isEqualTo(10.25f)
+        assertThat(t.cellDb(7, 101)).isNull()
+        t.table.put(k, 200.toByte())  // above 127: unsigned
+        assertThat(t.cellDb(7, 100)).isEqualTo(50f)
+        assertThrows(IllegalArgumentException::class.java) { t.cellDb(360, 0) }
+    }
+
+    @Test fun tableKeysMatchTheReferenceRounding() {
+        assertThat(TerrainTable.frequencyKeyMhz(2130f)).isEqualTo(2130)
+        assertThat(TerrainTable.frequencyKeyMhz(2125f)).isEqualTo(2130)  // half up
+        assertThat(TerrainTable.frequencyKeyMhz(2124.9f)).isEqualTo(2120)
+        assertThat(TerrainTable.frequencyKeyMhz(879.9f)).isEqualTo(880)
+        assertThat(TerrainTable.heightKeyM(27f)).isEqualTo(27)
+        assertThat(TerrainTable.heightKeyM(26.5f)).isEqualTo(27)
+        assertThat(TerrainTable.heightKeyM(1f)).isEqualTo(3)  // clamped to 3 m first
+        assertThat(TerrainTable.heightKeyM(Float.NaN)).isEqualTo(3)
+    }
+
+    @Test fun terrainStatisticsDriveTheNinetyFivePercentRule() {
+        fun tile(covered: Int, incomplete: Int) =
+            RenderedTile(1, 0, 0, ByteArray(0), ByteArray(0), ByteArray(0), ShortArray(0), covered, incomplete)
+        assertThat(tile(1000, 50).isTerrainAccurate).isTrue()    // exactly 95%
+        assertThat(tile(1000, 51).isTerrainAccurate).isFalse()
+        assertThat(tile(1000, 0).isTerrainAccurate).isTrue()
+        assertThat(tile(1000, 1000).isTerrainAccurate).isFalse()
+        assertThat(tile(0, 0).isTerrainAccurate).isFalse()       // nothing covered: no label to earn
+        assertThat(RenderedTile(1, 0, 0, ByteArray(0), ByteArray(0), ByteArray(0), ShortArray(0)).isTerrainAccurate).isFalse()
+    }
 }
