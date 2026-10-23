@@ -22,6 +22,12 @@ data class TileKey(
      * table sets, are never mixed.
      */
     val terrainVersion: Long = 0L,
+    /**
+     * Calibration version of the tile's z8 region ([CalibrationView.regionVersion]): 0 when no sector estimate or
+     * residual cell applies there, else a hash of those that do. Tiles of regions a new snapshot does not touch keep
+     * their keys.
+     */
+    val calibrationVersion: Long = 0L,
     val engineVersion: Int = ENGINE_VERSION,
 ) {
     companion object {

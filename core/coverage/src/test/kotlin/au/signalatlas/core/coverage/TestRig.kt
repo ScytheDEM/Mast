@@ -10,6 +10,9 @@ import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.DemGridHandle
 import au.signalatlas.engine.TerrainTable
 import au.signalatlas.engine.RenderedTile
+import au.signalatlas.engine.ResidualRaster
+import au.signalatlas.engine.SectorTerms
+import au.signalatlas.core.model.CalibrationSnapshot
 import kotlinx.coroutines.flow.MutableStateFlow
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.io.File
@@ -67,7 +70,10 @@ internal class FakeTowers(var stampValue: String? = "stamp1", var sites: Int = 0
 }
 
 class FakeRenderer : TileRenderer {
-    class Rendered(val z: Int, val x: Int, val y: Int, val area: AreaClass, val cancel: CancelToken)
+    class Rendered(
+        val z: Int, val x: Int, val y: Int, val area: AreaClass, val cancel: CancelToken,
+        val residuals: List<ResidualRaster> = emptyList(), val prepared: PreparedRegion? = null,
+    )
 
     val prepares = AtomicInteger()
     val preparedSizes = CopyOnWriteArrayList<Int>()
@@ -82,10 +88,15 @@ class FakeRenderer : TileRenderer {
     /** Tables handed to each prepared region, as (batch row, table). */
     val preparedTables = CopyOnWriteArrayList<List<Pair<Int, TerrainTable>>>()
 
+    /** Sector terms handed to each prepare, by batch row (empty map = uncalibrated). */
+    val preparedTerms = CopyOnWriteArrayList<Map<Int, SectorTerms>>()
+
     override fun prepare(
         batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)?,
+        calibration: ((batchRow: Int) -> SectorTerms?)?,
     ): PreparedRegion {
         prepares.incrementAndGet()
+        preparedTerms += if (calibration == null) emptyMap() else (0 until batch.size).mapNotNull { r -> calibration(r)?.let { r to it } }.toMap()
         preparedSizes += batch.size
         require(batch.size <= 65535) { "too many carriers" }
         val tables = if (terrain == null) emptyList() else (0 until batch.size).mapNotNull { r -> terrain(r)?.let { r to it } }
@@ -136,8 +147,9 @@ class FakeRenderer : TileRenderer {
 
     override fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
+        residuals: List<ResidualRaster>,
     ): RenderedTile? {
-        renders += Rendered(z, x, y, area, cancel)
+        renders += Rendered(z, x, y, area, cancel, residuals, prepared)
         val now = concurrent.incrementAndGet()
         synchronized(this) { maxConcurrent = maxOf(maxConcurrent, now) }
         try {
@@ -166,10 +178,11 @@ internal class Rig(
     val renderer: FakeRenderer = FakeRenderer(),
     val warnings: MutableList<String> = CopyOnWriteArrayList(),
     terrain: TerrainSupport? = null,
+    val calibration: MutableStateFlow<CalibrationSnapshot> = MutableStateFlow(CalibrationSnapshot.EMPTY),
 ) {
     val cache = TileCache(dir, memoryTiles = memoryTiles)
     val pool = RenderPool({ threads })
-    val service = CoverageTileService(towers, MutableStateFlow(null), renderer, cache, pool, warnings::add, terrain)
+    val service = CoverageTileService(towers, MutableStateFlow(null), renderer, cache, pool, warnings::add, terrain, calibration)
 
     val selection = CoverageSelection(Network.TELSTRA, setOf(Tech.LTE, Tech.NR), null, false, CoverageSelection.View.RSRP)
 
@@ -178,7 +191,8 @@ internal class Rig(
     }
 
     fun url(z: Int, x: Int, y: Int, view: CoverageSelection.View = selection.view, stamp: String = towers.stampValue!!): String =
-        "https://${CoverageTileService.HOST}/v1/${selection.cacheId()}/${view.segment}/$stamp/none/t${service.terrainEpoch.value}/$z/$x/$y.png"
+        "https://${CoverageTileService.HOST}/v1/${selection.cacheId()}/${view.segment}/$stamp/none/t${service.terrainEpoch.value}" +
+            "${calibration.value.version.let { if (it == 0L) "" else "c$it" }}/$z/$x/$y.png"
 
     fun tile(z: Int, x: Int, y: Int, view: CoverageSelection.View = selection.view, stamp: String = towers.stampValue!!) =
         TileUrl.parse(url(z, x, y, view, stamp).toHttpUrl())!!.let(service::tileFuture)

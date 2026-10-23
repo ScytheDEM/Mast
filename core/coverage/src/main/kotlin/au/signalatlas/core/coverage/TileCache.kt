@@ -159,7 +159,9 @@ class TileCache(
         private const val MAX_PENDING_WRITES = 64
 
         fun fileName(key: TileKey): String {
-            val id = "${key.z}/${key.x}/${key.y}/${key.selectionId}/${key.towerStamp}/${key.patternsEtag}/${key.terrainVersion}/${key.engineVersion}"
+            // The calibration version is appended only when non-zero, so uncalibrated tiles keep their M3 file names.
+            val cal = if (key.calibrationVersion == 0L) "" else "/c${key.calibrationVersion}"
+            val id = "${key.z}/${key.x}/${key.y}/${key.selectionId}/${key.towerStamp}/${key.patternsEtag}/${key.terrainVersion}/${key.engineVersion}$cal"
             val digest = MessageDigest.getInstance("SHA-256").digest(id.toByteArray())
             return digest.take(16).joinToString("") { "%02x".format(it) } + FILE_SUFFIX
         }

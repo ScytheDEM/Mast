@@ -36,6 +36,9 @@ class ResidualRaster(val networkMask: Int, codes: ByteArray) {
         it.rewind()
     }
 
+    /** The code at [pixel] (0 until 65536, row-major). */
+    fun codeAt(pixel: Int): Byte = buffer.get(pixel)
+
     companion object {
         /** The engine accepts at most this many rasters per render. */
         const val MAX_PER_TILE = 32

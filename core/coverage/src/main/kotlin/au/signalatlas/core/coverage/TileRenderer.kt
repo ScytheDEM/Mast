@@ -12,6 +12,8 @@ import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.engine.DemGridHandle
 import au.signalatlas.engine.PreparedCarriers
 import au.signalatlas.engine.RenderedTile
+import au.signalatlas.engine.ResidualRaster
+import au.signalatlas.engine.SectorTerms
 import au.signalatlas.engine.TerrainTable
 import kotlinx.coroutines.runBlocking
 
@@ -23,15 +25,18 @@ interface PreparedRegion {
 /** The part of the engine the tile service uses; lets tests run without native code. */
 interface TileRenderer {
     /**
-     * [terrain] is asked once per kept carrier, with its row in [batch], for its terrain table (null = quick model).
+     * [terrain] is asked once per kept carrier, with its row in [batch], for its terrain table (null = quick model);
+     * [calibration] likewise for its sector's terms (null = uncalibrated).
      */
     fun prepare(
         batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)? = null,
+        calibration: ((batchRow: Int) -> SectorTerms?)? = null,
     ): PreparedRegion
 
-    /** Null if [cancel] fired. */
+    /** Null if [cancel] fired. [residuals] are the tile's residual rasters (Calibration rule 5). */
     fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
+        residuals: List<ResidualRaster> = emptyList(),
     ): RenderedTile?
 
     /**
@@ -51,7 +56,8 @@ class EngineTileRenderer(private val engine: CoverageEngine) : TileRenderer {
 
     override fun prepare(
         batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)?,
-    ): PreparedRegion = Prepared(engine.prepare(batch, patterns, indoor, terrain))
+        calibration: ((batchRow: Int) -> SectorTerms?)?,
+    ): PreparedRegion = Prepared(engine.prepare(batch, patterns, indoor, terrain, calibration))
 
     override fun buildTerrainTable(
         dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,
@@ -59,7 +65,8 @@ class EngineTileRenderer(private val engine: CoverageEngine) : TileRenderer {
 
     override fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
-    ): RenderedTile? = engine.render((prepared as Prepared).carriers, z, x, y, area, thrDbm, cancel)
+        residuals: List<ResidualRaster>,
+    ): RenderedTile? = engine.render((prepared as Prepared).carriers, z, x, y, area, thrDbm, cancel, residuals)
 }
 
 /** A pinned tower store, as far as the tile service needs it. */

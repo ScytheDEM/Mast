@@ -118,8 +118,8 @@ class ManagerUpdates(private val manager: UpdateManager) : Updates {
 }
 
 /**
- * The tile service as a [Coverage]. The template depends on the selection, on the tower and pattern data versions and on
- * the terrain epoch, so it is re-read whenever any of them changes.
+ * The tile service as a [Coverage]. The template depends on the selection, on the tower and pattern data versions, on
+ * the terrain epoch and on the calibration snapshot, so it is re-read whenever any of them changes.
  */
 class ServiceCoverage(
     private val service: CoverageTileService,
@@ -131,7 +131,9 @@ class ServiceCoverage(
         set(value) { service.selection.value = value }
 
     override val urlTemplate: Flow<String?> =
-        combine(service.selection, towers.store, patterns.patterns, service.terrainEpoch) { _, _, _, _ -> service.tileUrlTemplate() }
+        combine(service.selection, towers.store, patterns.patterns, service.terrainEpoch, service.calibration) { _, _, _, _, _ ->
+            service.tileUrlTemplate()
+        }
             .distinctUntilChanged()
 
     override fun setVisible(tiles: Set<Triple<Int, Int, Int>>) = service.setVisible(tiles)
