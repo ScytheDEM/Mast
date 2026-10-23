@@ -6,6 +6,7 @@ import androidx.sqlite.SQLiteStatement
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import androidx.sqlite.driver.bundled.SQLITE_OPEN_READONLY
 import au.signalatlas.core.acma.ImportReport
+import au.signalatlas.core.acma.TowerDbSchema
 import au.signalatlas.core.model.Antenna
 import au.signalatlas.core.model.BandInfo
 import au.signalatlas.core.model.Carrier
@@ -21,6 +22,7 @@ import java.io.Closeable
 import java.io.File
 import java.io.FileNotFoundException
 import java.time.Instant
+import kotlin.math.cos
 import kotlinx.serialization.json.Json
 
 /**
@@ -153,6 +155,79 @@ class TowerStore private constructor(
         SiteDetail(site, sectors)
     }
 
+    /**
+     * Every carrier of the given [networks] and [techs] (and, unless [bands] is null, of those band
+     * labels) on the sites inside [b], edges inclusive. The grid index picks the candidate sites, then
+     * SQLite is asked for their carriers in chunks of at most [ID_CHUNK] site ids. Throws
+     * [IllegalStateException] on a closed store.
+     */
+    fun carriersIn(b: GeoBounds, networks: Set<Network>, techs: Set<Tech>, bands: Set<String>?): CarrierBatch =
+        carriersIn(b, networks, techs, bands, ID_CHUNK)
+
+    internal fun carriersIn(
+        b: GeoBounds, networks: Set<Network>, techs: Set<Tech>, bands: Set<String>?, idChunk: Int,
+    ): CarrierBatch {
+        val out = BatchBuilder(allBands)
+        if (networks.isNotEmpty() && techs.isNotEmpty() && (bands == null || bands.isNotEmpty())) {
+            val buf = buffers.get()!!
+            val n = index.query(b, buf)
+            val filter = TowerFilter(networks, techs, bands)
+            val ids = IntArray(n)
+            var m = 0
+            for (k in 0 until n) {
+                val s = summaries[buf[k]]
+                if (filter.matches(s)) ids[m++] = s.id
+            }
+            val bandIndex = allBands.withIndex().associate { it.value to it.index }
+            val networkList = networks.joinToString(",") { it.ordinal.toString() }
+            val techList = techs.joinToString(",") { it.ordinal.toString() }
+            var from = 0
+            while (from < m) {
+                val to = minOf(from + idChunk, m)
+                val marks = (from until to).joinToString(",") { "?" }
+                synchronized(lock) {
+                    check(!closed) { "TowerStore is closed" }
+                    conn.prepare(
+                        """SELECT t.lat, t.lon, s.height_m, s.azimuth_deg, c.tilt_deg, c.eirp_dbm, c.freq_hz, c.bw_hz,
+                                  c.tech, s.network, a.h_bw_deg, a.f2b_db, a.gain_dbi, c.sector_id, c.sdd_id, c.band
+                           FROM carrier c
+                           JOIN sector s ON s.id = c.sector_id
+                           JOIN site t ON t.id = s.site_id
+                           LEFT JOIN antenna a ON a.id = s.antenna_id
+                           WHERE s.site_id IN ($marks) AND s.network IN ($networkList) AND c.tech IN ($techList)
+                           ORDER BY s.site_id, c.sdd_id""",
+                    ).use { st ->
+                        for (k in from until to) st.bindLong(k - from + 1, ids[k].toLong())
+                        while (st.step()) {
+                            val band = st.getText(15)
+                            if (bands != null && band !in bands) continue
+                            out.add(st, checkNotNull(bandIndex[band]))
+                        }
+                    }
+                }
+                from = to
+            }
+        }
+        return out.build()
+    }
+
+    /** Number of sites (not carriers) within [radiusM] metres of the point, by haversine distance. */
+    fun siteCountWithin(lat: Double, lon: Double, radiusM: Double): Int {
+        if (radiusM < 0) return 0
+        val dLat = Math.toDegrees(radiusM / EARTH_RADIUS_M)
+        val cosLat = cos(Math.toRadians(lat))
+        // Wider than the circle's true longitude extent near the poles; clamp to the whole globe there.
+        val dLon = if (cosLat < 1e-6) 360.0 else dLat / cosLat
+        val buf = buffers.get()!!
+        val n = index.query(GeoBounds(lat - dLat, lon - dLon, lat + dLat, lon + dLon), buf)
+        var count = 0
+        for (k in 0 until n) {
+            val s = summaries[buf[k]]
+            if (haversineM(lat, lon, s.lat, s.lon) <= radiusM) count++
+        }
+        return count
+    }
+
     override fun close() {
         synchronized(lock) {
             if (!closed) {
@@ -163,6 +238,9 @@ class TowerStore private constructor(
     }
 
     companion object {
+        /** Site ids per carrier query; SQLite's default variable limit is 999. */
+        private const val ID_CHUNK = 900
+
         private val json = Json { ignoreUnknownKeys = true }
 
         /**
@@ -228,6 +306,8 @@ class TowerStore private constructor(
                 while (st.step()) values[st.getText(0)] = st.getText(1)
             }
             fun req(k: String) = values[k] ?: error("meta key '$k' missing")
+            val version = values["schema_version"]?.toIntOrNull()
+            if (version != TowerDbSchema.VERSION) throw SchemaMismatchException(version, TowerDbSchema.VERSION)
             return DataMeta(
                 extractStamp = req("extract_stamp"),
                 importedAt = Instant.parse(req("imported_at")),
@@ -238,4 +318,70 @@ class TowerStore private constructor(
         private fun SQLiteStatement.textOrNull(i: Int): String? = if (isNull(i)) null else getText(i)
         private fun SQLiteStatement.doubleOrNull(i: Int): Double? = if (isNull(i)) null else getDouble(i)
     }
+}
+
+/** Growable column buffers behind [TowerStore.carriersIn]. */
+private class BatchBuilder(private val bandLabels: List<String>) {
+    private var cap = 1024
+    private var n = 0
+    private var siteLat = DoubleArray(cap)
+    private var siteLon = DoubleArray(cap)
+    private var heightM = FloatArray(cap)
+    private var azimuthDeg = FloatArray(cap)
+    private var tiltDeg = FloatArray(cap)
+    private var eirpDbm = FloatArray(cap)
+    private var freqMhz = FloatArray(cap)
+    private var bandwidthHz = IntArray(cap)
+    private var tech = ByteArray(cap)
+    private var network = ByteArray(cap)
+    private var hBeamwidthDeg = FloatArray(cap)
+    private var frontToBackDb = FloatArray(cap)
+    private var gainDbi = FloatArray(cap)
+    private var sectorId = IntArray(cap)
+    private var sddId = LongArray(cap)
+    private var bandIdx = ByteArray(cap)
+
+    init {
+        require(bandLabels.size <= 256) { "more than 256 bands do not fit a byte index" }
+    }
+
+    /** Appends the row of the carrier query in [TowerStore.carriersIn], with its band's label index. */
+    fun add(st: SQLiteStatement, band: Int) {
+        if (n == cap) grow()
+        fun f(i: Int) = if (st.isNull(i)) Float.NaN else st.getDouble(i).toFloat()
+        siteLat[n] = st.getDouble(0)
+        siteLon[n] = st.getDouble(1)
+        heightM[n] = st.getDouble(2).toFloat()
+        azimuthDeg[n] = f(3)
+        tiltDeg[n] = st.getDouble(4).toFloat()
+        eirpDbm[n] = st.getDouble(5).toFloat()
+        freqMhz[n] = (st.getLong(6) / 1e6).toFloat()
+        bandwidthHz[n] = st.getLong(7).toInt()
+        tech[n] = st.getLong(8).toByte()
+        network[n] = st.getLong(9).toByte()
+        hBeamwidthDeg[n] = f(10)
+        frontToBackDb[n] = f(11)
+        gainDbi[n] = f(12)
+        sectorId[n] = st.getLong(13).toInt()
+        sddId[n] = st.getLong(14)
+        bandIdx[n] = band.toByte()
+        n++
+    }
+
+    private fun grow() {
+        cap *= 2
+        siteLat = siteLat.copyOf(cap); siteLon = siteLon.copyOf(cap); heightM = heightM.copyOf(cap)
+        azimuthDeg = azimuthDeg.copyOf(cap); tiltDeg = tiltDeg.copyOf(cap); eirpDbm = eirpDbm.copyOf(cap)
+        freqMhz = freqMhz.copyOf(cap); bandwidthHz = bandwidthHz.copyOf(cap); tech = tech.copyOf(cap)
+        network = network.copyOf(cap); hBeamwidthDeg = hBeamwidthDeg.copyOf(cap)
+        frontToBackDb = frontToBackDb.copyOf(cap); gainDbi = gainDbi.copyOf(cap)
+        sectorId = sectorId.copyOf(cap); sddId = sddId.copyOf(cap); bandIdx = bandIdx.copyOf(cap)
+    }
+
+    fun build() = CarrierBatch(
+        n, siteLat.copyOf(n), siteLon.copyOf(n), heightM.copyOf(n), azimuthDeg.copyOf(n), tiltDeg.copyOf(n),
+        eirpDbm.copyOf(n), freqMhz.copyOf(n), bandwidthHz.copyOf(n), tech.copyOf(n), network.copyOf(n),
+        hBeamwidthDeg.copyOf(n), frontToBackDb.copyOf(n), gainDbi.copyOf(n), sectorId.copyOf(n), sddId.copyOf(n),
+        bandIdx.copyOf(n), bandLabels,
+    )
 }

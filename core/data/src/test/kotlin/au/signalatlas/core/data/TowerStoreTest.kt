@@ -4,6 +4,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import au.signalatlas.core.acma.AcmaImporter
 import au.signalatlas.core.model.GeoBounds
 import au.signalatlas.core.model.Network
+import au.signalatlas.core.model.Tech
 import au.signalatlas.core.model.TowerFilter
 import com.google.common.truth.Truth.assertThat
 import java.io.File
@@ -83,6 +84,156 @@ class TowerStoreTest {
         val a = Math.pow(Math.sin((p2 - p1) / 2), 2.0) +
             Math.cos(p1) * Math.cos(p2) * Math.pow(Math.sin(Math.toRadians(lo2 - lo1) / 2), 2.0)
         return 2 * r * Math.asin(Math.sqrt(a))
+    }
+
+    @Test fun openRejectsAnotherSchemaVersion() {
+        val copy = File(tmp.newFolder(), "towers.db").also { db.copyTo(it) }
+        BundledSQLiteDriver().open(copy.path).use { c ->
+            c.execSQL("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+        }
+        try {
+            TowerStore.open(copy)
+            error("expected SchemaMismatchException")
+        } catch (e: SchemaMismatchException) {
+            assertThat(e.found).isEqualTo(2)
+            assertThat(e.expected).isEqualTo(1)
+        }
+    }
+
+    @Test fun carriersInCountMatchesSqlForTelstra() {
+        val telstra = Network.TELSTRA.ordinal
+        val expected = sql(
+            """SELECT COUNT(*) FROM carrier c JOIN sector s ON s.id = c.sector_id JOIN site t ON t.id = s.site_id
+               WHERE s.network = $telstra AND t.lat BETWEEN -35.4 AND -35.2 AND t.lon BETWEEN 149.0 AND 149.3""",
+        ) { it.getLong(0).toInt() }[0]
+        assertThat(expected).isGreaterThan(0)
+
+        val batch = store.carriersIn(canberra, setOf(Network.TELSTRA), Tech.entries.toSet(), null)
+        assertThat(batch.size).isEqualTo(expected)
+        assertThat(batch.network.all { it.toInt() == telstra }).isTrue()
+        assertThat(batch.siteLat.size).isEqualTo(expected)
+        assertThat(batch.sddId.size).isEqualTo(expected)
+        assertThat(batch.sddId.toSet()).hasSize(expected)
+        for (i in 0 until batch.size) assertThat(canberra.contains(batch.siteLat[i], batch.siteLon[i])).isTrue()
+    }
+
+    @Test fun carriersInFiltersByTechAndBand() {
+        val all = Network.entries.toSet()
+        val everything = store.carriersIn(canberra, all, Tech.entries.toSet(), null)
+        val nr = store.carriersIn(canberra, all, setOf(Tech.NR), null)
+        val lte = store.carriersIn(canberra, all, setOf(Tech.LTE), null)
+        assertThat(nr.size + lte.size).isEqualTo(everything.size)
+        assertThat(nr.tech.all { it.toInt() == Tech.NR.ordinal }).isTrue()
+
+        val band = everything.bandLabels.first()
+        val one = store.carriersIn(canberra, all, Tech.entries.toSet(), setOf(band))
+        val expected = (0 until everything.size).count { everything.bandLabels[everything.bandIdx[it].toInt()] == band }
+        assertThat(one.size).isEqualTo(expected)
+        assertThat(one.bandIdx.all { one.bandLabels[it.toInt()] == band }).isTrue()
+
+        assertThat(store.carriersIn(canberra, emptySet(), Tech.entries.toSet(), null).size).isEqualTo(0)
+        assertThat(store.carriersIn(canberra, all, Tech.entries.toSet(), emptySet()).size).isEqualTo(0)
+        assertThat(store.carriersIn(GeoBounds(10.0, 100.0, 11.0, 101.0), all, Tech.entries.toSet(), null).size).isEqualTo(0)
+    }
+
+    @Test fun carriersInBandLabelsAreAllBandsSortedByFrequency() {
+        val batch = store.carriersIn(canberra, Network.entries.toSet(), Tech.entries.toSet(), null)
+        assertThat(batch.bandLabels).isEqualTo(store.allBands)
+    }
+
+    @Test fun carriersInArraysMatchSqlForSdd999999304() {
+        val row = sql(
+            """SELECT t.lat, t.lon, s.height_m, s.azimuth_deg, c.tilt_deg, c.eirp_dbm, c.freq_hz, c.bw_hz, c.tech,
+                      s.network, a.h_bw_deg, a.f2b_db, a.gain_dbi, c.sector_id, c.band
+               FROM carrier c JOIN sector s ON s.id = c.sector_id JOIN site t ON t.id = s.site_id
+               LEFT JOIN antenna a ON a.id = s.antenna_id WHERE c.sdd_id = 999999304""",
+        ) { st ->
+            fun d(i: Int) = if (st.isNull(i)) Double.NaN else st.getDouble(i)
+            listOf(
+                st.getDouble(0), st.getDouble(1), st.getDouble(2), d(3), st.getDouble(4), st.getDouble(5),
+                st.getLong(6) / 1e6, st.getLong(7).toDouble(), st.getLong(8).toDouble(), st.getLong(9).toDouble(),
+                d(10), d(11), d(12), st.getLong(13).toDouble(), st.getText(14),
+            )
+        }.single()
+        val b = store.carriersIn(
+            GeoBounds(-90.0, -180.0, 90.0, 180.0), Network.entries.toSet(), Tech.entries.toSet(), null,
+        )
+        val i = b.sddId.indexOf(999999304L)
+        assertThat(i).isAtLeast(0)
+        assertThat(b.siteLat[i]).isEqualTo(row[0])
+        assertThat(b.siteLon[i]).isEqualTo(row[1])
+        assertThat(b.heightM[i]).isEqualTo((row[2] as Double).toFloat())
+        assertThat(b.azimuthDeg[i]).isEqualTo((row[3] as Double).toFloat())
+        assertThat(b.tiltDeg[i]).isEqualTo((row[4] as Double).toFloat())
+        assertThat(b.eirpDbm[i]).isEqualTo((row[5] as Double).toFloat())
+        assertThat(b.freqMhz[i]).isEqualTo((row[6] as Double).toFloat())
+        assertThat(b.bandwidthHz[i]).isEqualTo((row[7] as Double).toInt())
+        assertThat(b.tech[i].toInt()).isEqualTo((row[8] as Double).toInt())
+        assertThat(b.network[i].toInt()).isEqualTo((row[9] as Double).toInt())
+        assertThat(b.hBeamwidthDeg[i]).isEqualTo((row[10] as Double).toFloat())
+        assertThat(b.frontToBackDb[i]).isEqualTo((row[11] as Double).toFloat())
+        assertThat(b.gainDbi[i]).isEqualTo((row[12] as Double).toFloat())
+        assertThat(b.sectorId[i]).isEqualTo((row[13] as Double).toInt())
+        assertThat(b.bandLabels[b.bandIdx[i].toInt()]).isEqualTo(row[14])
+    }
+
+    @Test fun carriersInUsesNaNForOmniAndMissingAntennaFields() {
+        val omni = sql("SELECT COUNT(*) FROM sector WHERE azimuth_deg IS NULL AND id IN (SELECT sector_id FROM carrier)") {
+            it.getLong(0).toInt()
+        }[0]
+        val noAntenna = sql(
+            "SELECT COUNT(*) FROM carrier c JOIN sector s ON s.id = c.sector_id WHERE s.antenna_id IS NULL",
+        ) { it.getLong(0).toInt() }[0]
+        val b = store.carriersIn(
+            GeoBounds(-90.0, -180.0, 90.0, 180.0), Network.entries.toSet(), Tech.entries.toSet(), null,
+        )
+        val sectorsOmni = (0 until b.size).filter { b.azimuthDeg[it].isNaN() }.map { b.sectorId[it] }.toSet()
+        assertThat(sectorsOmni).hasSize(omni)
+        assertThat((0 until b.size).count { b.gainDbi[it].isNaN() && b.hBeamwidthDeg[it].isNaN() && b.frontToBackDb[it].isNaN() })
+            .isAtLeast(noAntenna)
+    }
+
+    @Test fun carriersInGivesTheSameRowsWhateverTheChunkSize() {
+        val everywhere = GeoBounds(-90.0, -180.0, 90.0, 180.0)
+        val nets = Network.entries.toSet()
+        val techs = Tech.entries.toSet()
+        val expected = sql("SELECT COUNT(*) FROM carrier") { it.getLong(0).toInt() }[0]
+        val whole = store.carriersIn(everywhere, nets, techs, null)
+        assertThat(whole.size).isEqualTo(expected)
+        for (chunk in listOf(1, 2, 7)) {
+            val chunked = store.carriersIn(everywhere, nets, techs, null, chunk)
+            assertThat(chunked.sddId).isEqualTo(whole.sddId)
+            assertThat(chunked.siteLat).isEqualTo(whole.siteLat)
+        }
+    }
+
+    @Test fun carriersInOnAClosedStoreThrows() {
+        val copy = TowerStore.open(db)
+        copy.close()
+        try {
+            copy.carriersIn(canberra, Network.entries.toSet(), Tech.entries.toSet(), null)
+            error("expected IllegalStateException")
+        } catch (e: IllegalStateException) {
+            assertThat(e).hasMessageThat().contains("closed")
+        }
+    }
+
+    @Test fun siteCountWithinMatchesBruteForce() {
+        val all = store.allSites(TowerFilter())
+        for ((lat, lon, r) in listOf(
+            Triple(-35.30, 149.13, 5_000.0), Triple(-35.30, 149.13, 50_000.0),
+            Triple(-35.30, 149.13, 1_000_000.0), Triple(-33.87, 151.21, 20_000.0), Triple(-12.0, 130.0, 100.0),
+        )) {
+            val expected = all.count { haversine(lat, lon, it.lat, it.lon) <= r }
+            assertThat(store.siteCountWithin(lat, lon, r)).isEqualTo(expected)
+        }
+    }
+
+    @Test fun siteCountWithinCountsSitesNotCarriers() {
+        val s = store.allSites(TowerFilter()).first { store.siteDetail(it.id)!!.sectors.sumOf { s -> s.carriers.size } > 1 }
+        assertThat(store.siteCountWithin(s.lat, s.lon, 0.5)).isAtLeast(1)
+        val n = store.allSites(TowerFilter()).count { it.lat == s.lat && it.lon == s.lon }
+        assertThat(store.siteCountWithin(s.lat, s.lon, 0.5)).isEqualTo(n)
     }
 
     @Test fun searchByIdPutsExactSiteFirst() {

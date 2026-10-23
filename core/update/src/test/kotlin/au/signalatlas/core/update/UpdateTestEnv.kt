@@ -6,6 +6,7 @@ import androidx.test.core.app.ApplicationProvider
 import au.signalatlas.core.acma.AcmaImporter
 import au.signalatlas.core.data.DbInstaller
 import au.signalatlas.core.data.DbValidator
+import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.data.Validation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,7 +33,6 @@ import java.util.concurrent.atomic.AtomicInteger
 class UpdateTestEnv(
     root: File,
     minSites: Int = 1,
-    /** Where replaced stores are closed after the grace period; never advanced by default. */
     repoScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : AutoCloseable {
     val context: Context = ApplicationProvider.getApplicationContext()

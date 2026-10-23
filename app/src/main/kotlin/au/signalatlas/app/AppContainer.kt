@@ -11,9 +11,9 @@ import au.signalatlas.app.ui.map.MapViewModel
 import au.signalatlas.core.acma.AcmaImporter
 import au.signalatlas.core.data.DbInstaller
 import au.signalatlas.core.data.DbValidator
+import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.map.BasemapLocator
 import au.signalatlas.core.update.AcmaRemote
-import au.signalatlas.core.update.TowerRepository
 import au.signalatlas.core.update.UpdateDeps
 import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateNotifications

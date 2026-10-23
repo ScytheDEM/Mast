@@ -1,12 +1,12 @@
 package au.signalatlas.app.data
 
 import au.signalatlas.core.data.DataMeta
+import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.data.TowerStore
 import au.signalatlas.core.map.BasemapLocator
 import au.signalatlas.core.model.SiteDetail
 import au.signalatlas.core.model.SiteSummary
 import au.signalatlas.core.model.TowerFilter
-import au.signalatlas.core.update.TowerRepository
 import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateStatus
 import kotlinx.coroutines.flow.Flow
