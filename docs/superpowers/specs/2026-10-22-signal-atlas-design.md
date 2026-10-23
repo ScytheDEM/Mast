@@ -178,7 +178,11 @@ Per sector, per grid point:
   parks, white roads with hairline casing, pale-amber motorways, minimal POIs. Dark: charcoal with muted
   roads. Optional hillshade and 3D buildings. Material You accent only on the location dot, selections
   and controls.
-- **Coverage layer:** a native custom GPU layer reads the engine's tiles. A shader maps RSRP to colour.
+- **Coverage layer (updated 2026-10-23):** the engine's RSRP tiles are served to MapLibre as `raster-dem`
+  (Terrarium-encoded, elevation = RSRP in dBm) through an in-process OkHttp interceptor, and drawn by
+  MapLibre's built-in GPU `color-relief` layer. This replaces the custom GPU layer: no custom renderer
+  code, and it works on Vulkan and GLES alike. Original wording: a native custom GPU layer reads the
+  engine's tiles. A shader maps RSRP to colour.
   Changing threshold, colour scheme, carrier, band or Indoor/Outdoor only updates uniforms, so it is
   instant.
 - **Legend (adjustable, colour-blind-safe):** Excellent ≥ −85 dBm · Good −85 to −100 · Fair −100 to −110 ·
