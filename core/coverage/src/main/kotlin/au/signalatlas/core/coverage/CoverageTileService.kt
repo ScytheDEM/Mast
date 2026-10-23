@@ -5,6 +5,7 @@ import au.signalatlas.core.data.PatternStore
 import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.model.Network
 import au.signalatlas.engine.AreaClass
+import au.signalatlas.engine.AreaClassifier
 import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.engine.RenderedTile

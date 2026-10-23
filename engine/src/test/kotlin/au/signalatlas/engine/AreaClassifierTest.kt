@@ -1,6 +1,5 @@
-package au.signalatlas.core.coverage
+package au.signalatlas.engine
 
-import au.signalatlas.engine.AreaClass
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 

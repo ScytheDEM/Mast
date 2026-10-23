@@ -1,8 +1,6 @@
-package au.signalatlas.core.coverage
+package au.signalatlas.engine
 
-import au.signalatlas.engine.AreaClass
-
-/** Rule 5: area class from the number of sites within 3 km of a tile centre. */
+/** Rule 5: area class from the number of sites within 3 km of a tile centre (or of a calibration fix). */
 object AreaClassifier {
     const val RADIUS_M = 3000.0
 
