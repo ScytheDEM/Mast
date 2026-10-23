@@ -7,8 +7,10 @@ import au.signalatlas.app.data.TowerData
 import au.signalatlas.app.data.TowerSnapshot
 import au.signalatlas.app.data.Updates
 import au.signalatlas.core.acma.ImportReport
+import au.signalatlas.core.coverage.Accuracy
 import au.signalatlas.core.coverage.CoverageSample
 import au.signalatlas.core.coverage.CoverageSelection
+import au.signalatlas.core.coverage.FetchProgress
 import au.signalatlas.core.data.DataMeta
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Site
@@ -19,7 +21,9 @@ import au.signalatlas.core.model.TowerFilter
 import au.signalatlas.core.update.HrpStatus
 import au.signalatlas.core.update.UpdateStatus
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import java.time.Instant
 import kotlin.math.abs
 
@@ -100,6 +104,24 @@ internal class FakeCoverage : Coverage {
     override val urlTemplate = template
     override fun setVisible(tiles: Set<Triple<Int, Int, Int>>) { lastVisible = tiles }
     override fun valueAt(lat: Double, lon: Double): CoverageSample? { valueAtCalls++; return sample }
+
+    override val terrainEpoch = MutableStateFlow(0L)
+    /** What [accuracyFor] flows hold; tests drive the chip through it. */
+    val accuracy = MutableStateFlow(Accuracy.QUICK)
+    val accuracyQueries = mutableListOf<Set<Triple<Int, Int, Int>>>()
+    override fun accuracyFor(visible: Set<Triple<Int, Int, Int>>): StateFlow<Accuracy> { accuracyQueries += visible; return accuracy }
+    var online = true
+    override fun isOnline() = online
+    /** Answer of [estimateIncreaseBytes]; null = offline / zoomed out. */
+    var estimate: Long? = 12_000_000L
+    override suspend fun estimateIncreaseBytes() = estimate
+    /** The progress script of the next [increaseResolution]: one per call, in order (the last one repeats). */
+    val scripts = mutableListOf<Flow<FetchProgress>>()
+    val increaseCalls = mutableListOf<Boolean>()
+    override fun increaseResolution(allowMetered: Boolean): Flow<FetchProgress> {
+        increaseCalls += allowMetered
+        return scripts.getOrNull(increaseCalls.size - 1) ?: scripts.last()
+    }
 }
 
 internal class FakeBasemap(val key: String?, val delayMs: Long = 0, val failure: Exception? = null) : BasemapKeys {

@@ -529,6 +529,8 @@ internal class TerrainCoordinator(
         if (changed) bumped()
     }
 
+    fun isOnline(): Boolean = support.network.isOnline()
+
     /** Bytes [increaseResolution] would download; null while offline, without a view, or below z10. */
     suspend fun estimateBytes(): Long? {
         if (!support.network.isOnline()) return null

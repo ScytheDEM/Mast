@@ -74,6 +74,7 @@ fun UpdatesScreen(
     modifier: Modifier = Modifier,
     patterns: HrpStatus = HrpStatus(null, 0, null),
     onDownloadPatterns: () -> Unit = {},
+    onOpenStorage: (() -> Unit)? = null,
 ) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -159,6 +160,12 @@ fun UpdatesScreen(
                         else scope.launch { snackbar.showSnackbar(needWifi) }
                     },
                 )
+                if (onOpenStorage != null) {
+                    Spacer(Modifier.height(24.dp))
+                    OutlinedButton(onClick = onOpenStorage, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                        Text(stringResource(R.string.storage_open))
+                    }
+                }
                 Spacer(Modifier.height(24.dp))
                 Text(
                     stringResource(R.string.updates_source),

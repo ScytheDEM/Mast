@@ -29,6 +29,8 @@ import au.signalatlas.app.AppContainer
 import au.signalatlas.app.ui.firstrun.FirstRunScreen
 import au.signalatlas.app.ui.map.MapScreen
 import au.signalatlas.app.ui.map.MapViewModel
+import au.signalatlas.app.ui.storage.StorageScreen
+import au.signalatlas.app.ui.storage.StorageViewModel
 import au.signalatlas.app.ui.updates.UpdatesScreen
 import au.signalatlas.app.ui.updates.currentNetworkKind
 
@@ -41,6 +43,9 @@ fun AppScaffold(container: AppContainer) {
     val state by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var showUpdates by rememberSaveable { mutableStateOf(false) }
+    var showStorage by rememberSaveable { mutableStateOf(false) }
+    val storageVm: StorageViewModel = viewModel { container.storageViewModel() }
+    val storage by storageVm.state.collectAsStateWithLifecycle()
 
     val network = remember(context) { { context.currentNetworkKind() } }
     val askNotifications = rememberNotificationPermissionOnce()
@@ -86,10 +91,27 @@ fun AppScaffold(container: AppContainer) {
                 onBack = { showUpdates = false },
                 patterns = state.patterns,
                 onDownloadPatterns = vm::downloadPatternsNow,
+                onOpenStorage = { showStorage = true },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showStorage && showUpdates && root == Root.Map,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it } + fadeOut(),
+        ) {
+            StorageScreen(
+                state = storage,
+                onRefresh = storageVm::refresh,
+                onClearTerrain = storageVm::clearTerrain,
+                onClearCoverageCache = storageVm::clearCoverageCache,
+                onBudget = storageVm::setTerrainBudgetMib,
+                onBack = { showStorage = false },
             )
         }
     }
-    BackHandler(enabled = showUpdates) { showUpdates = false }
+    BackHandler(enabled = showUpdates && !showStorage) { showUpdates = false }
+    BackHandler(enabled = showStorage) { showStorage = false }
 }
 
 /**

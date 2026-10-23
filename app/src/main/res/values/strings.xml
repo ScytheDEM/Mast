@@ -130,6 +130,46 @@
     <string name="readout_no_prediction">No prediction here</string>
     <string name="readout_no_coverage">No predicted coverage</string>
 
+    <!-- Accuracy chip and Increase resolution -->
+    <string name="accuracy_quick">Quick estimate</string>
+    <string name="accuracy_partial">Terrain (partial)</string>
+    <string name="accuracy_terrain">Terrain</string>
+    <string name="increase_title">Increase resolution</string>
+    <string name="increase_title_about">Increase resolution · about %1$d MB</string>
+    <string name="increase_title_small">Increase resolution · less than 1 MB</string>
+    <string name="increase_body">Downloads terrain for this area so the prediction accounts for hills and valleys.</string>
+    <string name="increase_download">Download</string>
+    <string name="increase_offline">Available when online</string>
+    <string name="increase_zoom_in">Zoom in to improve accuracy</string>
+    <string name="increase_fetching">Downloading terrain…</string>
+    <string name="increase_metered_about">Use mobile data for about %1$d MB?</string>
+    <string name="increase_metered_small">Use mobile data for less than 1 MB?</string>
+    <string name="increase_storage_full">Not enough free storage for the terrain data.</string>
+    <string name="increase_error">The download didn\'t finish. Try again.</string>
+
+    <!-- Storage -->
+    <string name="storage_title">Storage</string>
+    <string name="storage_open">Storage</string>
+    <string name="storage_towers">Tower data</string>
+    <string name="storage_patterns">Antenna patterns</string>
+    <string name="storage_terrain">Terrain</string>
+    <string name="storage_coverage_cache">Coverage cache</string>
+    <string name="storage_measuring">Measuring…</string>
+    <string name="storage_clear_terrain_title">Clear terrain data?</string>
+    <string name="storage_clear_terrain_body">The downloaded terrain is deleted. It downloads again when you ask for more resolution, or on Wi-Fi as you browse.</string>
+    <string name="storage_clear_cache_title">Clear coverage cache?</string>
+    <string name="storage_clear_cache_body">Saved coverage tiles are deleted and drawn again when needed.</string>
+    <string name="storage_budget">Terrain storage limit</string>
+    <string name="storage_budget_hint">Oldest terrain is removed first when the limit is reached.</string>
+    <string name="storage_budget_05">0.5 GB</string>
+    <string name="storage_budget_1">1 GB</string>
+    <string name="storage_budget_2">2 GB</string>
+    <string name="storage_budget_4">4 GB</string>
+    <string name="size_bytes">%1$s B</string>
+    <string name="size_kb">%1$s KB</string>
+    <string name="size_mb">%1$s MB</string>
+    <string name="size_gb">%1$s GB</string>
+
     <!-- Antenna patterns (Updates) -->
     <string name="patterns_updated">Antenna patterns: Updated %1$s (%2$s)</string>
     <plurals name="patterns_transmitters">

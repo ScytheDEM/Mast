@@ -46,7 +46,18 @@ class TileCache(
     val memorySize: Int get() = synchronized(memory) { memory.size }
 
     /** Bytes the disk entries occupy (after the index has been built by the first disk operation). */
-    internal val diskUsage: Long get() = synchronized(diskLock) { index(); diskUsed }
+    val diskUsage: Long get() = synchronized(diskLock) { index(); diskUsed }
+
+    /** Empties the memory and disk caches (Storage screen); tiles are re-rendered on demand. Blocking file IO. */
+    fun clear() {
+        synchronized(memory) { memory.clear() }
+        synchronized(diskLock) {
+            val idx = index()
+            for (name in idx.keys) File(dir, name).delete()
+            idx.clear()
+            diskUsed = 0L
+        }
+    }
 
     fun getMemory(key: TileKey): RenderedTile? = synchronized(memory) { memory[key] }
 

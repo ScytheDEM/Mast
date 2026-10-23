@@ -23,7 +23,10 @@ import au.signalatlas.core.model.GeoBounds
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SiteSummary
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -97,6 +100,30 @@ class MapCameraState(initialLat: Double = -27.0, initialLon: Double = 134.0, ini
 
     private companion object {
         const val ANIMATION_MS = 600
+    }
+}
+
+private const val OVERLAY_SWAP_TIMEOUT_MS = 6_000L
+
+/**
+ * Suspends until [sourceId] has delivered tiles and a frame has then rendered completely, or [timeoutMs] passes
+ * (a swap must not wait forever on a stuck tile: the old pair is replaced anyway).
+ */
+private suspend fun awaitSourceRendered(mapView: MapView, sourceId: String, timeoutMs: Long) {
+    withTimeoutOrNull(timeoutMs) {
+        suspendCancellableCoroutine { cont ->
+            var changed = false
+            val onSource = MapView.OnSourceChangedListener { id -> if (id == sourceId) changed = true }
+            val onFrame = MapView.OnDidFinishRenderingFrameListener { fully, _, _ ->
+                if (fully && changed && cont.isActive) cont.resume(Unit)
+            }
+            mapView.addOnSourceChangedListener(onSource)
+            mapView.addOnDidFinishRenderingFrameListener(onFrame)
+            cont.invokeOnCancellation {
+                mapView.removeOnSourceChangedListener(onSource)
+                mapView.removeOnDidFinishRenderingFrameListener(onFrame)
+            }
+        }
     }
 }
 
@@ -202,15 +229,19 @@ fun TowerMap(
         }
     }
 
-    // The overlay sits below the tower layers. A new template replaces the source (no style reload); a view or
-    // opacity change only restyles the layer.
+    // The overlay sits below the tower layers. Toggling coverage adds or removes it; any other template change (view,
+    // data, terrain epoch) swaps the new tiles in without the overlay going blank (see CoverageLayer.CoverageOverlay).
+    val overlay = remember { CoverageLayer.CoverageOverlay() }
     LaunchedEffect(style, coverageUrlTemplate) {
         val s = style ?: return@LaunchedEffect
-        if (coverageUrlTemplate == null) CoverageLayer.remove(s)
-        else CoverageLayer.install(s, coverageUrlTemplate, coverageView, coverageOpacity, LAYER_CLUSTERS)
+        val pendingId = overlay.sync(s, coverageUrlTemplate, coverageView, coverageOpacity, LAYER_CLUSTERS)
+        if (pendingId != null) {
+            awaitSourceRendered(mapView, pendingId, OVERLAY_SWAP_TIMEOUT_MS)
+            overlay.promote(s)
+        }
     }
     LaunchedEffect(style, coverageView, coverageOpacity) {
-        style?.let { CoverageLayer.restyle(it, coverageView, coverageOpacity) }
+        style?.let { overlay.restyle(it, coverageView, coverageOpacity) }
     }
 
     LaunchedEffect(Identity(sites)) {

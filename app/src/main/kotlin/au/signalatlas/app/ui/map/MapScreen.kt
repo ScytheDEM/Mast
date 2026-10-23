@@ -80,10 +80,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.window.core.layout.WindowSizeClass
 import au.signalatlas.app.R
 import au.signalatlas.app.location.DeviceLocationSource
+import au.signalatlas.app.ui.coverage.AccuracyChip
 import au.signalatlas.app.ui.coverage.CoverageActions
 import au.signalatlas.app.ui.coverage.CoverageControlsCard
 import au.signalatlas.app.ui.coverage.CoverageLegend
 import au.signalatlas.app.ui.coverage.CoverageToolbar
+import au.signalatlas.app.ui.coverage.IncreaseResolutionSheet
 import au.signalatlas.app.ui.coverage.PointReadout
 import au.signalatlas.app.ui.nearby.NearbyContent
 import au.signalatlas.core.map.MapCameraState
@@ -276,6 +278,7 @@ fun MapScreen(
                 onOpenUpdates = onOpenUpdates,
                 onMyLocation = onMyLocation,
                 onNearby = onNearby,
+                onIncrease = vm::openIncreaseResolution,
                 coverageOptionsOpen = coverageOptionsOpen,
                 coverage = coverageActions,
                 snackbar = snackbar,
@@ -305,6 +308,14 @@ fun MapScreen(
         }
     }
 
+    state.coverage.increase?.let {
+        IncreaseResolutionSheet(
+            it,
+            onDownload = vm::downloadIncrease,
+            onConfirmMetered = vm::confirmIncreaseOnMobileData,
+            onDismiss = vm::dismissIncreaseResolution,
+        )
+    }
     if (showBands) {
         BandsSheet(state.filter, state.availableBands, onFilter = vm::setFilter, onDismiss = { showBands = false })
     }
@@ -453,6 +464,7 @@ private fun MapControls(
     onOpenUpdates: () -> Unit,
     onMyLocation: () -> Unit,
     onNearby: () -> Unit,
+    onIncrease: () -> Unit,
     coverageOptionsOpen: Boolean,
     coverage: CoverageActions,
     snackbar: SnackbarHostState,
@@ -496,6 +508,9 @@ private fun MapControls(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         )
                     }
+                }
+                AnimatedVisibility(state.coverage.on && !state.coverage.needsZoom(state.zoom), enter = fadeIn(), exit = fadeOut()) {
+                    AccuracyChip(state.coverage.accuracy, onClick = onIncrease, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
                 state.coverage.readout?.let {
                     PointReadout(it.result, Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))

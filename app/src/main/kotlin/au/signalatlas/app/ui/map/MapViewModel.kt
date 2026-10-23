@@ -8,8 +8,10 @@ import au.signalatlas.app.data.LocationSource
 import au.signalatlas.app.data.TowerData
 import au.signalatlas.app.data.TowerSnapshot
 import au.signalatlas.app.data.Updates
+import au.signalatlas.core.coverage.Accuracy
 import au.signalatlas.core.coverage.CoverageSample
 import au.signalatlas.core.coverage.CoverageSelection
+import au.signalatlas.core.coverage.FetchProgress
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SiteDetail
 import au.signalatlas.core.model.Tech
@@ -28,6 +30,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
@@ -65,6 +69,8 @@ class MapViewModel(
     private val position = MutableStateFlow<Pair<Double, Double>?>(null)
     private var checkJob: Job? = null
     private var readoutJob: Job? = null
+    private var increaseJob: Job? = null
+    private val visibleTiles = MutableStateFlow<Set<Triple<Int, Int, Int>>>(emptySet())
     /** False until the user picks a network, so the default keeps following the filter chips. */
     private var networkChosen = false
 
@@ -129,6 +135,13 @@ class MapViewModel(
         coverage.urlTemplate.onEach { t -> _state.update { it.copy(coverage = it.coverage.copy(urlTemplate = t)) } }
             .launchIn(viewModelScope)
 
+        // The accuracy chip: follows the tiles in view and re-reads when terrain data changes or coverage is toggled.
+        combine(visibleTiles, coverage.terrainEpoch, coverage.urlTemplate) { tiles, _, template -> tiles.takeIf { template != null } }
+            .flatMapLatest { tiles -> if (tiles == null) flowOf(Accuracy.QUICK) else coverage.accuracyFor(tiles) }
+            .distinctUntilChanged()
+            .onEach { a -> _state.update { it.copy(coverage = it.coverage.copy(accuracy = a)) } }
+            .launchIn(viewModelScope)
+
         viewModelScope.launch {
             // A failed lookup (e.g. corrupt DataStore) must not crash start-up: no key, fallback style.
             val lookup = async {
@@ -187,7 +200,72 @@ class MapViewModel(
     fun onZoom(zoom: Double) = _state.update { it.copy(zoom = zoom) }
 
     /** The tiles the viewport needs; ignored while coverage is off. */
-    fun onVisibleTiles(tiles: Set<Triple<Int, Int, Int>>) = coverage.setVisible(tiles)
+    fun onVisibleTiles(tiles: Set<Triple<Int, Int, Int>>) {
+        visibleTiles.value = tiles
+        coverage.setVisible(tiles)
+    }
+
+    /** The chip was tapped while the view is not fully terrain: opens the sheet and asks how much there is to download. */
+    fun openIncreaseResolution() {
+        if (_state.value.coverage.accuracy == Accuracy.TERRAIN) return
+        increaseJob?.cancel()
+        setIncrease(IncreaseUiState())
+        increaseJob = viewModelScope.launch {
+            val bytes = withContext(io) { coverage.estimateIncreaseBytes() }
+            setIncrease(
+                when {
+                    bytes != null -> IncreaseUiState(IncreaseStatus.READY, bytes)
+                    !withContext(io) { coverage.isOnline() } -> IncreaseUiState(IncreaseStatus.OFFLINE)
+                    else -> IncreaseUiState(IncreaseStatus.ZOOM_IN)
+                },
+            )
+        }
+    }
+
+    /** The sheet's Download button: fetches on an unmetered network, otherwise asks to use mobile data first. */
+    fun downloadIncrease() = fetchIncrease(allowMetered = false)
+
+    /** "Use mobile data for about N MB?" was accepted. */
+    fun confirmIncreaseOnMobileData() = fetchIncrease(allowMetered = true)
+
+    fun dismissIncreaseResolution() {
+        increaseJob?.cancel()
+        setIncrease(null)
+    }
+
+    private fun setIncrease(s: IncreaseUiState?) = _state.update { it.copy(coverage = it.coverage.copy(increase = s)) }
+
+    private fun fetchIncrease(allowMetered: Boolean) {
+        val before = _state.value.coverage.increase ?: return
+        if (before.status == IncreaseStatus.FETCHING || before.status == IncreaseStatus.LOADING) return
+        increaseJob?.cancel()
+        var bytes = before.bytes
+        setIncrease(IncreaseUiState(IncreaseStatus.FETCHING, bytes))
+        increaseJob = viewModelScope.launch {
+            coverage.increaseResolution(allowMetered).collect { p ->
+                when (p) {
+                    is FetchProgress.Estimating -> {
+                        bytes = p.bytes
+                        setIncrease(IncreaseUiState(IncreaseStatus.FETCHING, bytes))
+                    }
+                    is FetchProgress.Fetching -> setIncrease(IncreaseUiState(IncreaseStatus.FETCHING, bytes, p.fraction))
+                    FetchProgress.Done -> setIncrease(null) // the chip follows when the tiles refresh
+                    is FetchProgress.Failed -> setIncrease(
+                        IncreaseUiState(
+                            when (p.reason) {
+                                "metered" -> IncreaseStatus.CONFIRM_METERED
+                                "offline" -> IncreaseStatus.OFFLINE
+                                "no view", "zoom in" -> IncreaseStatus.ZOOM_IN
+                                "storage" -> IncreaseStatus.STORAGE_FULL
+                                else -> IncreaseStatus.ERROR
+                            },
+                            bytes,
+                        ),
+                    )
+                }
+            }
+        }
+    }
 
     /**
      * Long-press at a point: shows "Calculating…" and asks for the prediction every [READOUT_RETRY_MS] until a tile
@@ -227,6 +305,7 @@ class MapViewModel(
         val after = _state.value.coverage
         // A view switch keeps the point's numbers; anything else changes the tiles they came from.
         if (before.copy(view = after.view, urlTemplate = after.urlTemplate) != after) dismissReadout()
+        if (!after.on && after.increase != null) dismissIncreaseResolution()
         applyCoverage()
     }
 

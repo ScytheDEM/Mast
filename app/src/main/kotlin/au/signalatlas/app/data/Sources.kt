@@ -1,8 +1,10 @@
 package au.signalatlas.app.data
 
+import au.signalatlas.core.coverage.Accuracy
 import au.signalatlas.core.coverage.CoverageSample
 import au.signalatlas.core.coverage.CoverageSelection
 import au.signalatlas.core.coverage.CoverageTileService
+import au.signalatlas.core.coverage.FetchProgress
 import au.signalatlas.core.data.DataMeta
 import au.signalatlas.core.data.PatternRepository
 import au.signalatlas.core.data.TowerRepository
@@ -67,6 +69,17 @@ interface Coverage {
     fun setVisible(tiles: Set<Triple<Int, Int, Int>>)
     /** The prediction at a point from tiles already rendered, or null while there are none. */
     fun valueAt(lat: Double, lon: Double): CoverageSample?
+
+    /** Changes whenever terrain data changes. The URL template follows it, so the map swaps tiles in place. */
+    val terrainEpoch: StateFlow<Long>
+    /** How the tiles of [visible] were predicted; follows tiles as they render. Hold the flow while it is shown. */
+    fun accuracyFor(visible: Set<Triple<Int, Int, Int>>): StateFlow<Accuracy>
+    /** True while the device is online (terrain can be downloaded). */
+    fun isOnline(): Boolean
+    /** Bytes "Increase resolution" would download for the view; null while offline, without a view or zoomed out. */
+    suspend fun estimateIncreaseBytes(): Long?
+    /** Downloads the elevation the current view is missing. */
+    fun increaseResolution(allowMetered: Boolean): Flow<FetchProgress>
 }
 
 fun interface BasemapKeys {
@@ -123,6 +136,11 @@ class ServiceCoverage(
 
     override fun setVisible(tiles: Set<Triple<Int, Int, Int>>) = service.setVisible(tiles)
     override fun valueAt(lat: Double, lon: Double) = service.valueAt(lat, lon)
+    override val terrainEpoch: StateFlow<Long> get() = service.terrainEpoch
+    override fun accuracyFor(visible: Set<Triple<Int, Int, Int>>) = service.accuracyFor(visible)
+    override fun isOnline() = service.isOnline()
+    override suspend fun estimateIncreaseBytes() = service.estimateIncreaseBytes()
+    override fun increaseResolution(allowMetered: Boolean) = service.increaseResolution(allowMetered)
 }
 
 class LocatorBasemapKeys(private val locator: BasemapLocator) : BasemapKeys {

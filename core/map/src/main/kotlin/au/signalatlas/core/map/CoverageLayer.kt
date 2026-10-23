@@ -13,6 +13,7 @@ import org.maplibre.android.style.expressions.Expression.rgba
 import org.maplibre.android.style.expressions.Expression.stop
 import org.maplibre.android.style.layers.ColorReliefLayer
 import org.maplibre.android.style.layers.PropertyFactory.colorReliefColor
+import org.maplibre.android.style.layers.PropertyFactory.colorReliefOpacity
 import org.maplibre.android.style.sources.RasterDemSource
 import org.maplibre.android.style.sources.TileSet
 import kotlin.math.PI
@@ -32,6 +33,9 @@ object CoverageLayer {
     const val MIN_ZOOM = 8
     const val MAX_ZOOM = 16
     const val DEFAULT_OPACITY = 0.45f
+
+    /** Layer opacity of a pending layer: near zero so it does not double the overlay, but above zero so its tiles load. */
+    private const val PENDING_OPACITY = 0.01f
 
     private const val TILE_SIZE = 256
 
@@ -77,37 +81,135 @@ object CoverageLayer {
         ),
     ).toString()
 
+    /** The two alternating source/layer pairs (see [CoverageOverlay]): slot 0 is the original `coverage` / `coverage-relief`. */
+    internal fun sourceId(slot: Int) = if (slot == 0) SOURCE_ID else "$SOURCE_ID-b"
+    internal fun layerId(slot: Int) = if (slot == 0) LAYER_ID else "$LAYER_ID-b"
+
     /** [sourceJson] as the API object (the Android API has no JSON entry point for a single source). */
-    internal fun source(urlTemplate: String): RasterDemSource {
+    internal fun source(urlTemplate: String, id: String = SOURCE_ID): RasterDemSource {
         val tiles = TileSet("2.1.0", urlTemplate).apply {
             encoding = "terrarium"
             minZoom = MIN_ZOOM.toFloat()
             maxZoom = MAX_ZOOM.toFloat()
         }
-        return RasterDemSource(SOURCE_ID, tiles, TILE_SIZE)
+        return RasterDemSource(id, tiles, TILE_SIZE)
     }
 
+    /** What a change of the wanted tile template means for the overlay's source. */
+    enum class SourceOp { NONE, ADD, UPDATE, REMOVE }
+
     /**
-     * Adds (replacing any earlier) the source and layer, below the first label layer so roads and water show
-     * underneath and place names on top; with no basemap it goes below [fallbackBelow] (the first tower layer), or on top if that is not there yet.
+     * The one decision behind the overlay: [installed] is the template the source has (or is being switched to), [wanted]
+     * the one the map screen asks for. Add and remove happen only when coverage is toggled; every other template change
+     * (a view switch, new data, a terrain epoch bump) is an [SourceOp.UPDATE], which [CoverageOverlay] applies without
+     * the overlay ever disappearing.
      */
-    fun install(style: Style, urlTemplate: String, view: CoverageSelection.View, opacity: Float, fallbackBelow: String) {
-        remove(style)
-        style.addSource(source(urlTemplate))
-        val layer = ColorReliefLayer(LAYER_ID, SOURCE_ID).withProperties(colorReliefColor(colorExpression(view, opacity)))
-        layer.minZoom = MIN_ZOOM.toFloat()
-        val below = LABEL_ANCHORS.firstOrNull { style.getLayer(it) != null } ?: fallbackBelow
+    fun planSource(installed: String?, wanted: String?): SourceOp = when {
+        wanted == installed -> SourceOp.NONE
+        wanted == null -> SourceOp.REMOVE
+        installed == null -> SourceOp.ADD
+        else -> SourceOp.UPDATE
+    }
+
+    private fun newLayer(slot: Int, view: CoverageSelection.View, opacity: Float): ColorReliefLayer =
+        ColorReliefLayer(layerId(slot), sourceId(slot)).withProperties(colorReliefColor(colorExpression(view, opacity))).also {
+            it.minZoom = MIN_ZOOM.toFloat()
+        }
+
+    private fun addLayer(style: Style, layer: ColorReliefLayer, belowLayer: String?, fallbackBelow: String) {
+        val below = belowLayer ?: LABEL_ANCHORS.firstOrNull { style.getLayer(it) != null } ?: fallbackBelow
         if (style.getLayer(below) != null) style.addLayerBelow(layer, below) else style.addLayer(layer)
     }
 
-    fun remove(style: Style) {
-        style.removeLayer(LAYER_ID)
-        style.removeSource(SOURCE_ID)
-    }
+    /**
+     * The overlay on one [Style]: a `raster-dem` source and `color-relief` layer. MapLibre Android 13.7.1 cannot change
+     * a source's tiles after it is added (no `setTiles` / `setUrl` on raster sources) and removing the source blanks the
+     * overlay until the new tiles are in, so a template change is a cross-over: the new source and layer are added
+     * below the old ones, drawn at near-zero opacity so their tiles load, and [promote] (once the caller has seen them
+     * rendered) shows them and drops the old pair in the same frame. Only a toggle adds or removes the overlay.
+     *
+     * Main thread only. A new [Style] (basemap or theme change) resets it.
+     */
+    class CoverageOverlay {
+        private class Slot(val index: Int, val template: String)
 
-    /** Colour changes only: no source reload. */
-    fun restyle(style: Style, view: CoverageSelection.View, opacity: Float) {
-        style.getLayerAs<ColorReliefLayer>(LAYER_ID)?.setProperties(colorReliefColor(colorExpression(view, opacity)))
+        private var style: Style? = null
+        private var active: Slot? = null
+        private var pending: Slot? = null
+
+        /** The source id waiting to be promoted, or null. */
+        val pendingSourceId: String? get() = pending?.let { sourceId(it.index) }
+
+        /**
+         * Brings the style in line with [template] (null = no overlay). Returns the id of a source that was just added
+         * pending, which the caller must wait for and then [promote]; null when nothing needs to wait.
+         */
+        fun sync(style: Style, template: String?, view: CoverageSelection.View, opacity: Float, fallbackBelow: String): String? {
+            if (this.style !== style) {
+                this.style = style
+                active = null
+                pending = null
+            }
+            val current = pending?.template ?: active?.template
+            when (planSource(current, template)) {
+                SourceOp.NONE -> Unit
+                SourceOp.REMOVE -> {
+                    removeAll(style)
+                    active = null
+                    pending = null
+                }
+                SourceOp.ADD -> {
+                    val slot = Slot(0, template!!)
+                    style.addSource(source(template, sourceId(slot.index)))
+                    addLayer(style, newLayer(slot.index, view, opacity), null, fallbackBelow)
+                    active = slot
+                }
+                SourceOp.UPDATE -> {
+                    dropPending(style)
+                    val old = checkNotNull(active) { "an update needs an installed overlay" }
+                    val slot = Slot(1 - old.index, template!!)
+                    style.addSource(source(template, sourceId(slot.index)))
+                    val layer = newLayer(slot.index, view, opacity)
+                    layer.setProperties(colorReliefOpacity(PENDING_OPACITY))
+                    addLayer(style, layer, layerId(old.index), fallbackBelow)
+                    pending = slot
+                    return sourceId(slot.index)
+                }
+            }
+            return null
+        }
+
+        /** Shows the pending pair and removes the old one. */
+        fun promote(style: Style) {
+            val next = pending ?: return
+            if (this.style !== style) return
+            style.getLayerAs<ColorReliefLayer>(layerId(next.index))?.setProperties(colorReliefOpacity(1f))
+            active?.let { removePair(style, it.index) }
+            active = next
+            pending = null
+        }
+
+        /** Colour changes only: no source reload. */
+        fun restyle(style: Style, view: CoverageSelection.View, opacity: Float) {
+            for (slot in listOfNotNull(active, pending)) {
+                style.getLayerAs<ColorReliefLayer>(layerId(slot.index))?.setProperties(colorReliefColor(colorExpression(view, opacity)))
+            }
+        }
+
+        private fun dropPending(style: Style) {
+            pending?.let { removePair(style, it.index) }
+            pending = null
+        }
+
+        private fun removePair(style: Style, slot: Int) {
+            style.removeLayer(layerId(slot))
+            style.removeSource(sourceId(slot))
+        }
+
+        private fun removeAll(style: Style) {
+            removePair(style, 0)
+            removePair(style, 1)
+        }
     }
 
     private val LABEL_ANCHORS = listOf("water_label", "roads_labels_minor", "places_subplace")

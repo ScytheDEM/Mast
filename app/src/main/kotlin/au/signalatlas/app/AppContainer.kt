@@ -5,12 +5,14 @@ import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import au.signalatlas.app.data.AppStorage
 import au.signalatlas.app.data.LocatorBasemapKeys
 import au.signalatlas.app.data.ServiceCoverage
 import au.signalatlas.app.data.ManagerUpdates
 import au.signalatlas.app.data.RepositoryTowerData
 import au.signalatlas.app.location.DeviceLocationSource
 import au.signalatlas.app.ui.map.MapViewModel
+import au.signalatlas.app.ui.storage.StorageViewModel
 import au.signalatlas.core.acma.AcmaImporter
 import au.signalatlas.core.acma.hrp.HrpImporter
 import au.signalatlas.core.data.DbInstaller
@@ -110,12 +112,15 @@ class AppContainer(context: Context) {
     /** The one elevation fetcher: its downloads are serialised process-wide. */
     private val demFetcher = DemFetcher(http, elevationChunks, isMetered = { GeoNetwork.isActiveNetworkMetered(app) })
 
+    private val tileCache = TileCache(File(app.cacheDir, "coverage-tiles").apply { mkdirs() })
+    private val terrainTables = TerrainTableStore(File(app.cacheDir, "terrain"))
+
     /** Coverage overlay: tiles are rendered on demand for MapLibre's requests (see [CoverageInterceptor]). */
     val coverage = CoverageTileService(
-        repo, patterns.patterns, CoverageEngine(), TileCache(File(app.cacheDir, "coverage-tiles").apply { mkdirs() }),
+        repo, patterns.patterns, CoverageEngine(), tileCache,
         RenderPool(::renderThreads),
         TerrainSupport(
-            elevationChunks, DemFetcherSource(demFetcher), TerrainTableStore(File(app.cacheDir, "terrain")),
+            elevationChunks, DemFetcherSource(demFetcher), terrainTables,
             ConnectivityNetworkMonitor(app), appScope,
         ),
     )
@@ -178,6 +183,10 @@ class AppContainer(context: Context) {
         updateManager.scheduleHrp()
         updateManager.checkOnAppOpen()
     }
+
+    fun storageViewModel() = StorageViewModel(
+        AppStorage(installer.live, patternInstaller.live, elevationChunks, terrainTables, tileCache, coverage, geoPrefs),
+    )
 
     fun mapViewModel() = MapViewModel(
         towerData, ManagerUpdates(updateManager), LocatorBasemapKeys(basemap), location, ServiceCoverage(coverage, repo, patterns),

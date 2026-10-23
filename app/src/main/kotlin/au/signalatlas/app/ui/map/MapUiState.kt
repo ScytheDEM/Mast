@@ -1,5 +1,6 @@
 package au.signalatlas.app.ui.map
 
+import au.signalatlas.core.coverage.Accuracy
 import au.signalatlas.core.coverage.CoverageSelection
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SiteDetail
@@ -49,6 +50,10 @@ data class CoverageUiState(
     val urlTemplate: String? = null,
     /** The long-press result card, if one is showing. */
     val readout: Readout? = null,
+    /** How the tiles in view were predicted (the accuracy chip). */
+    val accuracy: Accuracy = Accuracy.QUICK,
+    /** The "Increase resolution" sheet, if it is open. */
+    val increase: IncreaseUiState? = null,
 ) {
     /** Coverage is on but the map is too far out to show it. */
     fun needsZoom(zoom: Double?): Boolean = on && zoom != null && zoom < MIN_ZOOM
@@ -58,6 +63,30 @@ data class CoverageUiState(
         const val MIN_ZOOM = 8
     }
 }
+
+/** What the "Increase resolution" sheet shows. */
+enum class IncreaseStatus {
+    /** Asking how much there is to download. */
+    LOADING,
+    /** [IncreaseUiState.bytes] is known; the Download button is live. */
+    READY,
+    /** No network: "Available when online". */
+    OFFLINE,
+    /** Too far out (or no view yet): terrain is only used from the zoom where tiles are built with it. */
+    ZOOM_IN,
+    FETCHING,
+    /** On mobile data: waiting for the user to accept [IncreaseUiState.bytes]. */
+    CONFIRM_METERED,
+    STORAGE_FULL,
+    ERROR,
+}
+
+/** [bytes] is the download size when known; [progress] 0..1 while [IncreaseStatus.FETCHING]. */
+data class IncreaseUiState(
+    val status: IncreaseStatus = IncreaseStatus.LOADING,
+    val bytes: Long? = null,
+    val progress: Float = 0f,
+)
 
 /** A long-press on the map and what is known about that point. */
 data class Readout(val lat: Double, val lon: Double, val result: ReadoutResult)

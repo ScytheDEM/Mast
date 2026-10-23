@@ -276,6 +276,9 @@ class CoverageTileService internal constructor(
         return tc.existingRegion(k) != null
     }
 
+    /** True while the device has a validated network (what [estimateIncreaseBytes] needs); false without terrain support. */
+    fun isOnline(): Boolean = terrain?.isOnline() ?: false
+
     /** Bytes [increaseResolution] would download for the current view; null while offline, without a view or below z10. */
     suspend fun estimateIncreaseBytes(): Long? = terrain?.estimateBytes()
 

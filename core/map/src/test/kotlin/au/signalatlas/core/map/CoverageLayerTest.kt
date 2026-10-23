@@ -103,4 +103,32 @@ class CoverageLayerTest {
         assertThat(z11.map { it.third }.toSet().size).isGreaterThan(2)
         assertThat(z11.size).isEqualTo(z11.map { it.second }.toSet().size * z11.map { it.third }.toSet().size)
     }
+
+    @Test
+    fun planAddsOnlyWhenTurnedOnAndRemovesOnlyWhenTurnedOff() {
+        val a = "https://c/v1/sel/rsrp/stamp/etag/t0/{z}/{x}/{y}.png"
+        assertThat(CoverageLayer.planSource(null, a)).isEqualTo(CoverageLayer.SourceOp.ADD)
+        assertThat(CoverageLayer.planSource(a, null)).isEqualTo(CoverageLayer.SourceOp.REMOVE)
+        assertThat(CoverageLayer.planSource(null, null)).isEqualTo(CoverageLayer.SourceOp.NONE)
+        assertThat(CoverageLayer.planSource(a, a)).isEqualTo(CoverageLayer.SourceOp.NONE)
+    }
+
+    @Test
+    fun anyOtherTemplateChangeUpdatesInPlace() {
+        val epoch0 = "https://c/v1/sel/rsrp/stamp/etag/t0/{z}/{x}/{y}.png"
+        val epoch1 = "https://c/v1/sel/rsrp/stamp/etag/t1/{z}/{x}/{y}.png"
+        val probability = "https://c/v1/sel/prob/stamp/etag/t1/{z}/{x}/{y}.png"
+        val newData = "https://c/v1/sel/prob/stamp2/etag/t1/{z}/{x}/{y}.png"
+        for ((from, to) in listOf(epoch0 to epoch1, epoch1 to probability, probability to newData)) {
+            assertThat(CoverageLayer.planSource(from, to)).isEqualTo(CoverageLayer.SourceOp.UPDATE)
+        }
+    }
+
+    @Test
+    fun theTwoSlotsHaveDistinctIdsAndSlotZeroKeepsTheOriginalOnes() {
+        assertThat(CoverageLayer.sourceId(0)).isEqualTo(CoverageLayer.SOURCE_ID)
+        assertThat(CoverageLayer.layerId(0)).isEqualTo(CoverageLayer.LAYER_ID)
+        assertThat(CoverageLayer.sourceId(1)).isNotEqualTo(CoverageLayer.sourceId(0))
+        assertThat(CoverageLayer.layerId(1)).isNotEqualTo(CoverageLayer.layerId(0))
+    }
 }

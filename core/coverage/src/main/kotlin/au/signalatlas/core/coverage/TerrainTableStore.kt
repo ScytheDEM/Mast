@@ -47,7 +47,18 @@ class TerrainTableStore(
     private val tempCounter = AtomicLong()
 
     internal val memorySize: Int get() = synchronized(memory) { memory.size }
-    internal val diskUsage: Long get() = synchronized(diskLock) { index(); diskUsed }
+    val diskUsage: Long get() = synchronized(diskLock) { index(); diskUsed }
+
+    /** Deletes every table, in memory and on disk (Storage screen); they are rebuilt on demand. Blocking file IO. */
+    fun clear() {
+        synchronized(memory) { memory.clear() }
+        synchronized(diskLock) {
+            val idx = index()
+            for (rel in idx.keys) File(dir, rel).delete()
+            idx.clear()
+            diskUsed = 0L
+        }
+    }
 
     /** Drops the memory LRU (memory pressure); the files stay. */
     internal fun dropMemory() = synchronized(memory) { memory.clear() }
