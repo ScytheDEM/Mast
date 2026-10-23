@@ -1,0 +1,5 @@
+ninja_dyndep_version = 1.0
+build CMakeFiles/saengine.dir/engine.cpp.o: dyndep
+
+build CMakeFiles/saengine.dir/jni_bridge.cpp.o: dyndep
+

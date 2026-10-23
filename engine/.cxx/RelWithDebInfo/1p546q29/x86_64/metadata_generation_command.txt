@@ -1,0 +1,18 @@
+                        -H/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/src/main/cpp
+-DCMAKE_SYSTEM_NAME=Android
+-DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+-DCMAKE_SYSTEM_VERSION=29
+-DANDROID_PLATFORM=android-29
+-DANDROID_ABI=x86_64
+-DCMAKE_ANDROID_ARCH_ABI=x86_64
+-DANDROID_NDK=/Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370
+-DCMAKE_ANDROID_NDK=/Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370
+-DCMAKE_TOOLCHAIN_FILE=/Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/build/cmake/android.toolchain.cmake
+-DCMAKE_MAKE_PROGRAM=/Users/aliclonsdale/Library/Android/sdk/cmake/4.1.2/bin/ninja
+-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/build/intermediates/cxx/RelWithDebInfo/1p546q29/obj/x86_64
+-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/build/intermediates/cxx/RelWithDebInfo/1p546q29/obj/x86_64
+-DCMAKE_BUILD_TYPE=RelWithDebInfo
+-B/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/.cxx/RelWithDebInfo/1p546q29/x86_64
+-GNinja
+                        Build command args: []
+                        Version: 2

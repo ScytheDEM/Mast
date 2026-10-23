@@ -37,4 +37,19 @@ $ANDROID_HOME/emulator/emulator -avd sa_pixel
 adb version && emulator -list-avds
 ```
 
-The NDK and CMake are not installed yet; they arrive in M2.
+## Native engine toolchain (M2)
+
+```sh
+sdkmanager "ndk;30.0.16248370" "cmake;4.1.2"
+```
+
+The `:engine` module builds with NDK 30.0.16248370 and SDK CMake 4.1.2 (versions in `gradle/libs.versions.toml`).
+The host (macOS, Apple clang) GoogleTest suite fetches GoogleTest v1.17.0 into `engine/host/build/` (gitignored) on the
+first run, so that run needs network access:
+
+```sh
+engine/host/run-tests.sh      # or: ./gradlew :engine:hostTest (also part of ./gradlew check)
+```
+
+Release APK checks: `zipalign -c -P 16 -v 4 app/build/outputs/apk/release/app-release.apk` and
+`unzip -l` showing `lib/arm64-v8a/libsaengine.so`.

@@ -1,0 +1,36 @@
+CMakeFiles/saengine.dir/jni_bridge.cpp.o.ddi: \
+  /Users/aliclonsdale/Library/Application\ Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/src/main/cpp/jni_bridge.cpp \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/jni.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/stdarg.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stdarg_header_macro.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stdarg___gnuc_va_list.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stdarg_va_list.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stdarg_va_arg.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stdarg___va_copy.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stdarg_va_copy.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/stdint.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/stdint.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/sys/cdefs.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/android/versioning.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/android/api-level.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/android/ndk-version.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/bits/wchar_limits.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/c++/v1/stddef.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/c++/v1/__config \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/c++/v1/__config_site \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/c++/v1/__configuration/abi.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/c++/v1/__configuration/compiler.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/c++/v1/__configuration/platform.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/features.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/c++/v1/__configuration/availability.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/c++/v1/__configuration/language.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/stddef.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stddef_header_macro.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stddef_ptrdiff_t.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stddef_size_t.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stddef_wchar_t.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stddef_null.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stddef_nullptr_t.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stddef_max_align_t.h \
+  /Users/aliclonsdale/Library/Android/sdk/ndk/30.0.16248370/toolchains/llvm/prebuilt/darwin-x86_64/lib/clang/21/include/__stddef_offsetof.h \
+  /Users/aliclonsdale/Library/Application\ Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/src/main/cpp/engine.h

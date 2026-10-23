@@ -1,0 +1,10 @@
+# ninja log v6
+1	62	1792729277089234536	CMakeFiles/saengine.dir/engine.cpp.o.ddi	4571ca86d755e6cc
+1	65	1792729277089555546	CMakeFiles/saengine.dir/jni_bridge.cpp.o.ddi	b620a603eb41aa0b
+65	79	1792729277167203500	CMakeFiles/saengine.dir/CXX.dd	805cea7e19326a1e
+65	79	1792729277167203500	CMakeFiles/saengine.dir/CXXModules.json	805cea7e19326a1e
+65	79	1792729277167203500	CMakeFiles/saengine.dir/engine.cpp.o.modmap	805cea7e19326a1e
+65	79	1792729277167203500	CMakeFiles/saengine.dir/jni_bridge.cpp.o.modmap	805cea7e19326a1e
+80	126	1792729277167796893	CMakeFiles/saengine.dir/engine.cpp.o	12800c6c3da3ece3
+80	131	1792729277168031108	CMakeFiles/saengine.dir/jni_bridge.cpp.o	2243961e830ed997
+131	191	1792729277219329855	/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/build/intermediates/cxx/RelWithDebInfo/1p546q29/obj/arm64-v8a/libsaengine.so	b6fa93272cd6f83a

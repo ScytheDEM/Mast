@@ -1,0 +1,35 @@
+{
+	"bmi-installation" : null,
+	"compiler-frontend-variant" : "GNU",
+	"compiler-id" : "Clang",
+	"compiler-simulate-id" : "",
+	"config" : "RelWithDebInfo",
+	"cxx-modules" : {},
+	"database-info" : null,
+	"dir-cur-bld" : "/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/.cxx/RelWithDebInfo/1p546q29/arm64-v8a",
+	"dir-cur-src" : "/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/src/main/cpp",
+	"dir-top-bld" : "/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/.cxx/RelWithDebInfo/1p546q29/arm64-v8a",
+	"dir-top-src" : "/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/src/main/cpp",
+	"exports" : [],
+	"forward-modules-from-target-dirs" : [],
+	"include-dirs" : 
+	[
+		"/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/src/main/cpp"
+	],
+	"language" : "CXX",
+	"linked-target-dirs" : [],
+	"module-dir" : "/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/.cxx/RelWithDebInfo/1p546q29/arm64-v8a/CMakeFiles/saengine.dir",
+	"sources" : 
+	{
+		"CMakeFiles/saengine.dir/engine.cpp.o" : 
+		{
+			"language" : "CXX",
+			"source" : "/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/src/main/cpp/engine.cpp"
+		},
+		"CMakeFiles/saengine.dir/jni_bridge.cpp.o" : 
+		{
+			"language" : "CXX",
+			"source" : "/Users/aliclonsdale/Library/Application Support/Claude/scratch-workspaces/7cd05a91-7f40-47a5-b813-b179325b6a80/a7d90b60-7f89-44c5-b2fa-4c22ada41cb4/scratch-2026-10-22-5f15be/engine/src/main/cpp/jni_bridge.cpp"
+		}
+	}
+}

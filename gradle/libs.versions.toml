@@ -18,6 +18,8 @@ junit = "4.13.2"
 truth = "1.4.5"
 robolectric = "4.17"
 androidxTest = "1.7.0"
+ndk = "30.0.16248370"
+sdkCmake = "4.1.2"
 
 [libraries]
 androidx-compose-bom = { module = "androidx.compose:compose-bom", version.ref = "composeBom" }
