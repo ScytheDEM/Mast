@@ -113,7 +113,9 @@ class TerrainTableStore(
         val files = ArrayList<Pair<String, File>>()
         dir.listFiles()?.forEach { sub ->
             if (sub.isDirectory) sub.listFiles()?.forEach { f ->
-                if (f.name.endsWith(".tmp")) f.delete() else if (f.name.endsWith(".tbl")) files += "${sub.name}/${f.name}" to f
+                // Leftover temp files and tables named by an older scheme (no DEM id) are deleted.
+                if (f.name.endsWith(".tmp") || (f.name.endsWith(".tbl") && !CURRENT_NAME.matches(f.name))) f.delete()
+                else if (f.name.endsWith(".tbl")) files += "${sub.name}/${f.name}" to f
             }
         }
         for ((rel, f) in files.sortedBy { it.second.lastModified() }) {
@@ -158,6 +160,7 @@ class TerrainTableStore(
         const val FILE_BYTES = 8 + 8 + TerrainTable.CELLS + TerrainTable.MASK_BYTES + 4
         private const val MAGIC = 0x42544153 // "SATB" little-endian
         private const val VERSION = 1
+        private val CURRENT_NAME = Regex("""-?\d+x-?\d+_\d+_\d+_[0-9a-f]+\.tbl""")
 
         fun encode(demId: Long, t: TerrainTable): ByteArray {
             val buf = ByteBuffer.allocate(FILE_BYTES).order(ByteOrder.LITTLE_ENDIAN)

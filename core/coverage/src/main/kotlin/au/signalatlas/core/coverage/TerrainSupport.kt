@@ -93,5 +93,6 @@ class TerrainSupport(
     val settleMs: Long = 1_500,
     /** At most one terrain-epoch bump (a tile refetch for the whole view) per this many ms. */
     val minBumpMs: Long = 1_000,
-    val clock: () -> Long = System::currentTimeMillis,
+    /** Monotonic milliseconds (never the wall clock, which can jump back). */
+    val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 )

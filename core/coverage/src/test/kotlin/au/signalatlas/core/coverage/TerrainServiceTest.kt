@@ -395,6 +395,8 @@ class TerrainServiceTest {
         assertThat(r.service.terrainEpoch.value).isEqualTo(1L)
         assertThat(r.key()).isNotEqualTo(v0)
         assertThat(r.renderer.builds).hasSize(2)
+        r.render() // the staged table and the rebuilt one are both in the published set
+        assertThat(r.renderer.preparedTables.last()).hasSize(2)
     }
 
     @Test fun aTileCrossingPanOfAVisibleRegionDoesNotBumpTheEpoch() {
@@ -413,23 +415,24 @@ class TerrainServiceTest {
         r.awaitEpochAbove(0)
     }
 
-    @Test fun epochBumpsAreCoalescedToOnePerWindow() {
-        val r = TerrainRig(tmp, chunksPresent = false, minBumpMs = 400).also { rig = it }
-        r.putChunks(r.regionChunks)
-        r.service.setVisible(setOf(r.tile))
-        r.service.onTrimMemory(0) // keeps the rig referenced; no-op below RUNNING_LOW
+    @Test fun epochBumpsAreCoalescedToOnePerWindowOnAMonotonicClock() {
+        val now = java.util.concurrent.atomic.AtomicLong(1_000)
+        val r = TerrainRig(tmp, chunksPresent = true, minBumpMs = 10_000, clock = now::get).also { rig = it }
         r.render()
-        r.awaitEpochAbove(0) // the tables' publication is the first bump of this service
-        val t0 = System.nanoTime()
-        // Two more version changes right away (chunks of a second region arriving, then tables): one deferred bump.
+        r.awaitEpochAbove(0) // the first bump is immediate
+        assertThat(r.service.terrainEpoch.value).isEqualTo(1L)
+        now.addAndGet(9_000) // 1 s left in the window
         val before = r.service.terrainEpoch.value
-        r.service.setVisible(setOf(Triple(10, r.at.x + 1, r.at.y)))
-        r.putChunks(ChunkMathRegion.of(r.at.x + 1, r.at.y))
-        r.render(10, r.at.x + 1, r.at.y)
-        r.render(10, r.at.x + 1, r.at.y)
-        waitUntil(what = "coalesced bump") { r.service.terrainEpoch.value > before }
-        assertThat(r.service.terrainEpoch.value).isEqualTo(before + 1)
-        assertThat((System.nanoTime() - t0) / 1_000_000).isAtLeast(300L)
+        // Two version changes inside the window: chunks of a second region arrive, then its tables publish.
+        val x = r.at.x + 1
+        r.putChunks(ChunkMathRegion.of(x, r.at.y))
+        r.render(10, x, r.at.y) // new region: complete from the start, tables come
+        r.render(10, x, r.at.y)
+        waitUntil(what = "second region's tables") { r.renderer.builds.size == 4 }
+        assertThat(r.service.terrainEpoch.value).isEqualTo(before) // deferred, not lost
+        waitUntil(timeoutMs = 5_000, what = "deferred bump") { r.service.terrainEpoch.value > before }
+        now.addAndGet(10_000)
+        assertThat(r.service.terrainEpoch.value).isEqualTo(before + 1) // one bump for both changes
     }
 
     @Test fun belowZ10NoTerrainRegionIsEverCreatedAndTilesAreQuickOnly() {
@@ -453,13 +456,15 @@ class TerrainServiceTest {
 
     @Test fun atMostTwelveTerrainRegionsAreKept() {
         val r = rig(chunks = false)
-        val k0 = r.key()
-        repeat(TerrainCoordinator.MAX_REGIONS + 2) { r.key(10, r.at.x + 1 + it, r.at.y) }
-        // The first region was evicted: it is recreated from scratch (still no chunks -> 0), and peeking another is cheap.
         assertThat(TerrainCoordinator.MAX_REGIONS).isEqualTo(12)
-        assertThat(r.key()).isEqualTo(k0)
+        repeat(TerrainCoordinator.MAX_REGIONS + 3) { r.key(10, r.at.x + it, r.at.y) }
+        assertThat(r.service.terrainRegionCount).isEqualTo(12)
+        // The first one was evicted; asking again recreates it (and evicts another), the count stays at the cap.
+        r.key()
+        assertThat(r.service.terrainRegionCount).isEqualTo(12)
+        // Chunks that arrive later are noticed by the next tile request of a quick region.
         r.putChunks(r.regionChunks)
-        assertThat(r.key().terrainVersion).isEqualTo(0L) // recheck only happens on a tile request
+        assertThat(r.key().terrainVersion).isEqualTo(0L)
         r.render()
         assertThat(r.key().terrainVersion).isNotEqualTo(0L)
     }

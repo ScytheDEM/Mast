@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.zip.CRC32
 import kotlin.math.cos
@@ -110,6 +111,7 @@ internal class TerrainCoordinator(
     private val bumpLock = Any()
     private var lastBump = Long.MIN_VALUE
     private var bumpScheduled = false
+    private var bumpGeneration = 0L
     private var autoNeed: Set<ChunkId> = emptySet()
     @Volatile private var autoFailed: Set<ChunkId>? = null
 
@@ -147,6 +149,11 @@ internal class TerrainCoordinator(
 
     fun region(k: TerrainKey): TerrainRegion = synchronized(lock) { regionLocked(k) }
 
+    /** The region if it is still kept (a render in flight must not resurrect one that trim or the LRU dropped). */
+    fun existingRegion(k: TerrainKey): TerrainRegion? = synchronized(lock) { regions[k] }
+
+    val regionCount: Int get() = synchronized(lock) { regions.size }
+
     private fun regionLocked(k: TerrainKey): TerrainRegion = regions.getOrPut(k) {
         val bounds = TileMath.bounds(k.zf, k.rx, k.ry)
         val tr = TerrainRegion(k, bounds, ChunkMath.chunksFor(bounds, MARGIN_KM))
@@ -183,28 +190,43 @@ internal class TerrainCoordinator(
      * [TerrainSupport.minBumpMs]: a bump inside that window is deferred and covers every change until then.
      */
     private fun bumped() {
-        val delayMs = synchronized(bumpLock) {
-            val now = support.clock()
-            val wait = lastBump + support.minBumpMs - now
-            if (lastBump == Long.MIN_VALUE || wait <= 0) {
-                lastBump = now
-                0L
+        val now: Boolean = synchronized(bumpLock) {
+            val t = support.clock()
+            if (lastBump == Long.MIN_VALUE || t - lastBump >= support.minBumpMs) {
+                lastBump = t
+                bumpGeneration++ // covers a deferred bump that is still waiting
+                _epoch.update { it + 1 }
+                true
             } else {
-                if (bumpScheduled) return
-                bumpScheduled = true
-                wait
+                if (!bumpScheduled) {
+                    bumpScheduled = true
+                    scheduleBump(lastBump + support.minBumpMs - t, bumpGeneration)
+                }
+                false
             }
         }
-        if (delayMs == 0L) {
-            _epoch.value += 1
-            onChange()
-        } else {
-            support.scope.launch {
-                delay(delayMs)
-                synchronized(bumpLock) { bumpScheduled = false; lastBump = support.clock() }
-                _epoch.value += 1
-                onChange()
+        if (now) onChange()
+    }
+
+    /** Caller holds [bumpLock]. The deferred bump of the window that ends in [waitMs]. */
+    private fun scheduleBump(waitMs: Long, generation: Long) {
+        support.scope.launch {
+            var fire = false
+            try {
+                delay(waitMs)
+                synchronized(bumpLock) {
+                    if (bumpGeneration == generation) {
+                        lastBump = support.clock()
+                        bumpGeneration++
+                        _epoch.update { it + 1 }
+                        fire = true
+                    }
+                }
+            } finally {
+                // Also when the job is cancelled: otherwise no later change could ever schedule a bump.
+                synchronized(bumpLock) { bumpScheduled = false }
             }
+            if (fire) onChange()
         }
     }
 
@@ -267,14 +289,24 @@ internal class TerrainCoordinator(
 
     /** Queues a build for every wanted table of [tr] that is not ready, pending, staged or failed; jobs sit under [tile]. */
     fun ensureTables(tr: TerrainRegion, tile: TileAddress) {
+        var published = false
         val todo = synchronized(lock) {
             val demand = tr.demand
             if (tr.retired || !tr.available || demand == null) return
-            demand.filter { d ->
+            val missing = demand.filter { d ->
                 val k = d.key
                 (k !in tr.snapshot.tables && k !in tr.staged && k !in tr.pending && k !in tr.failed).also { if (it) tr.pending += k }
             }
+            // Tables staged when a pan cancelled the rest are published as soon as the region is looked at again
+            // and nothing else is in flight (otherwise the last job to finish publishes them).
+            if (missing.isEmpty() && tr.pending.isEmpty() && tr.staged.isNotEmpty()) {
+                published = setSnapshotLocked(tr, tr.snapshot.tables + tr.staged)
+                tr.staged.clear()
+                closeIfIdleLocked(tr)
+            }
+            missing
         }
+        if (published) bumped()
         for (d in todo) {
             pool.submit(
                 tile, RenderPool.PRIORITY_TABLE,
@@ -290,7 +322,7 @@ internal class TerrainCoordinator(
             if (tr.retired) false else { tr.running++; tr.tokens += cancel; true }
         }
         var table: TerrainTable? = null
-        var failed = false
+        var failed = true // until the body completes: an Error must not look like a cancellation
         try {
             if (counted && !cancel.isCancelled) {
                 table = support.tables.get(d.key)
@@ -302,11 +334,12 @@ internal class TerrainCoordinator(
                     }
                 }
             }
-        } catch (t: Throwable) {
-            failed = true
-            warn("terrain table ${d.key.fileName} failed: $t")
+            failed = false
+        } catch (e: Exception) {
+            warn("terrain table ${d.key.fileName} failed: $e")
+        } finally {
+            finishJob(tr, d.key, tile, table, failed, counted, cancel)
         }
-        finishJob(tr, d.key, tile, table, failed, counted, cancel)
     }
 
     /**
@@ -463,7 +496,7 @@ internal class TerrainCoordinator(
                 if (e.key !in shown) { it.remove(); retireLocked(e.value) }
             }
             for (tr in regions.values) {
-                if (tr.running == 0) { tr.handle?.close(); tr.handle = null }
+                if (tr.running == 0 && tr.pending.isEmpty()) { tr.handle?.close(); tr.handle = null }
             }
         }
     }

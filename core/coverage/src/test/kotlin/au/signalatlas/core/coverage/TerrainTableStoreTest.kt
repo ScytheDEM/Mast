@@ -103,6 +103,15 @@ class TerrainTableStoreTest {
         assertThat(s.diskUsage).isEqualTo(TerrainTableStore.FILE_BYTES.toLong())
     }
 
+    @Test fun tablesNamedByAnOlderSchemeAreDeletedOnOpen() {
+        val dir = tmp.newFolder()
+        val old = File(dir, "s1").apply { mkdirs() }.let { File(it, "1x-1_3500_30.tbl") }
+        old.writeBytes(ByteArray(10))
+        TerrainTableStore(dir).put(key(2), table(2))
+        assertThat(old.exists()).isFalse()
+        assertThat(tbl(dir)).hasSize(1)
+    }
+
     @Test fun dropMemoryKeepsTheFiles() {
         val dir = tmp.newFolder()
         val s = TerrainTableStore(dir)

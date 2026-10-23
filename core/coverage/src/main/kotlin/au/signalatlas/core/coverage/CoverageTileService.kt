@@ -124,7 +124,6 @@ class CoverageTileService internal constructor(
 
     private fun terrainSegment(): String = "t${terrainEpoch.value}"
 
-    /** The terrain version a tile of this selection and data has now (0 = quick only); [create] adds its region if new. */
     /**
      * A tile served from the cache never renders, so a terrain region recreated after an eviction would never ask for its
      * tables: a one-off low-priority job computes the demand from the region's carriers and queues the builds.
@@ -133,19 +132,20 @@ class CoverageTileService internal constructor(
         val tc = terrain ?: return
         if (key.terrainVersion == 0L) return
         val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y)
-        if (!tc.claimDemand(tk)) return
-        tk!!
+        if (tk == null || !tc.claimDemand(tk)) return
         val tile = Triple(key.z, key.x, key.y)
         pool.submit(
             tile, RenderPool.PRIORITY_TABLE,
             work = { _ ->
                 try {
                     if (isCurrent(key)) {
-                        val tr = tc.region(tk)
-                        tc.setDemand(tr, region(key, sel).batch)
-                        tc.ensureTables(tr, tile)
+                        val tr = tc.existingRegion(tk)
+                        if (tr != null) {
+                            tc.setDemand(tr, region(key, sel).batch)
+                            tc.ensureTables(tr, tile)
+                        }
                     }
-                } catch (t: Throwable) {
+                } catch (e: Exception) {
                     // Stale data or a failed region query: the next request asks again.
                 } finally {
                     tc.demandDone(tk)
@@ -162,6 +162,7 @@ class CoverageTileService internal constructor(
         synchronized(terrainPrepared) { terrainPrepared.clear() }
     }
 
+    /** The terrain version a tile of this selection and data has now (0 = quick only); [create] adds its region if new. */
     private fun terrainVersion(
         selectionId: String, stamp: String, etag: String, z: Int, x: Int, y: Int, create: Boolean = false, recheck: Boolean = false,
     ): Long {
@@ -260,6 +261,9 @@ class CoverageTileService internal constructor(
             if (flow == null) trackers.remove(t) else flow.value = accuracyOf(t.tiles)
         }
     }
+
+    /** Number of terrain regions kept (test hook). */
+    internal val terrainRegionCount: Int get() = terrain?.regionCount ?: 0
 
     /** Bytes [increaseResolution] would download for the current view; null while offline, without a view or below z10. */
     suspend fun estimateIncreaseBytes(): Long? = terrain?.estimateBytes()
@@ -383,7 +387,7 @@ class CoverageTileService internal constructor(
         if (tc == null || key.terrainVersion == 0L) return region.prepared!!
         val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y)
             ?: return region.prepared!!
-        val tr = tc.region(tk)
+        val tr = tc.existingRegion(tk) ?: return region.prepared!! // dropped meanwhile: quick, and not resurrected
         tc.setDemand(tr, region.batch)
         val snap = tc.snapshot(tr)
         if (snap.version != key.terrainVersion) throw TileCancelledException()
