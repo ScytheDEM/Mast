@@ -79,6 +79,9 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.window.core.layout.WindowSizeClass
 import au.signalatlas.app.R
+import au.signalatlas.app.connected.ConnectedStatus
+import au.signalatlas.app.connected.ConnectedUi
+import au.signalatlas.app.ui.connected.ConnectedInfoBar
 import au.signalatlas.app.location.DeviceLocationSource
 import au.signalatlas.app.ui.coverage.AccuracyChip
 import au.signalatlas.app.ui.coverage.CoverageActions
@@ -103,6 +106,21 @@ class MapCameraHolder : ViewModel() {
 
 private enum class Pane { None, Site, Nearby }
 
+/** What the connected-tower feature needs from the map screen's lifecycle and permission flow. */
+class ConnectedActions(
+    val start: () -> Unit,
+    val stop: () -> Unit,
+    val onPermissionsChanged: () -> Unit,
+    val offerRationaleOnce: () -> Boolean,
+) {
+    companion object {
+        val None = ConnectedActions({}, {}, {}, { false })
+    }
+}
+
+/** Room the bottom info bar takes: bar height plus its margin. */
+private val CONNECTED_BAR_INSET = 60.dp
+
 private const val SITE_ZOOM = 14.0
 
 /**
@@ -118,6 +136,9 @@ fun MapScreen(
     onOpenUpdates: () -> Unit,
     /** False only in tests: MapLibre needs a real device. */
     renderMap: Boolean = true,
+    /** The connected tower (info bar and map highlight); null = the feature is not wired (tests). */
+    connected: ConnectedUi? = null,
+    connectedActions: ConnectedActions = ConnectedActions.None,
 ) {
     val camera = viewModel<MapCameraHolder>().camera
     val focusManager = LocalFocusManager.current
@@ -134,6 +155,8 @@ fun MapScreen(
     var coverageOptionsOpen by rememberSaveable { mutableStateOf(true) }
     var rationaleFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var afterGrant by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    var phoneRationale by remember { mutableStateOf(false) }
 
     val pane = when {
         state.selected != null -> Pane.Site
@@ -153,6 +176,49 @@ fun MapScreen(
     LifecycleStartEffect(state.locationGranted, state.locationEnabled) {
         if (state.locationGranted) location.start()
         onStopOrDispose { location.stop() }
+    }
+
+    // The connected tower reads the radio only while the map is on screen (no polling or logging in the background).
+    LifecycleStartEffect(Unit) {
+        connectedActions.start()
+        onStopOrDispose { connectedActions.stop() }
+    }
+    // The explanation is volunteered once, the first time the bar finds the permission missing; after that on tap.
+    LaunchedEffect(connected?.status) {
+        val s = connected?.status
+        if ((s == ConnectedStatus.NEEDS_PHONE || s == ConnectedStatus.NEEDS_LOCATION) && connectedActions.offerRationaleOnce()) {
+            phoneRationale = true
+        }
+    }
+    val phoneDeniedMessage = stringResource(R.string.phone_denied)
+    val phoneSettingsLabel = stringResource(R.string.settings)
+    val phoneLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        vm.onLocationPermission(location.hasPermission())
+        if (result[Manifest.permission.READ_PHONE_STATE] == true || result[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+            connectedActions.onPermissionsChanged()
+        }
+        if (result.values.any { !it }) {
+            scope.launch {
+                val r = snackbar.showSnackbar(phoneDeniedMessage, actionLabel = phoneSettingsLabel, withDismissAction = true)
+                if (r == SnackbarResult.ActionPerformed) {
+                    context.startActivity(
+                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+            }
+        }
+    }
+    val onConnectedBar: () -> Unit = {
+        val s = connected
+        when {
+            s == null -> Unit
+            s.status == ConnectedStatus.NEEDS_PHONE || s.status == ConnectedStatus.NEEDS_LOCATION -> phoneRationale = true
+            else -> s.tower?.siteId?.let { id ->
+                s.highlight?.serving?.let { (lat, lon) -> camera.animateTo(lat, lon, SITE_ZOOM) }
+                vm.selectSite(id)
+            }
+        }
     }
 
     val deniedMessage = stringResource(R.string.location_denied)
@@ -261,6 +327,7 @@ fun MapScreen(
                 modifier = Modifier.fillMaxSize(),
                 userLocation = state.location.takeIf { state.locationGranted },
                 userLocationColor = MaterialTheme.colorScheme.primary.toArgb(),
+                connected = connected?.highlight,
             )
         }
 
@@ -282,6 +349,8 @@ fun MapScreen(
                 coverageOptionsOpen = coverageOptionsOpen,
                 coverage = coverageActions,
                 snackbar = snackbar,
+                connected = connected,
+                onConnectedBar = onConnectedBar,
             )
         }
         val paneContent: @Composable (Pane) -> Unit = { p ->
@@ -318,6 +387,20 @@ fun MapScreen(
     }
     if (showBands) {
         BandsSheet(state.filter, state.availableBands, onFilter = vm::setFilter, onDismiss = { showBands = false })
+    }
+    if (phoneRationale) {
+        AlertDialog(
+            onDismissRequest = { phoneRationale = false },
+            title = { Text(stringResource(R.string.phone_rationale_title)) },
+            text = { Text(stringResource(R.string.phone_rationale_body)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    phoneRationale = false
+                    phoneLauncher.launch(arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.ACCESS_FINE_LOCATION))
+                }) { Text(stringResource(R.string.phone_rationale_continue)) }
+            },
+            dismissButton = { TextButton(onClick = { phoneRationale = false }) { Text(stringResource(R.string.not_now)) } },
+        )
     }
     rationaleFor?.let { action ->
         AlertDialog(
@@ -468,7 +551,11 @@ private fun MapControls(
     coverageOptionsOpen: Boolean,
     coverage: CoverageActions,
     snackbar: SnackbarHostState,
+    connected: ConnectedUi?,
+    onConnectedBar: () -> Unit,
 ) {
+    // The info bar sits along the bottom; the buttons above it move up by its height.
+    val barInset = if (connected != null) CONNECTED_BAR_INSET else 0.dp
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth()) {
             if (docked) {
@@ -518,7 +605,7 @@ private fun MapControls(
             }
         }
         Column(
-            Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(16.dp),
+            Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + barInset),
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -536,7 +623,7 @@ private fun MapControls(
             ) { Icon(painterResource(R.drawable.ic_near_me), stringResource(R.string.fab_nearby)) }
         }
         Column(
-            Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(16.dp),
+            Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + barInset),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (state.coverage.on) {
@@ -551,6 +638,12 @@ private fun MapControls(
                 actions = coverage,
             )
         }
-        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 88.dp))
+        if (connected != null) {
+            ConnectedInfoBar(
+                connected, onClick = onConnectedBar,
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+            )
+        }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 88.dp + barInset))
     }
 }

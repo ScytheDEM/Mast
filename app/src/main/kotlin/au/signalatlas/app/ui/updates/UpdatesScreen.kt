@@ -75,6 +75,7 @@ fun UpdatesScreen(
     patterns: HrpStatus = HrpStatus(null, 0, null),
     onDownloadPatterns: () -> Unit = {},
     onOpenStorage: (() -> Unit)? = null,
+    onOpenCalibration: (() -> Unit)? = null,
 ) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -160,6 +161,12 @@ fun UpdatesScreen(
                         else scope.launch { snackbar.showSnackbar(needWifi) }
                     },
                 )
+                if (onOpenCalibration != null) {
+                    Spacer(Modifier.height(24.dp))
+                    OutlinedButton(onClick = onOpenCalibration, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                        Text(stringResource(R.string.calibration_open))
+                    }
+                }
                 if (onOpenStorage != null) {
                     Spacer(Modifier.height(24.dp))
                     OutlinedButton(onClick = onOpenStorage, modifier = Modifier.fillMaxWidth().height(48.dp)) {

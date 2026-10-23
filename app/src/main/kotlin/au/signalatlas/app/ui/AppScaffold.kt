@@ -27,6 +27,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import au.signalatlas.app.AppContainer
 import au.signalatlas.app.ui.firstrun.FirstRunScreen
+import au.signalatlas.app.ui.calibration.CalibrationScreen
+import au.signalatlas.app.ui.calibration.CalibrationViewModel
+import au.signalatlas.app.ui.map.ConnectedActions
 import au.signalatlas.app.ui.map.MapScreen
 import au.signalatlas.app.ui.map.MapViewModel
 import au.signalatlas.app.ui.storage.StorageScreen
@@ -44,6 +47,17 @@ fun AppScaffold(container: AppContainer) {
     val context = LocalContext.current
     var showUpdates by rememberSaveable { mutableStateOf(false) }
     var showStorage by rememberSaveable { mutableStateOf(false) }
+    var showCalibration by rememberSaveable { mutableStateOf(false) }
+    val connected by container.connected.ui.collectAsStateWithLifecycle()
+    val connectedActions = remember(container) {
+        ConnectedActions(
+            start = container.connected::start, stop = container.connected::stop,
+            onPermissionsChanged = container.connected::onPermissionsChanged,
+            offerRationaleOnce = container.calibrationSettings::offerRationaleOnce,
+        )
+    }
+    val calibrationVm: CalibrationViewModel = viewModel { container.calibrationViewModel() }
+    val calibration by calibrationVm.state.collectAsStateWithLifecycle()
     val storageVm: StorageViewModel = viewModel { container.storageViewModel() }
     val storage by storageVm.state.collectAsStateWithLifecycle()
 
@@ -71,7 +85,10 @@ fun AppScaffold(container: AppContainer) {
                     onDownload = updateNow,
                     onCancel = vm::cancelUpdate,
                 )
-                Root.Map -> MapScreen(state, vm, container.location, onOpenUpdates = { showUpdates = true })
+                Root.Map -> MapScreen(
+                    state, vm, container.location, onOpenUpdates = { showUpdates = true },
+                    connected = connected, connectedActions = connectedActions,
+                )
             }
         }
 
@@ -92,6 +109,22 @@ fun AppScaffold(container: AppContainer) {
                 patterns = state.patterns,
                 onDownloadPatterns = vm::downloadPatternsNow,
                 onOpenStorage = { showStorage = true },
+                onOpenCalibration = { showCalibration = true },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showCalibration && showUpdates && root == Root.Map,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it } + fadeOut(),
+        ) {
+            CalibrationScreen(
+                state = calibration,
+                onEnabled = calibrationVm::setEnabled,
+                onResetSector = { calibrationVm.resetSector(it) },
+                onDeleteAll = { calibrationVm.deleteAll() },
+                onExport = calibrationVm::exportCsv,
+                onBack = { showCalibration = false },
             )
         }
 
@@ -110,7 +143,8 @@ fun AppScaffold(container: AppContainer) {
             )
         }
     }
-    BackHandler(enabled = showUpdates && !showStorage) { showUpdates = false }
+    BackHandler(enabled = showUpdates && !showStorage && !showCalibration) { showUpdates = false }
+    BackHandler(enabled = showCalibration) { showCalibration = false }
     BackHandler(enabled = showStorage) { showStorage = false }
 }
 

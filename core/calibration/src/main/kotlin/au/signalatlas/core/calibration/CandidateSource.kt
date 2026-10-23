@@ -86,6 +86,7 @@ class EngineCandidateSource(
                 Candidate(
                     sub.sectorId[row], sub.sddId[row], ident, Network.entries[sub.network[row].toInt()], sub.siteLat[row],
                     sub.siteLon[row], sub.freqMhz[row].toDouble(), p.toDouble(), prepared.rMaxKm(k).toDouble(),
+                    sub.bandwidthHz[row] / 1e6,
                 )
             }
         }

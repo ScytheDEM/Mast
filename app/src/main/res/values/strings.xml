@@ -181,4 +181,49 @@
     <string name="patterns_confirm_title">Download about 1.6 GB on Wi-Fi?</string>
     <string name="patterns_confirm_download">Download</string>
     <string name="patterns_need_wifi">Connect to Wi-Fi to download patterns</string>
+
+    <!-- Connected tower (info bar) -->
+    <string name="phone_rationale_title">See your tower</string>
+    <string name="phone_rationale_body">Signal Atlas reads your phone\'s mobile network details (carrier, tower, band, signal) to show which tower you\'re using and improve predictions. It never reads calls, messages or phone numbers.</string>
+    <string name="phone_rationale_continue">Continue</string>
+    <string name="phone_denied">Without phone access Signal Atlas can\'t show your tower. Everything else still works.</string>
+    <string name="connected_needs_phone">Allow phone access to see your tower</string>
+    <string name="connected_needs_location">Allow location access to see your tower</string>
+    <string name="connected_airplane">Airplane mode is on, so there is no tower to show</string>
+    <string name="connected_no_sim">No SIM card found, so there is no tower to show</string>
+    <string name="connected_roaming">%1$s · Roaming, so tower matching is paused</string>
+    <string name="connected_searching">Looking for a signal…</string>
+    <string name="connected_untracked">%1$s is not one of the networks Signal Atlas maps</string>
+    <string name="connected_unknown_carrier">Your carrier</string>
+    <string name="connected_carrier_tech">%1$s %2$s</string>
+    <string name="connected_rsrp">%1$s dBm</string>
+    <string name="connected_tower">tower %1$s %2$s</string>
+    <string name="connected_likely">Likely</string>
+    <string name="connected_uncertain">Uncertain</string>
+    <string name="connected_confirmed">Confirmed</string>
+    <string name="connected_speed">≈ %1$d Mbps</string>
+
+    <!-- Calibration -->
+    <string name="calibration_open">Calibration</string>
+    <string name="calibration_title">Calibration</string>
+    <string name="calibration_toggle">Improve predictions with my signal (stays on this phone)</string>
+    <string name="calibration_toggle_hint">While the map is open, Signal Atlas compares the signal your phone measures with its prediction for the tower you\'re connected to. Nothing leaves this phone except a CSV you choose to export.</string>
+    <plurals name="calibration_samples">
+        <item quantity="one">%1$d sample logged</item>
+        <item quantity="other">%1$d samples logged</item>
+    </plurals>
+    <string name="calibration_export">Export CSV</string>
+    <string name="calibration_share_title">Share calibration data</string>
+    <string name="calibration_delete_all">Delete all</string>
+    <string name="calibration_delete_title">Delete all calibration data?</string>
+    <string name="calibration_delete_body">Every logged sample and everything learned from it is removed from this phone. Predictions go back to the standard model.</string>
+    <string name="calibration_delete_confirm">Delete</string>
+    <string name="calibration_sectors">Calibrated sectors</string>
+    <string name="calibration_none">None yet. Samples are logged while the map is open and you\'re connected to a tower we can identify.</string>
+    <string name="calibration_sector_applied">Offset %1$s dB from %2$d samples · applied</string>
+    <string name="calibration_sector_pending">Offset %1$s dB from %2$d samples · needs 3 to apply</string>
+    <string name="calibration_azimuth">%1$d°</string>
+    <string name="calibration_omni">omni</string>
+    <string name="calibration_reset_sector">Reset this sector</string>
+    <string name="calibration_scatter_description">Measured against predicted signal, %1$d samples</string>
 </resources>

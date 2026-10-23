@@ -38,7 +38,11 @@ class CellMatcher(private val candidates: CandidateSource, private val cellMap: 
             Triple(c, CalibrationMath.matchScore(c.predictedDbm, measured.toDouble(), d, cell.taMeters, c.rMaxKm), d)
         }.sortedBy { it.second }
         fun result(t: Triple<Candidate, Double, Double>, conf: Confidence) =
-            MatchResult(t.first, conf, t.second, t.third, set.area, set.candidates.size)
+            MatchResult(
+                t.first, conf, t.second, t.third, set.area, set.candidates.size,
+                scored.map { it.first }.filter { it.siteLat != t.first.siteLat || it.siteLon != t.first.siteLon }
+                    .distinctBy { it.siteLat to it.siteLon }.take(MAX_OTHERS),
+            )
 
         val key = cellKey(sim, cell)
         val mapping = key?.let(cellMap::cellMapping)
@@ -58,6 +62,8 @@ class CellMatcher(private val candidates: CandidateSource, private val cellMap: 
     }
 
     companion object {
+        const val MAX_OTHERS = 4
+
         fun cellKey(sim: Network, cell: ObservedCell): String? = when {
             cell.cellId != null -> "c:${sim.ordinal}:${cell.tech.ordinal}:${cell.cellId}"
             cell.pci != null && cell.channel != null -> "p:${sim.ordinal}:${cell.tech.ordinal}:${cell.pci}:${cell.channel}"

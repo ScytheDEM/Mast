@@ -24,6 +24,7 @@ import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SiteSummary
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -40,6 +41,7 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.tile.TileOperation
 import org.maplibre.android.style.expressions.Expression.color
+import org.maplibre.android.style.expressions.Expression.eq
 import org.maplibre.android.style.expressions.Expression.get
 import org.maplibre.android.style.expressions.Expression.has
 import org.maplibre.android.style.expressions.Expression.interpolate
@@ -51,7 +53,14 @@ import org.maplibre.android.style.expressions.Expression.step
 import org.maplibre.android.style.expressions.Expression.stop
 import org.maplibre.android.style.expressions.Expression.zoom
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
+import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
+import org.maplibre.android.style.layers.PropertyFactory.circleStrokeOpacity
+import org.maplibre.android.style.layers.PropertyFactory.lineColor
+import org.maplibre.android.style.layers.PropertyFactory.lineDasharray
+import org.maplibre.android.style.layers.PropertyFactory.lineOpacity
+import org.maplibre.android.style.layers.PropertyFactory.lineWidth
 import org.maplibre.android.style.layers.PropertyFactory.circleRadius
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth
@@ -143,6 +152,14 @@ private const val LAYER_CLUSTERS = "sites-clusters"
 private const val LAYER_CLUSTER_COUNT = "sites-cluster-count"
 private const val LAYER_POINTS = "sites-points"
 private const val LAYER_SELECTED = "sites-selected"
+private const val CONNECTED_SOURCE = "connected"
+private const val LAYER_CONNECTED_LINE = "connected-line"
+private const val LAYER_CONNECTED_NEIGHBOURS = "connected-neighbours"
+private const val LAYER_CONNECTED_RING = "connected-ring"
+private const val LAYER_CONNECTED_DOT = "connected-dot"
+private const val EMPTY_COLLECTION = """{"type":"FeatureCollection","features":[]}"""
+private const val PULSE_STEPS = 24
+private const val PULSE_FRAME_MS = 70L
 
 /** Compares by reference: a new list from the repository is new data even if it is equal. */
 private class Identity<T : Any>(val value: T) {
@@ -176,6 +193,8 @@ fun TowerMap(
     onLongPress: (lat: Double, lon: Double) -> Unit = { _, _ -> },
     /** Any tap on the map (whether or not it hit a site or cluster). */
     onMapTap: () -> Unit = {},
+    /** The connected tower: pulse ring, line from [userLocation], faint neighbours. Null = none. */
+    connected: ConnectedHighlight? = null,
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -235,6 +254,7 @@ fun TowerMap(
         style = null
         m.setStyle(Style.Builder().fromJson(json)) { loaded ->
             addTowerLayers(loaded, dark)
+            addConnectedLayers(loaded, selectedColor)
             sitesJson?.let { loaded.getSourceAs<GeoJsonSource>(SITES_SOURCE)?.setGeoJson(it) }
             style = loaded
         }
@@ -253,6 +273,22 @@ fun TowerMap(
     }
     LaunchedEffect(style, coverageView, coverageOpacity) {
         style?.let { overlay.restyle(it, coverageView, coverageOpacity) }
+    }
+
+    // The connected tower: a GeoJSON source of its own, so site updates never touch it.
+    LaunchedEffect(style, connected) {
+        val src = style?.getSourceAs<GeoJsonSource>(CONNECTED_SOURCE) ?: return@LaunchedEffect
+        src.setGeoJson(connected?.toGeoJson() ?: EMPTY_COLLECTION)
+    }
+    LaunchedEffect(style, connected != null) {
+        val ring = style?.getLayerAs<CircleLayer>(LAYER_CONNECTED_RING)?.takeIf { connected != null } ?: return@LaunchedEffect
+        var t = 0
+        while (true) {
+            val phase = (t % PULSE_STEPS) / PULSE_STEPS.toFloat()
+            ring.setProperties(circleRadius(10f + 24f * phase), circleStrokeOpacity(0.8f * (1f - phase)))
+            t++
+            delay(PULSE_FRAME_MS)
+        }
     }
 
     LaunchedEffect(Identity(sites)) {
@@ -393,6 +429,33 @@ private fun addTowerLayers(style: Style, dark: Boolean) {
                 circleRadius(interpolate(linear(), zoom(), stop(8, 9), stop(16, 13))),
                 circleStrokeWidth(3f),
             ),
+    )
+}
+
+/** Above the tower layers: faint neighbours, the line to the serving site, its pulse ring and a dot. */
+private fun addConnectedLayers(style: Style, color: Int) {
+    style.addSource(GeoJsonSource(CONNECTED_SOURCE, EMPTY_COLLECTION))
+    style.addLayer(
+        LineLayer(LAYER_CONNECTED_LINE, CONNECTED_SOURCE).withFilter(eq(get("kind"), literal("line"))).withProperties(
+            lineColor(color), lineWidth(2f), lineOpacity(0.8f), lineDasharray(arrayOf(2f, 2f)),
+        ),
+    )
+    style.addLayer(
+        CircleLayer(LAYER_CONNECTED_NEIGHBOURS, CONNECTED_SOURCE).withFilter(eq(get("kind"), literal("neighbour"))).withProperties(
+            circleColor(color), circleOpacity(0.25f), circleRadius(7f), circleStrokeColor(color), circleStrokeOpacity(0.35f),
+            circleStrokeWidth(1f),
+        ),
+    )
+    style.addLayer(
+        CircleLayer(LAYER_CONNECTED_RING, CONNECTED_SOURCE).withFilter(eq(get("kind"), literal("serving"))).withProperties(
+            circleColor(color), circleOpacity(0f), circleRadius(14f), circleStrokeColor(color), circleStrokeWidth(3f),
+            circleStrokeOpacity(0.6f),
+        ),
+    )
+    style.addLayer(
+        CircleLayer(LAYER_CONNECTED_DOT, CONNECTED_SOURCE).withFilter(eq(get("kind"), literal("serving"))).withProperties(
+            circleColor(color), circleRadius(6f), circleStrokeColor(0xFFFFFFFF.toInt()), circleStrokeWidth(2f),
+        ),
     )
 }
 

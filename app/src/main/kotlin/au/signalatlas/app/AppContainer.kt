@@ -3,9 +3,25 @@ package au.signalatlas.app
 import android.content.Context
 import android.os.Build
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import au.signalatlas.app.connected.ConnectedController
+import au.signalatlas.app.connected.ReadOnlyCellMap
 import au.signalatlas.app.data.AppStorage
+import au.signalatlas.app.data.CalibrationPrefs
+import au.signalatlas.app.data.CalibrationSettings
+import au.signalatlas.app.data.StoreCalibrationData
+import au.signalatlas.app.ui.calibration.CalibrationViewModel
+import au.signalatlas.core.calibration.CalibrationDb
+import au.signalatlas.core.calibration.CalibrationStore
+import au.signalatlas.core.calibration.CellMatcher
+import au.signalatlas.core.calibration.EngineCandidateSource
+import au.signalatlas.core.calibration.SampleLogger
+import au.signalatlas.core.calibration.asTowerQuery
+import au.signalatlas.core.model.CalibrationSnapshot
+import au.signalatlas.core.radio.RadioMonitor
+import kotlinx.coroutines.flow.filterNotNull
 import au.signalatlas.app.data.LocatorBasemapKeys
 import au.signalatlas.app.data.ServiceCoverage
 import au.signalatlas.app.data.ManagerUpdates
@@ -49,6 +65,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.io.File
@@ -112,6 +129,9 @@ class AppContainer(context: Context) {
     /** The one elevation fetcher: its downloads are serialised process-wide. */
     private val demFetcher = DemFetcher(http, elevationChunks, isMetered = { GeoNetwork.isActiveNetworkMetered(app) })
 
+    /** Forwards the calibration store's snapshots to the tile service (the store itself opens off the main thread). */
+    private val calibrationSnapshot = MutableStateFlow(CalibrationSnapshot.EMPTY)
+
     private val tileCache = TileCache(File(app.cacheDir, "coverage-tiles").apply { mkdirs() })
     private val terrainTables = TerrainTableStore(File(app.cacheDir, "terrain"))
 
@@ -123,7 +143,39 @@ class AppContainer(context: Context) {
             elevationChunks, DemFetcherSource(demFetcher), terrainTables,
             ConnectivityNetworkMonitor(app), appScope,
         ),
+        calibrationSnapshot,
     )
+
+    private val towerQuery = repo.asTowerQuery()
+
+    /**
+     * `calibration.db`: created on first use (and warmed up in the background at start-up). Estimates are stored by
+     * stable sector identity and re-resolved against the tower DB whenever it changes (Ruling TT).
+     */
+    val calibration: CalibrationStore by lazy {
+        CalibrationStore(CalibrationDb.open(File(app.filesDir, "calibration/calibration.db")), towerQuery, appScope)
+    }
+
+    val calibrationSettings: CalibrationSettings = CalibrationPrefs(app)
+
+    val radio = RadioMonitor(app, appScope)
+
+    private val candidates = EngineCandidateSource(towerQuery, CoverageEngine(), { patterns.patterns.value })
+
+    private val sampleLogger by lazy {
+        SampleLogger(
+            radio.state, location.fixes.filterNotNull(), CellMatcher(candidates, calibration), calibration::add, appScope,
+            SystemClock::elapsedRealtime,
+        )
+    }
+
+    /** The connected-tower feature; it runs only while the map screen is started. */
+    val connected: ConnectedController by lazy {
+        ConnectedController(
+            radio.state, location.fixes, CellMatcher(candidates, ReadOnlyCellMap(calibration)), calibrationSettings, appScope,
+            startRadio = radio::start, stopRadio = radio::stop, startLogger = sampleLogger::start, stopLogger = sampleLogger::stop,
+        )
+    }
 
     init {
         // Every tile request blocks one dispatcher thread until its render is done, so the per-host limit has to
@@ -171,6 +223,20 @@ class AppContainer(context: Context) {
         patterns.start() // never throws for a bad file: it is ignored (standard patterns)
     }
 
+    private var calibrationLinked = false
+
+    /**
+     * Opens `calibration.db` off the main thread and keeps the tile service's snapshot and the store's tower
+     * identities in step with it. Once per process (the first app open).
+     */
+    private suspend fun linkCalibration() {
+        if (calibrationLinked) return
+        calibrationLinked = true
+        withContext(Dispatchers.IO) { calibration }
+        appScope.launch { calibration.snapshot.collect { calibrationSnapshot.value = it } }
+        appScope.launch(Dispatchers.IO) { repo.store.collect { calibration.onTowersChanged() } }
+    }
+
     fun startRepository() {
         startJob.start()
     }
@@ -179,6 +245,7 @@ class AppContainer(context: Context) {
     suspend fun onAppOpen() {
         startJob.start()
         startJob.join()
+        linkCalibration()
         updateManager.schedulePeriodic()
         updateManager.scheduleHrp()
         updateManager.checkOnAppOpen()
@@ -187,6 +254,8 @@ class AppContainer(context: Context) {
     fun storageViewModel() = StorageViewModel(
         AppStorage(installer.live, patternInstaller.live, elevationChunks, terrainTables, tileCache, coverage, geoPrefs),
     )
+
+    fun calibrationViewModel() = CalibrationViewModel(StoreCalibrationData(calibration), calibrationSettings)
 
     fun mapViewModel() = MapViewModel(
         towerData, ManagerUpdates(updateManager), LocatorBasemapKeys(basemap), location, ServiceCoverage(coverage, repo, patterns),

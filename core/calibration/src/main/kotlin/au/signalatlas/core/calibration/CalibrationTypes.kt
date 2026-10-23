@@ -24,6 +24,8 @@ data class Candidate(
     /** Uncalibrated predicted RSRP at the fix (terrain when available, else quick). */
     val predictedDbm: Double,
     val rMaxKm: Double,
+    /** The carrier's channel bandwidth (0 when unknown); the info bar's speed estimate uses it. */
+    val bandwidthMhz: Double = 0.0,
 )
 
 /** The serving cell matched to a sector. [score] is the winner's rule-2 score; [distanceM] from its site to the fix. */
@@ -34,6 +36,8 @@ data class MatchResult(
     val distanceM: Double,
     val area: AreaClass,
     val candidates: Int,
+    /** The best-scoring other candidates on other sites (nearest first in score order), for the map's faint neighbours. */
+    val others: List<Candidate> = emptyList(),
 )
 
 /** One stored measurement (rule 3 fields). Nullable fields were unavailable from the modem. */

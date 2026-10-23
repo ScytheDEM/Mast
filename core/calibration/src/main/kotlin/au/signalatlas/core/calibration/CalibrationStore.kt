@@ -66,6 +66,9 @@ class CalibrationStore(
 
     fun sampleCount(): Int = db.sampleCount()
 
+    /** Up to [limit] (predicted, measured) RSRP pairs of the sector [ident], newest first (the Calibration screen's scatter). */
+    fun scatter(ident: String, limit: Int = 300): List<Pair<Double, Double>> = db.scatter(ident, limit)
+
     /** Every sample as CSV (header = [CalibrationDb.SAMPLE_COLUMNS]; enums by name, unavailable fields empty). */
     fun exportCsv(out: Appendable) {
         out.append(CalibrationDb.SAMPLE_COLUMNS.joinToString(",")).append('\n')

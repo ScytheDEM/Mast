@@ -13,6 +13,7 @@ import androidx.core.location.LocationListenerCompat
 import androidx.core.location.LocationManagerCompat
 import androidx.core.location.LocationRequestCompat
 import au.signalatlas.app.data.LocationSource
+import au.signalatlas.core.calibration.Fix
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,6 +39,10 @@ class DeviceLocationSource(
     private val manager = this.context.getSystemService(LocationManager::class.java)
     private val _last = MutableStateFlow<Pair<Double, Double>?>(null)
     override val last: StateFlow<Pair<Double, Double>?> = _last.asStateFlow()
+    private val _fixes = MutableStateFlow<Fix?>(null)
+
+    /** The same fresh fixes as [last], with their horizontal accuracy (calibration needs <= 50 m) and wall-clock time. */
+    val fixes: StateFlow<Fix?> = _fixes.asStateFlow()
     private val _enabled = MutableStateFlow(isLocationOn())
     override val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
@@ -156,6 +161,10 @@ class DeviceLocationSource(
 
     private fun publish(location: Location) {
         lastAtNanos = location.elapsedRealtimeNanos
+        _fixes.value = Fix(
+            location.latitude, location.longitude,
+            if (location.hasAccuracy()) location.accuracy.toDouble() else NO_ACCURACY_M, location.time,
+        )
         _last.value = location.latitude to location.longitude
     }
 
@@ -163,6 +172,8 @@ class DeviceLocationSource(
         /** Older last-known fixes are never used for centring or Nearby. */
         const val MAX_FIX_AGE_MS = 2 * 60_000L
         const val CURRENT_FIX_TIMEOUT_MS = 30_000L
+        /** Stand-in for a fix that reports no accuracy: far over every accuracy limit. */
+        const val NO_ACCURACY_M = 10_000.0
         private const val UPDATE_INTERVAL_MS = 10_000L
         private const val CURRENT_FIX_INTERVAL_MS = 1_000L
         private const val UPDATE_DISTANCE_M = 25f

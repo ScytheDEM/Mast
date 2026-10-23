@@ -82,5 +82,8 @@ object SectorIdentity {
     /** The ACMA site id of [ident] (null for a malformed or legacy key). */
     fun siteIdOf(ident: String): Int? = ident.substringBefore('|', "").toIntOrNull()
 
+    /** The azimuth in degrees (null for omni or a malformed key). */
+    fun azimuthOf(ident: String): Double? = ident.split('|').getOrNull(3)?.toLongOrNull()?.let { it / 10.0 }
+
     private fun tenths(v: Double): Long = Math.round(v * 10.0)
 }

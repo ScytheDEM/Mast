@@ -80,6 +80,14 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
         r.toDoubleArray() to d.toDoubleArray()
     }
 
+    /** Up to [limit] (predicted, measured) RSRP pairs of [ident]'s newest samples. */
+    internal fun scatter(ident: String, limit: Int): List<Pair<Double, Double>> = synchronized(lock) {
+        conn.prepare("SELECT predicted_rsrp, rsrp FROM samples WHERE ident = ? ORDER BY id DESC LIMIT ?").use { st ->
+            st.bindText(1, ident); st.bindLong(2, limit.toLong())
+            buildList { while (st.step()) add(st.getDouble(0) to st.getDouble(1)) }
+        }
+    }
+
     internal fun sector(ident: String): SectorRow? = synchronized(lock) {
         conn.prepare("$SECTOR_SELECT WHERE ident = ?").use { st ->
             st.bindText(1, ident)
