@@ -14,6 +14,8 @@ enum class Confidence { UNCERTAIN, LIKELY, CONFIRMED }
 data class Candidate(
     val sectorId: Int,
     val sddId: Long,
+    /** The sector's stable [au.signalatlas.core.model.SectorIdentity]. */
+    val ident: String,
     /** The carrier's network (the SIM's, or the Optus/TPG joint venture's). */
     val network: Network,
     val siteLat: Double,
@@ -52,6 +54,8 @@ data class Sample(
     val sinr: Int?,
     val sddId: Long,
     val sectorId: Int,
+    /** The matched sector's stable identity (estimates are keyed by it, not by [sectorId]). */
+    val ident: String,
     /** The matched carrier's network (selects the residual grid). */
     val carrierNetwork: Network,
     val siteLat: Double,

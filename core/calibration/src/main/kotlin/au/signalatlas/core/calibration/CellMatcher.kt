@@ -4,7 +4,7 @@ import au.signalatlas.core.model.Network
 import au.signalatlas.core.radio.ObservedCell
 
 /** A learned (network, cell) -> sector mapping (rule 2). */
-data class CellMapping(val key: String, val network: Network, val sectorId: Int, val sddId: Long, val likelyCount: Int, val confirmed: Boolean)
+data class CellMapping(val key: String, val network: Network, val ident: String, val sddId: Long, val likelyCount: Int, val confirmed: Boolean)
 
 /** Persistence of [CellMapping]s ([CalibrationStore] implements it over `calibration.db`). */
 interface CellMapStore {
@@ -43,15 +43,15 @@ class CellMatcher(private val candidates: CandidateSource, private val cellMap: 
         val key = cellKey(sim, cell)
         val mapping = key?.let(cellMap::cellMapping)
         if (mapping != null && mapping.confirmed) {
-            scored.firstOrNull { it.first.sectorId == mapping.sectorId }?.let { return result(it, Confidence.CONFIRMED) }
+            scored.firstOrNull { it.first.ident == mapping.ident }?.let { return result(it, Confidence.CONFIRMED) }
         }
         val best = scored.first()
         var conf = CalibrationMath.confidence(scored.map { it.second })!!
         if (conf == Confidence.LIKELY && key != null) {
-            val same = mapping?.takeIf { it.sectorId == best.first.sectorId }
+            val same = mapping?.takeIf { it.ident == best.first.ident }
             val count = (same?.likelyCount ?: 0) + 1
             val confirmed = count >= CalibrationMath.CONFIRM_AFTER
-            cellMap.putCellMapping(CellMapping(key, sim, best.first.sectorId, best.first.sddId, count, confirmed))
+            cellMap.putCellMapping(CellMapping(key, sim, best.first.ident, best.first.sddId, count, confirmed))
             if (confirmed) conf = Confidence.CONFIRMED
         }
         return result(best, conf)

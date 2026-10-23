@@ -13,6 +13,7 @@ import au.signalatlas.core.model.Carrier
 import au.signalatlas.core.model.GeoBounds
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Sector
+import au.signalatlas.core.model.SectorIdentity
 import au.signalatlas.core.model.Site
 import au.signalatlas.core.model.SiteDetail
 import au.signalatlas.core.model.SiteSummary
@@ -210,6 +211,52 @@ class TowerStore private constructor(
         }
         return out.build()
     }
+
+    /** The stable [SectorIdentity] of each of [sectorIds] that exists in this DB (others are absent). */
+    fun sectorIdentities(sectorIds: Collection<Int>): Map<Int, String> {
+        val out = HashMap<Int, String>()
+        for (chunk in sectorIds.distinct().chunked(ID_CHUNK)) {
+            val marks = chunk.joinToString(",") { "?" }
+            synchronized(lock) {
+                check(!closed) { "TowerStore is closed" }
+                conn.prepare(
+                    "SELECT id, site_id, network, antenna_id, azimuth_deg, height_m FROM sector WHERE id IN ($marks)",
+                ).use { st ->
+                    chunk.forEachIndexed { i, id -> st.bindLong(i + 1, id.toLong()) }
+                    while (st.step()) out[st.getLong(0).toInt()] = identityOf(st)
+                }
+            }
+        }
+        return out
+    }
+
+    /** The current sector id of each [SectorIdentity] that exists in this DB (lowest id on a tie; others are absent). */
+    fun sectorIdsByIdentity(idents: Collection<String>): Map<String, Int> {
+        val wanted = idents.toSet()
+        val sites = wanted.mapNotNull(SectorIdentity::siteIdOf).distinct()
+        val out = HashMap<String, Int>()
+        for (chunk in sites.chunked(ID_CHUNK)) {
+            val marks = chunk.joinToString(",") { "?" }
+            synchronized(lock) {
+                check(!closed) { "TowerStore is closed" }
+                conn.prepare(
+                    "SELECT id, site_id, network, antenna_id, azimuth_deg, height_m FROM sector WHERE site_id IN ($marks) ORDER BY id",
+                ).use { st ->
+                    chunk.forEachIndexed { i, id -> st.bindLong(i + 1, id.toLong()) }
+                    while (st.step()) {
+                        val ident = identityOf(st)
+                        if (ident in wanted) out.putIfAbsent(ident, st.getLong(0).toInt())
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    private fun identityOf(st: SQLiteStatement) = SectorIdentity.of(
+        st.getLong(1).toInt(), Network.entries[st.getLong(2).toInt()], if (st.isNull(3)) null else st.getLong(3).toInt(),
+        st.doubleOrNull(4), st.getDouble(5),
+    )
 
     /** Number of sites (not carriers) within [radiusM] metres of the point, by haversine distance. */
     fun siteCountWithin(lat: Double, lon: Double, radiusM: Double): Int {

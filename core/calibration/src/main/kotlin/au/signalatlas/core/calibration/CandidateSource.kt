@@ -21,8 +21,17 @@ fun interface CandidateSource {
     fun candidates(network: Network, tech: Tech, freqMhz: Double, lat: Double, lon: Double): CandidateSet?
 }
 
+/**
+ * Maps between the tower DB's renumbered sector ids and the stable [au.signalatlas.core.model.SectorIdentity] keys the
+ * calibration data uses. Both return only what exists in the current tower DB (an empty map while none is installed).
+ */
+interface SectorResolver {
+    fun identitiesOf(sectorIds: Collection<Int>): Map<Int, String>
+    fun sectorIdsOf(idents: Collection<String>): Map<String, Int>
+}
+
 /** The tower queries the matcher needs (a pinned [TowerRepository] store, or a fake in tests). */
-interface TowerQuery {
+interface TowerQuery : SectorResolver {
     fun carriersIn(b: GeoBounds, networks: Set<Network>, techs: Set<Tech>): CarrierBatch?
     fun siteCountWithin(lat: Double, lon: Double, radiusM: Double): Int
 }
@@ -34,6 +43,12 @@ fun TowerRepository.asTowerQuery(): TowerQuery = object : TowerQuery {
 
     override fun siteCountWithin(lat: Double, lon: Double, radiusM: Double) =
         runBlocking { withStore { it.siteCountWithin(lat, lon, radiusM) } } ?: 0
+
+    override fun identitiesOf(sectorIds: Collection<Int>) =
+        runBlocking { withStore { it.sectorIdentities(sectorIds) } } ?: emptyMap()
+
+    override fun sectorIdsOf(idents: Collection<String>) =
+        runBlocking { withStore { it.sectorIdsByIdentity(idents) } } ?: emptyMap()
 }
 
 /**
@@ -63,11 +78,13 @@ class EngineCandidateSource(
         val sub = batch.rows(rows.toIntArray())
         val prepared = engine.prepare(sub, patterns(), indoor = false, terrain = terrain?.let { t -> { row: Int -> t(batch, rows[row]) } })
         val rsrp = engine.predictPoint(prepared, lat, lon, area, indoor = false)
+        val idents = towers.identitiesOf(sub.sectorId.toList())
         val out = (0 until prepared.size).mapNotNull { k ->
             val row = prepared.batchIndex(k)
+            val ident = idents[sub.sectorId[row]] ?: return@mapNotNull null
             rsrp[k].takeIf { it.isFinite() }?.let { p ->
                 Candidate(
-                    sub.sectorId[row], sub.sddId[row], Network.entries[sub.network[row].toInt()], sub.siteLat[row],
+                    sub.sectorId[row], sub.sddId[row], ident, Network.entries[sub.network[row].toInt()], sub.siteLat[row],
                     sub.siteLon[row], sub.freqMhz[row].toDouble(), p.toDouble(), prepared.rMaxKm(k).toDouble(),
                 )
             }

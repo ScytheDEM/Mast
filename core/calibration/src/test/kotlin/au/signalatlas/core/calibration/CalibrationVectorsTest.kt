@@ -81,12 +81,12 @@ class CalibrationVectorsTest {
         val res = doc["residual"]!!.jsonObject
         val samples = res["samples"]!!.jsonArray.map { it.jsonObject }
         // The per-(network, cell, sector) sums the store keeps.
-        data class K(val net: Int, val lat: Int, val lon: Int, val sector: Int)
+        data class K(val net: Int, val lat: Int, val lon: Int, val sector: String)
         val n = HashMap<K, Int>()
         val sumR = HashMap<K, Double>()
         val sumLog = HashMap<K, Double>()
         for (s in samples) {
-            val k = K(s["network"]!!.jsonPrimitive.int, CalibrationRules.cellIndex(s["lat"]!!.d()), CalibrationRules.cellIndex(s["lon"]!!.d()), s["sector"]!!.jsonPrimitive.int)
+            val k = K(s["network"]!!.jsonPrimitive.int, CalibrationRules.cellIndex(s["lat"]!!.d()), CalibrationRules.cellIndex(s["lon"]!!.d()), "s${s["sector"]!!.jsonPrimitive.int}")
             n.merge(k, 1, Int::plus)
             sumR.merge(k, s["r"]!!.d(), Double::plus)
             sumLog.merge(k, Estimator.log10Km(s["dKm"]!!.d() * 1000.0), Double::plus)
@@ -94,7 +94,7 @@ class CalibrationVectorsTest {
         val rows = n.keys.map { CalibrationDb.ResidualRow(it.net, it.lat, it.lon, it.sector, n[it]!!, sumR[it]!!, sumLog[it]!!) }
         val fits = res["fits"]!!.jsonObject.entries.associate { (sid, f) ->
             val o = f.jsonObject
-            sid.toInt() to SectorFit(o["n"]!!.jsonPrimitive.int, o["offset"]!!.d(), o["slope"]!!.d(), o["dMedianKm"]!!.d(), o["slopeFitted"]!!.jsonPrimitive.boolean)
+            "s$sid" to SectorFit(o["n"]!!.jsonPrimitive.int, o["offset"]!!.d(), o["slope"]!!.d(), o["dMedianKm"]!!.d(), o["slopeFitted"]!!.jsonPrimitive.boolean)
         }
         val got = Estimator.residualCells(rows, fits)
         val want = res["cells"]!!.jsonArray.map { it.jsonObject }

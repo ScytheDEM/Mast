@@ -25,7 +25,7 @@ class CalibrationStoreTest {
 
     @After fun close() = opened.forEach { it.close() }
 
-    private fun TestScope.store(d: CalibrationDb = db()) = CalibrationStore(d, backgroundScope, { testScheduler.currentTime })
+    private fun TestScope.store(d: CalibrationDb = db(), resolver: SectorResolver = FakeResolver()) = CalibrationStore(d, resolver, backgroundScope, { testScheduler.currentTime })
 
     @Test fun firstChangePublishesAtOnceThenAtMostEveryThirtySeconds() = runTest {
         val s = store()
@@ -116,8 +116,8 @@ class CalibrationStoreTest {
         val s = store()
         repeat(3) { s.add(sample(sector = 7)) }
         repeat(3) { s.add(sample(sector = 8)) }
-        s.putCellMapping(CellMapping("p:0:0:1:2", Network.TELSTRA, 7, 5007L, 5, true))
-        s.putCellMapping(CellMapping("p:0:0:3:2", Network.TELSTRA, 8, 5008L, 2, false))
+        s.putCellMapping(CellMapping("p:0:0:1:2", Network.TELSTRA, "s7", 5007L, 5, true))
+        s.putCellMapping(CellMapping("p:0:0:3:2", Network.TELSTRA, "s8", 5008L, 2, false))
         runCurrent()
         val before = s.snapshot.value.version
         s.resetSector(7)
@@ -169,7 +169,7 @@ class CalibrationStoreTest {
         val first = db(file)
         val s = store(first)
         repeat(4) { s.add(sample()) }
-        s.putCellMapping(CellMapping("c:0:0:9", Network.TELSTRA, 7, 5007L, 5, true))
+        s.putCellMapping(CellMapping("c:0:0:9", Network.TELSTRA, "s7", 5007L, 5, true))
         first.close()
         opened.remove(first)
         val again = store(db(file))

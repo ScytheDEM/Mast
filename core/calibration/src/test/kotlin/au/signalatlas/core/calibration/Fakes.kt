@@ -15,7 +15,7 @@ fun cell(
 
 /** Candidate sector [id] ~[km] km north of the default fix, predicted at [pred] dBm. */
 fun candidate(id: Int, pred: Double, km: Double = 1.0, rMaxKm: Double = 30.0, network: Network = Network.TELSTRA) =
-    Candidate(id, 1000L + id, network, -35.28 + km / 111.195, 149.13, 758.0, pred, rMaxKm)
+    Candidate(id, 1000L + id, "s$id", network, -35.28 + km / 111.195, 149.13, 758.0, pred, rMaxKm)
 
 class FakeCandidates(var list: List<Candidate> = emptyList(), var area: AreaClass = AreaClass.SUBURBAN) : CandidateSource {
     var calls = 0
@@ -35,6 +35,13 @@ fun sample(
     sector: Int = 7, rsrp: Int = -90, predicted: Double = -96.0, distanceM: Double = 1500.0, lat: Double = -35.28,
     lon: Double = 149.13, ms: Long = 1_000_000L, network: Network = Network.TELSTRA,
 ) = Sample(
-    ms, lat, lon, 8.0, network, Tech.LTE, 9410, 101, 123456L, 300.0, rsrp, -11, 9, 5000L + sector, sector, network,
+    ms, lat, lon, 8.0, network, Tech.LTE, 9410, 101, 123456L, 300.0, rsrp, -11, 9, 5000L + sector, sector, "s$sector", network,
     -35.27, 149.13, predicted, distanceM, AreaClass.URBAN, Confidence.LIKELY,
 )
+
+/** Sector ids and identities "s<id>" <-> id, optionally renumbered like a tower DB import would. */
+class FakeResolver(var renumber: (Int) -> Int? = { it }) : SectorResolver {
+    override fun identitiesOf(sectorIds: Collection<Int>) = sectorIds.associateWith { "s$it" }
+    override fun sectorIdsOf(idents: Collection<String>) =
+        idents.mapNotNull { i -> i.removePrefix("s").toIntOrNull()?.let { id -> renumber(id)?.let { i to it } } }.toMap()
+}

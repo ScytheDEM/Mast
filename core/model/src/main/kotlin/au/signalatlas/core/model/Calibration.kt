@@ -17,6 +17,8 @@ data class SectorCorrection(
     val offsetDb: Double,
     val slopeDbPerDecade: Double,
     val dMedianKm: Double,
+    /** The sector's stable [SectorIdentity] (what the estimate is stored under). */
+    val ident: String = "",
 ) {
     /** Rule 6's factor: sigma_eff = max(4, sigma * sigmaScale). */
     val sigmaScale: Double get() = CalibrationRules.sigmaScale(n)
@@ -65,4 +67,20 @@ object CalibrationRules {
 
     /** Rule 6: sqrt(10 / (10 + n)). */
     fun sigmaScale(n: Int): Double = sqrt(SIGMA_N0 / (SIGMA_N0 + n))
+}
+
+/**
+ * A sector's identity that survives tower-DB updates (sector row ids are renumbered by every import): the ACMA site
+ * id, the network, the ACMA antenna id (or none), the azimuth rounded to 0.1 deg (or omni) and the height rounded to
+ * 0.1 m. Calibration keys its estimates and cell mappings by this and resolves to the current sector id when it
+ * publishes.
+ */
+object SectorIdentity {
+    fun of(siteId: Int, network: Network, antennaId: Int?, azimuthDeg: Double?, heightM: Double): String =
+        "$siteId|${network.ordinal}|${antennaId ?: "-"}|${azimuthDeg?.let { tenths(it) } ?: "-"}|${tenths(heightM)}"
+
+    /** The ACMA site id of [ident] (null for a malformed or legacy key). */
+    fun siteIdOf(ident: String): Int? = ident.substringBefore('|', "").toIntOrNull()
+
+    private fun tenths(v: Double): Long = Math.round(v * 10.0)
 }

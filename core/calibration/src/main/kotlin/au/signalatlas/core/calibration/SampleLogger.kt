@@ -63,7 +63,7 @@ class SampleLogger(
         val c = m.candidate
         val sample = Sample(
             fix.timeMs, fix.lat, fix.lon, fix.accuracyM, network, cell.tech, cell.channel, cell.pci, cell.cellId,
-            cell.taMeters, rsrp, cell.rsrq, cell.sinr, c.sddId, c.sectorId, c.network, c.siteLat, c.siteLon,
+            cell.taMeters, rsrp, cell.rsrq, cell.sinr, c.sddId, c.sectorId, c.ident, c.network, c.siteLat, c.siteLon,
             c.predictedDbm, m.distanceM, m.area, m.confidence,
         )
         sink(sample)

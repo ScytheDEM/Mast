@@ -24,7 +24,7 @@ internal object Estimator {
             SectorFit(n, CalibrationMath.offsetOnly(n, sumR), 0.0, prev?.dMedianKm ?: 1.0, false)
         }
         return CalibrationDb.SectorRow(
-            s.sectorId, s.carrierNetwork.ordinal, s.siteLat, s.siteLon, s.sddId, n, sumR, fit.offsetDb, fit.slopeDbPerDecade,
+            s.ident, s.sectorId, s.carrierNetwork.ordinal, s.siteLat, s.siteLon, s.sddId, n, sumR, fit.offsetDb, fit.slopeDbPerDecade,
             fit.dMedianKm, s.timeMs,
         )
     }
@@ -33,20 +33,21 @@ internal object Estimator {
 
     fun fitOf(r: CalibrationDb.SectorRow) = SectorFit(r.n, r.offsetDb, r.slope, r.dMedianKm, r.slope != 0.0)
 
-    fun correction(r: CalibrationDb.SectorRow) =
-        SectorCorrection(r.sectorId, r.network, r.siteLat, r.siteLon, r.n, r.offsetDb, r.slope, r.dMedianKm)
+    /** The correction of [r] as applied to the tower DB's current sector id [sectorId]. */
+    fun correction(r: CalibrationDb.SectorRow, sectorId: Int) =
+        SectorCorrection(sectorId, r.network, r.siteLat, r.siteLon, r.n, r.offsetDb, r.slope, r.dMedianKm, r.ident)
 
     /**
      * Rule 5: per (network, cell) n and the mean of r - (applied sector correction) over its samples, from per-sector
      * sums: sum r - n mu - b (sum log10 d - n log10 d_median) for sectors whose correction applies (n >= 3).
      */
-    fun residualCells(rows: List<CalibrationDb.ResidualRow>, fits: Map<Int, SectorFit>): List<ResidualCell> {
+    fun residualCells(rows: List<CalibrationDb.ResidualRow>, fits: Map<String, SectorFit>): List<ResidualCell> {
         data class Key(val network: Int, val lat: Int, val lon: Int)
         val n = HashMap<Key, Int>()
         val sum = HashMap<Key, Double>()
         for (row in rows) {
             val k = Key(row.network, row.latIdx, row.lonIdx)
-            val f = fits[row.sectorId]?.takeIf { it.n >= CalibrationRules.MIN_APPLIED_SAMPLES }
+            val f = fits[row.ident]?.takeIf { it.n >= CalibrationRules.MIN_APPLIED_SAMPLES }
             val corrected = if (f == null) row.sumR else
                 row.sumR - row.n * f.offsetDb - f.slopeDbPerDecade * (row.sumLogD - row.n * log10(f.dMedianKm))
             n.merge(k, row.n, Int::plus)

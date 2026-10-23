@@ -53,7 +53,7 @@ class CellMatcherTest {
         assertThat(map.map[key]!!.likelyCount).isEqualTo(4)
         assertThat(map.map[key]!!.confirmed).isFalse()
         assertThat(matcher.match(Network.TELSTRA, cell(), fix())!!.confidence).isEqualTo(Confidence.CONFIRMED)
-        assertThat(map.map[key]).isEqualTo(CellMapping(key, Network.TELSTRA, 1, 1001L, 5, true))
+        assertThat(map.map[key]).isEqualTo(CellMapping(key, Network.TELSTRA, "s1", 1001L, 5, true))
         // Confirmed: sector 1 is used even when the prediction now favours sector 2 by a wide margin.
         cands.list = listOf(candidate(1, -120.0), candidate(2, -95.0))
         val m = matcher.match(Network.TELSTRA, cell(), fix())!!
@@ -62,7 +62,7 @@ class CellMatcherTest {
         // Unless that sector is no longer a candidate: scoring takes over and a Likely match restarts the count.
         cands.list = listOf(candidate(2, -95.0), candidate(3, -120.0))
         assertThat(matcher.match(Network.TELSTRA, cell(), fix())!!.confidence).isEqualTo(Confidence.LIKELY)
-        assertThat(map.map[key]).isEqualTo(CellMapping(key, Network.TELSTRA, 2, 1002L, 1, false))
+        assertThat(map.map[key]).isEqualTo(CellMapping(key, Network.TELSTRA, "s2", 1002L, 1, false))
     }
 
     @Test fun inconsistentMatchesRestartTheCountAndUncertainOnesAreNotCounted() {
@@ -71,7 +71,7 @@ class CellMatcherTest {
         cands.list = listOf(candidate(1, -110.0), candidate(2, -95.0))
         matcher.match(Network.TELSTRA, cell(), fix())
         val key = CellMatcher.cellKey(Network.TELSTRA, cell())!!
-        assertThat(map.map[key]!!.sectorId).isEqualTo(2)
+        assertThat(map.map[key]!!.ident).isEqualTo("s2")
         assertThat(map.map[key]!!.likelyCount).isEqualTo(1)
         cands.list = listOf(candidate(1, -96.0), candidate(2, -95.0))  // Uncertain
         matcher.match(Network.TELSTRA, cell(), fix())

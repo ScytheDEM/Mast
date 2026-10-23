@@ -18,18 +18,23 @@ import java.io.File
  * Tables: `samples` (rule 3 fields), `sector_estimate` (rule 4 sufficient statistics and the current fit per sector),
  * `cell_map` (rule 2 learned cell -> sector mappings) and `residual_cell` (rule 5 sums per network, 0.001 deg cell and
  * sector, so a cell's mean after the sector corrections can be recomputed exactly whenever a fit changes).
+ *
+ * Sectors are keyed by their stable identity (`ident`, [au.signalatlas.core.model.SectorIdentity]), never by the tower
+ * DB's sector row id, which every import renumbers (Ruling TT). `sector_id` is only the last id seen, for the CSV.
+ * Schema v1 keyed by sector id: [open] converts its rows to the key `legacy:<sector id>`, which [legacySectorIds] /
+ * [rekeyLegacy] replace with the real identity once a tower DB is available.
  */
 class CalibrationDb private constructor(private val conn: SQLiteConnection) : Closeable {
     private val lock = Any()
 
     internal data class SectorRow(
-        val sectorId: Int, val network: Int, val siteLat: Double, val siteLon: Double, val sddId: Long,
+        val ident: String, val sectorId: Int, val network: Int, val siteLat: Double, val siteLon: Double, val sddId: Long,
         val n: Int, val sumR: Double, val offsetDb: Double, val slope: Double, val dMedianKm: Double, val updatedMs: Long,
     )
 
-    internal data class CellMapRow(val key: String, val network: Int, val sectorId: Int, val sddId: Long, val likelyCount: Int, val confirmed: Boolean)
+    internal data class CellMapRow(val key: String, val network: Int, val ident: String, val sddId: Long, val likelyCount: Int, val confirmed: Boolean)
 
-    internal data class ResidualRow(val network: Int, val latIdx: Int, val lonIdx: Int, val sectorId: Int, val n: Int, val sumR: Double, val sumLogD: Double)
+    internal data class ResidualRow(val network: Int, val latIdx: Int, val lonIdx: Int, val ident: String, val n: Int, val sumR: Double, val sumLogD: Double)
 
     internal fun <T> transaction(block: () -> T): T = synchronized(lock) {
         conn.execSQL("BEGIN IMMEDIATE")
@@ -44,8 +49,8 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
     internal fun insertSample(s: Sample) = synchronized(lock) {
         conn.prepare(
             "INSERT INTO samples(time_ms, lat, lon, accuracy_m, network, tech, channel, pci, cell_id, ta_m, rsrp, rsrq, sinr, " +
-                "sdd_id, sector_id, carrier_network, site_lat, site_lon, predicted_rsrp, distance_m, area, confidence) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "sdd_id, sector_id, carrier_network, site_lat, site_lon, predicted_rsrp, distance_m, area, confidence, ident) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ).use { st ->
             st.bindLong(1, s.timeMs); st.bindDouble(2, s.lat); st.bindDouble(3, s.lon); st.bindDouble(4, s.accuracyM)
             st.bindLong(5, s.network.ordinal.toLong()); st.bindLong(6, s.tech.ordinal.toLong())
@@ -55,18 +60,18 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
             st.bindLong(14, s.sddId); st.bindLong(15, s.sectorId.toLong()); st.bindLong(16, s.carrierNetwork.ordinal.toLong())
             st.bindDouble(17, s.siteLat); st.bindDouble(18, s.siteLon)
             st.bindDouble(19, s.predictedDbm); st.bindDouble(20, s.distanceM)
-            st.bindLong(21, s.area.ordinal.toLong()); st.bindLong(22, s.confidence.ordinal.toLong())
+            st.bindLong(21, s.area.ordinal.toLong()); st.bindLong(22, s.confidence.ordinal.toLong()); st.bindText(23, s.ident)
             st.step()
         }
         Unit
     }
 
-    /** Every sample of [sectorId] as (r = M - P, distance km). */
-    internal fun sectorSamples(sectorId: Int): Pair<DoubleArray, DoubleArray> = synchronized(lock) {
+    /** Every sample of [ident] as (r = M - P, distance km). */
+    internal fun sectorSamples(ident: String): Pair<DoubleArray, DoubleArray> = synchronized(lock) {
         val r = ArrayList<Double>()
         val d = ArrayList<Double>()
-        conn.prepare("SELECT rsrp - predicted_rsrp, distance_m FROM samples WHERE sector_id = ? ORDER BY id").use { st ->
-            st.bindLong(1, sectorId.toLong())
+        conn.prepare("SELECT rsrp - predicted_rsrp, distance_m FROM samples WHERE ident = ? ORDER BY id").use { st ->
+            st.bindText(1, ident)
             while (st.step()) {
                 r += st.getDouble(0)
                 d += st.getDouble(1) / 1000.0
@@ -75,9 +80,9 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
         r.toDoubleArray() to d.toDoubleArray()
     }
 
-    internal fun sector(sectorId: Int): SectorRow? = synchronized(lock) {
-        conn.prepare("$SECTOR_SELECT WHERE sector_id = ?").use { st ->
-            st.bindLong(1, sectorId.toLong())
+    internal fun sector(ident: String): SectorRow? = synchronized(lock) {
+        conn.prepare("$SECTOR_SELECT WHERE ident = ?").use { st ->
+            st.bindText(1, ident)
             if (st.step()) sectorRow(st) else null
         }
     }
@@ -88,52 +93,53 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
 
     internal fun putSector(r: SectorRow) = synchronized(lock) {
         conn.prepare(
-            "INSERT OR REPLACE INTO sector_estimate(sector_id, network, site_lat, site_lon, sdd_id, n, sum_r, offset_db, slope, " +
-                "d_median_km, updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO sector_estimate(ident, sector_id, network, site_lat, site_lon, sdd_id, n, sum_r, offset_db, " +
+                "slope, d_median_km, updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ).use { st ->
-            st.bindLong(1, r.sectorId.toLong()); st.bindLong(2, r.network.toLong()); st.bindDouble(3, r.siteLat)
-            st.bindDouble(4, r.siteLon); st.bindLong(5, r.sddId); st.bindLong(6, r.n.toLong()); st.bindDouble(7, r.sumR)
-            st.bindDouble(8, r.offsetDb); st.bindDouble(9, r.slope); st.bindDouble(10, r.dMedianKm); st.bindLong(11, r.updatedMs)
+            st.bindText(1, r.ident); st.bindLong(2, r.sectorId.toLong()); st.bindLong(3, r.network.toLong())
+            st.bindDouble(4, r.siteLat); st.bindDouble(5, r.siteLon); st.bindLong(6, r.sddId); st.bindLong(7, r.n.toLong())
+            st.bindDouble(8, r.sumR); st.bindDouble(9, r.offsetDb); st.bindDouble(10, r.slope); st.bindDouble(11, r.dMedianKm)
+            st.bindLong(12, r.updatedMs)
             st.step()
         }
         Unit
     }
 
-    internal fun addResidual(network: Int, latIdx: Int, lonIdx: Int, sectorId: Int, r: Double, logD: Double) = synchronized(lock) {
+    internal fun addResidual(network: Int, latIdx: Int, lonIdx: Int, ident: String, r: Double, logD: Double) = synchronized(lock) {
         conn.prepare(
-            "INSERT INTO residual_cell(network, lat_idx, lon_idx, sector_id, n, sum_r, sum_log_d) VALUES (?, ?, ?, ?, 1, ?, ?) " +
-                "ON CONFLICT(network, lat_idx, lon_idx, sector_id) DO UPDATE SET n = n + 1, sum_r = sum_r + excluded.sum_r, " +
+            "INSERT INTO residual_cell(network, lat_idx, lon_idx, ident, n, sum_r, sum_log_d) VALUES (?, ?, ?, ?, 1, ?, ?) " +
+                "ON CONFLICT(network, lat_idx, lon_idx, ident) DO UPDATE SET n = n + 1, sum_r = sum_r + excluded.sum_r, " +
                 "sum_log_d = sum_log_d + excluded.sum_log_d",
         ).use { st ->
             st.bindLong(1, network.toLong()); st.bindLong(2, latIdx.toLong()); st.bindLong(3, lonIdx.toLong())
-            st.bindLong(4, sectorId.toLong()); st.bindDouble(5, r); st.bindDouble(6, logD)
+            st.bindText(4, ident); st.bindDouble(5, r); st.bindDouble(6, logD)
             st.step()
         }
         Unit
     }
 
     internal fun residualRows(): List<ResidualRow> = synchronized(lock) {
-        conn.prepare("SELECT network, lat_idx, lon_idx, sector_id, n, sum_r, sum_log_d FROM residual_cell").use { st ->
+        conn.prepare("SELECT network, lat_idx, lon_idx, ident, n, sum_r, sum_log_d FROM residual_cell").use { st ->
             buildList {
                 while (st.step()) {
-                    add(ResidualRow(st.getInt(0), st.getInt(1), st.getInt(2), st.getInt(3), st.getInt(4), st.getDouble(5), st.getDouble(6)))
+                    add(ResidualRow(st.getInt(0), st.getInt(1), st.getInt(2), st.getText(3), st.getInt(4), st.getDouble(5), st.getDouble(6)))
                 }
             }
         }
     }
 
     internal fun cellMap(key: String): CellMapRow? = synchronized(lock) {
-        conn.prepare("SELECT key, network, sector_id, sdd_id, likely_count, confirmed FROM cell_map WHERE key = ?").use { st ->
+        conn.prepare("SELECT key, network, ident, sdd_id, likely_count, confirmed FROM cell_map WHERE key = ?").use { st ->
             st.bindText(1, key)
-            if (st.step()) CellMapRow(st.getText(0), st.getInt(1), st.getInt(2), st.getLong(3), st.getInt(4), st.getLong(5) != 0L) else null
+            if (st.step()) CellMapRow(st.getText(0), st.getInt(1), st.getText(2), st.getLong(3), st.getInt(4), st.getLong(5) != 0L) else null
         }
     }
 
     internal fun putCellMap(r: CellMapRow) = synchronized(lock) {
         conn.prepare(
-            "INSERT OR REPLACE INTO cell_map(key, network, sector_id, sdd_id, likely_count, confirmed) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO cell_map(key, network, ident, sdd_id, likely_count, confirmed) VALUES (?, ?, ?, ?, ?, ?)",
         ).use { st ->
-            st.bindText(1, r.key); st.bindLong(2, r.network.toLong()); st.bindLong(3, r.sectorId.toLong()); st.bindLong(4, r.sddId)
+            st.bindText(1, r.key); st.bindLong(2, r.network.toLong()); st.bindText(3, r.ident); st.bindLong(4, r.sddId)
             st.bindLong(5, r.likelyCount.toLong()); st.bindLong(6, if (r.confirmed) 1L else 0L)
             st.step()
         }
@@ -151,7 +157,7 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
                         st.getLong(0), st.getDouble(1), st.getDouble(2), st.getDouble(3), Network.entries[st.getInt(4)],
                         Tech.entries[st.getInt(5)], st.optLong(6)?.toInt(), st.optLong(7)?.toInt(), st.optLong(8),
                         if (st.isNull(9)) null else st.getDouble(9), st.getInt(10), st.optLong(11)?.toInt(), st.optLong(12)?.toInt(),
-                        st.getLong(13), st.getInt(14), Network.entries[st.getInt(15)], st.getDouble(16), st.getDouble(17),
+                        st.getLong(13), st.getInt(14), st.getText(22), Network.entries[st.getInt(15)], st.getDouble(16), st.getDouble(17),
                         st.getDouble(18), st.getDouble(19), AreaClass.entries[st.getInt(20)], Confidence.entries[st.getInt(21)],
                     ),
                 )
@@ -163,45 +169,86 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
         for (t in listOf("samples", "sector_estimate", "cell_map", "residual_cell")) conn.execSQL("DELETE FROM $t")
     }
 
-    /** Removes everything learned about [sectorId]: its samples, estimate, residual sums and cell mappings. */
-    internal fun deleteSector(sectorId: Int) = transaction {
+    /** Removes everything learned about [ident]: its samples, estimate, residual sums and cell mappings. */
+    internal fun deleteSector(ident: String) = transaction {
         for (t in listOf("samples", "sector_estimate", "cell_map", "residual_cell")) {
-            conn.prepare("DELETE FROM $t WHERE sector_id = ?").use { it.bindLong(1, sectorId.toLong()); it.step() }
+            conn.prepare("DELETE FROM $t WHERE ident = ?").use { it.bindText(1, ident); it.step() }
+        }
+    }
+
+    /** Sector ids of rows still keyed `legacy:<id>` (converted from schema v1, not yet resolved to an identity). */
+    internal fun legacySectorIds(): Set<Int> = synchronized(lock) {
+        conn.prepare("SELECT ident FROM sector_estimate WHERE ident LIKE 'legacy:%'").use { st ->
+            buildSet { while (st.step()) st.getText(0).removePrefix(LEGACY).toIntOrNull()?.let(::add) }
+        }
+    }
+
+    /** Replaces the `legacy:<id>` keys of [idents] (sector id -> identity) in every table. */
+    internal fun rekeyLegacy(idents: Map<Int, String>) = transaction {
+        for ((id, ident) in idents) {
+            for (t in listOf("samples", "sector_estimate", "cell_map", "residual_cell")) {
+                conn.prepare("UPDATE OR REPLACE $t SET ident = ? WHERE ident = ?").use {
+                    it.bindText(1, ident); it.bindText(2, "$LEGACY$id"); it.step()
+                }
+            }
         }
     }
 
     override fun close() = synchronized(lock) { conn.close() }
 
     companion object {
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
+        private const val LEGACY = "legacy:"
 
         /** Column order of [forEachSample] and of the CSV export. */
         val SAMPLE_COLUMNS = listOf(
             "time_ms", "lat", "lon", "accuracy_m", "network", "tech", "channel", "pci", "cell_id", "ta_m", "rsrp", "rsrq",
             "sinr", "sdd_id", "sector_id", "carrier_network", "site_lat", "site_lon", "predicted_rsrp", "distance_m", "area",
-            "confidence",
+            "confidence", "ident",
         )
 
         private const val SECTOR_SELECT =
-            "SELECT sector_id, network, site_lat, site_lon, sdd_id, n, sum_r, offset_db, slope, d_median_km, updated_ms FROM sector_estimate"
+            "SELECT ident, sector_id, network, site_lat, site_lon, sdd_id, n, sum_r, offset_db, slope, d_median_km, updated_ms FROM sector_estimate"
 
         private val SCHEMA = listOf(
             "CREATE TABLE IF NOT EXISTS samples(id INTEGER PRIMARY KEY AUTOINCREMENT, time_ms INTEGER NOT NULL, lat REAL NOT NULL, " +
                 "lon REAL NOT NULL, accuracy_m REAL NOT NULL, network INTEGER NOT NULL, tech INTEGER NOT NULL, channel INTEGER, " +
                 "pci INTEGER, cell_id INTEGER, ta_m REAL, rsrp INTEGER NOT NULL, rsrq INTEGER, sinr INTEGER, sdd_id INTEGER NOT NULL, " +
                 "sector_id INTEGER NOT NULL, carrier_network INTEGER NOT NULL, site_lat REAL NOT NULL, site_lon REAL NOT NULL, " +
-                "predicted_rsrp REAL NOT NULL, distance_m REAL NOT NULL, area INTEGER NOT NULL, confidence INTEGER NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS samples_sector ON samples(sector_id)",
-            "CREATE TABLE IF NOT EXISTS sector_estimate(sector_id INTEGER PRIMARY KEY, network INTEGER NOT NULL, " +
+                "predicted_rsrp REAL NOT NULL, distance_m REAL NOT NULL, area INTEGER NOT NULL, confidence INTEGER NOT NULL, " +
+                "ident TEXT NOT NULL DEFAULT '')",
+            "CREATE INDEX IF NOT EXISTS samples_ident ON samples(ident)",
+            "CREATE TABLE IF NOT EXISTS sector_estimate(ident TEXT PRIMARY KEY, sector_id INTEGER NOT NULL, network INTEGER NOT NULL, " +
                 "site_lat REAL NOT NULL, site_lon REAL NOT NULL, sdd_id INTEGER NOT NULL, n INTEGER NOT NULL, sum_r REAL NOT NULL, " +
                 "offset_db REAL NOT NULL, slope REAL NOT NULL, d_median_km REAL NOT NULL, updated_ms INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS cell_map(key TEXT PRIMARY KEY, network INTEGER NOT NULL, sector_id INTEGER NOT NULL, " +
+            "CREATE TABLE IF NOT EXISTS cell_map(key TEXT PRIMARY KEY, network INTEGER NOT NULL, ident TEXT NOT NULL, " +
                 "sdd_id INTEGER NOT NULL, likely_count INTEGER NOT NULL, confirmed INTEGER NOT NULL)",
-            "CREATE INDEX IF NOT EXISTS cell_map_sector ON cell_map(sector_id)",
+            "CREATE INDEX IF NOT EXISTS cell_map_ident ON cell_map(ident)",
             "CREATE TABLE IF NOT EXISTS residual_cell(network INTEGER NOT NULL, lat_idx INTEGER NOT NULL, lon_idx INTEGER NOT NULL, " +
-                "sector_id INTEGER NOT NULL, n INTEGER NOT NULL, sum_r REAL NOT NULL, sum_log_d REAL NOT NULL, " +
-                "PRIMARY KEY(network, lat_idx, lon_idx, sector_id))",
-            "CREATE INDEX IF NOT EXISTS residual_sector ON residual_cell(sector_id)",
+                "ident TEXT NOT NULL, n INTEGER NOT NULL, sum_r REAL NOT NULL, sum_log_d REAL NOT NULL, " +
+                "PRIMARY KEY(network, lat_idx, lon_idx, ident))",
+            "CREATE INDEX IF NOT EXISTS residual_ident ON residual_cell(ident)",
+        )
+
+        /** Schema v1 -> v2: re-keys the by-sector-id tables as `legacy:<id>` (see the class comment). */
+        private val MIGRATE_V1 = listOf(
+            "ALTER TABLE samples ADD COLUMN ident TEXT NOT NULL DEFAULT ''",
+            "UPDATE samples SET ident = 'legacy:' || sector_id",
+            "ALTER TABLE sector_estimate RENAME TO sector_estimate_v1",
+            "ALTER TABLE cell_map RENAME TO cell_map_v1",
+            "ALTER TABLE residual_cell RENAME TO residual_cell_v1",
+            "DROP INDEX IF EXISTS samples_sector", "DROP INDEX IF EXISTS cell_map_sector", "DROP INDEX IF EXISTS residual_sector",
+        )
+
+        private val MIGRATE_V1_COPY = listOf(
+            "INSERT INTO sector_estimate(ident, sector_id, network, site_lat, site_lon, sdd_id, n, sum_r, offset_db, slope, " +
+                "d_median_km, updated_ms) SELECT 'legacy:' || sector_id, sector_id, network, site_lat, site_lon, sdd_id, n, sum_r, " +
+                "offset_db, slope, d_median_km, updated_ms FROM sector_estimate_v1",
+            "INSERT INTO cell_map(key, network, ident, sdd_id, likely_count, confirmed) SELECT key, network, 'legacy:' || sector_id, " +
+                "sdd_id, likely_count, confirmed FROM cell_map_v1",
+            "INSERT INTO residual_cell(network, lat_idx, lon_idx, ident, n, sum_r, sum_log_d) SELECT network, lat_idx, lon_idx, " +
+                "'legacy:' || sector_id, n, sum_r, sum_log_d FROM residual_cell_v1",
+            "DROP TABLE sector_estimate_v1", "DROP TABLE cell_map_v1", "DROP TABLE residual_cell_v1",
         )
 
         /**
@@ -212,7 +259,7 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
             file.parentFile?.mkdirs()
             var conn = driver.open(file.path)
             val version = conn.prepare("PRAGMA user_version").use { it.step(); it.getInt(0) }
-            if (version != 0 && version != SCHEMA_VERSION) {
+            if (version != 0 && version != SCHEMA_VERSION && version != 1) {
                 conn.close()
                 file.delete()
                 File(file.path + "-wal").delete()
@@ -220,14 +267,27 @@ class CalibrationDb private constructor(private val conn: SQLiteConnection) : Cl
                 conn = driver.open(file.path)
             }
             conn.execSQL("PRAGMA journal_mode=WAL")
+            if (version == 1) {
+                conn.execSQL("BEGIN IMMEDIATE")
+                try {
+                    MIGRATE_V1.forEach(conn::execSQL)
+                    SCHEMA.forEach(conn::execSQL)
+                    MIGRATE_V1_COPY.forEach(conn::execSQL)
+                    conn.execSQL("PRAGMA user_version = $SCHEMA_VERSION")
+                    conn.execSQL("COMMIT")
+                } catch (t: Throwable) {
+                    conn.execSQL("ROLLBACK")
+                    throw t
+                }
+            }
             for (sql in SCHEMA) conn.execSQL(sql)
             conn.execSQL("PRAGMA user_version = $SCHEMA_VERSION")
             return CalibrationDb(conn)
         }
 
         private fun sectorRow(st: SQLiteStatement) = SectorRow(
-            st.getInt(0), st.getInt(1), st.getDouble(2), st.getDouble(3), st.getLong(4), st.getInt(5), st.getDouble(6),
-            st.getDouble(7), st.getDouble(8), st.getDouble(9), st.getLong(10),
+            st.getText(0), st.getInt(1), st.getInt(2), st.getDouble(3), st.getDouble(4), st.getLong(5), st.getInt(6),
+            st.getDouble(7), st.getDouble(8), st.getDouble(9), st.getDouble(10), st.getLong(11),
         )
 
         private fun SQLiteStatement.bindOpt(i: Int, v: Long?) = if (v == null) bindNull(i) else bindLong(i, v)

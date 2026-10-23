@@ -77,6 +77,27 @@ class TowerStoreTest {
         assertThat(res.all { Network.TELSTRA in it.first.networks }).isTrue()
     }
 
+    @Test fun sectorIdentitiesRoundTripAndIgnoreRowIds() {
+        val rows = sql("SELECT id, site_id, network, antenna_id, azimuth_deg, height_m FROM sector") {
+            listOf(it.getLong(0).toInt(), it.getLong(1).toInt(), it.getLong(2).toInt(), if (it.isNull(3)) null else it.getLong(3).toInt(),
+                if (it.isNull(4)) null else it.getDouble(4), it.getDouble(5))
+        }
+        assertThat(rows).isNotEmpty()
+        val ids = rows.map { it[0] as Int }
+        val idents = store.sectorIdentities(ids)
+        assertThat(idents.keys).containsExactlyElementsIn(ids)
+        for (r in rows) {
+            assertThat(idents[r[0] as Int]).isEqualTo(
+                au.signalatlas.core.model.SectorIdentity.of(r[1] as Int, Network.entries[r[2] as Int], r[3] as Int?, r[4] as Double?, r[5] as Double),
+            )
+        }
+        val back = store.sectorIdsByIdentity(idents.values)
+        for ((id, ident) in idents) assertThat(back[ident]).isAtMost(id)  // lowest id on a (never expected) tie
+        assertThat(back.keys).containsExactlyElementsIn(idents.values.toSet())
+        assertThat(store.sectorIdsByIdentity(listOf("1|0|-|-|0", "garbage"))).isEmpty()
+        assertThat(store.sectorIdentities(listOf(-5))).isEmpty()
+    }
+
     // Independent textbook haversine (R = 6371008.8 m).
     private fun haversine(la1: Double, lo1: Double, la2: Double, lo2: Double): Double {
         val r = 6_371_008.8
