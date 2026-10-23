@@ -1,6 +1,7 @@
 package au.signalatlas.app
 
 import android.content.Context
+import android.os.PowerManager
 import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import au.signalatlas.app.data.LocatorBasemapKeys
@@ -15,7 +16,13 @@ import au.signalatlas.core.data.DbValidator
 import au.signalatlas.core.data.PatternInstaller
 import au.signalatlas.core.data.PatternRepository
 import au.signalatlas.core.data.TowerRepository
+import au.signalatlas.core.coverage.CoverageInterceptor
+import au.signalatlas.core.coverage.CoverageTileService
+import au.signalatlas.core.coverage.RenderPool
+import au.signalatlas.core.coverage.TileCache
 import au.signalatlas.core.map.BasemapLocator
+import au.signalatlas.core.map.MapHttp
+import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.core.update.AcmaRemote
 import au.signalatlas.core.update.HrpDeps
 import au.signalatlas.core.update.HrpRemote
@@ -30,6 +37,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -84,6 +92,30 @@ class AppContainer(context: Context) {
         )
     }
 
+    /** Coverage overlay: tiles are rendered on demand for MapLibre's requests (see [CoverageInterceptor]). */
+    val coverage = CoverageTileService(
+        repo, patterns.patterns, CoverageEngine(), TileCache(File(app.cacheDir, "coverage-tiles").apply { mkdirs() }),
+        RenderPool(::renderThreads),
+    )
+
+    init {
+        // Every tile request blocks one dispatcher thread until its render is done, so the per-host limit has to
+        // exceed the render pool and MapLibre's concurrent tile requests.
+        MapHttp.install(
+            http.newBuilder()
+                .addInterceptor(CoverageInterceptor(coverage))
+                .dispatcher(Dispatcher().apply { maxRequests = 64; maxRequestsPerHost = 20 })
+                .build(),
+        )
+    }
+
+    /** One render thread when the device is running hot, otherwise min(4, cores - 2), at least 1. */
+    private fun renderThreads(): Int {
+        val hot = app.getSystemService(PowerManager::class.java)?.getThermalHeadroom(THERMAL_FORECAST_S)
+            ?.let { !it.isNaN() && it >= THERMAL_HEADROOM_LIMIT } == true
+        return if (hot) 1 else (Runtime.getRuntime().availableProcessors() - 2).coerceIn(1, 4)
+    }
+
     private val basemap = BasemapLocator(
         http,
         PreferenceDataStoreFactory.create(scope = appScope) { File(app.filesDir, "datastore/basemap.preferences_pb") },
@@ -125,6 +157,8 @@ class AppContainer(context: Context) {
 
     private companion object {
         const val TAG = "SignalAtlas"
+        const val THERMAL_FORECAST_S = 10
+        const val THERMAL_HEADROOM_LIMIT = 0.85f
         /** Per-phase import timings: `phase=<name> ms=<elapsed>`, then `phase=total`. */
         const val IMPORT_LOG_TAG = "AcmaImporter"
         /** HRP import timings: `phase=towers|stream|total ms=<elapsed>`. */

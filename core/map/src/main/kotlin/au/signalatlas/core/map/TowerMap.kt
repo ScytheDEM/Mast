@@ -18,12 +18,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import au.signalatlas.core.coverage.CoverageSelection
 import au.signalatlas.core.model.GeoBounds
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SiteSummary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -123,11 +123,18 @@ fun TowerMap(
     /** The user's position (lat, lon) for the location dot; pass null without location permission. */
     userLocation: Pair<Double, Double>? = null,
     userLocationColor: Int = selectedColor,
+    /** Tile URL template of the coverage overlay (`CoverageTileService.tileUrlTemplate()`); null = no overlay. */
+    coverageUrlTemplate: String? = null,
+    coverageView: CoverageSelection.View = CoverageSelection.View.RSRP,
+    coverageOpacity: Float = CoverageLayer.DEFAULT_OPACITY,
+    /** On camera idle: the tiles the overlay needs (see [CoverageLayer.visibleTiles]); pass to `setVisible`. */
+    onVisibleTiles: (Set<Triple<Int, Int, Int>>) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val currentOnSiteClick by rememberUpdatedState(onSiteClick)
     val currentOnCameraIdle by rememberUpdatedState(onCameraIdle)
+    val currentOnVisibleTiles by rememberUpdatedState(onVisibleTiles)
 
     val mapView = remember { createMapView(context, camera) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
@@ -153,7 +160,9 @@ fun TowerMap(
             m.addOnCameraIdleListener {
                 camera.record(m.cameraPosition)
                 val b = m.projection.visibleRegion.latLngBounds
-                currentOnCameraIdle(GeoBounds(b.getLatSouth(), b.getLonWest(), b.getLatNorth(), b.getLonEast()))
+                val bounds = GeoBounds(b.getLatSouth(), b.getLonWest(), b.getLatNorth(), b.getLonEast())
+                currentOnCameraIdle(bounds)
+                currentOnVisibleTiles(CoverageLayer.visibleTiles(bounds, m.cameraPosition.zoom))
             }
             m.addOnMapClickListener { latLng -> handleClick(m, latLng, mapView.context, currentOnSiteClick) }
             camera.attach(m)
@@ -171,6 +180,17 @@ fun TowerMap(
             sitesJson?.let { loaded.getSourceAs<GeoJsonSource>(SITES_SOURCE)?.setGeoJson(it) }
             style = loaded
         }
+    }
+
+    // The overlay sits below the tower layers. A new template replaces the source (no style reload); a view or
+    // opacity change only restyles the layer.
+    LaunchedEffect(style, coverageUrlTemplate) {
+        val s = style ?: return@LaunchedEffect
+        if (coverageUrlTemplate == null) CoverageLayer.remove(s)
+        else CoverageLayer.install(s, coverageUrlTemplate, coverageView, coverageOpacity, LAYER_CLUSTERS)
+    }
+    LaunchedEffect(style, coverageView, coverageOpacity) {
+        style?.let { CoverageLayer.restyle(it, coverageView, coverageOpacity) }
     }
 
     LaunchedEffect(Identity(sites)) {
@@ -236,7 +256,7 @@ private fun setUserLocationVisible(map: MapLibreMap, style: Style, context: Cont
 }
 
 private fun createMapView(context: Context, camera: MapCameraState): MapView {
-    MapLibre.getInstance(context)
+    MapHttp.initMapLibre(context)
     val options = MapLibreMapOptions.createFromAttributes(context)
         .textureMode(false)
         .camera(CameraPosition.Builder().target(LatLng(camera.lat, camera.lon)).zoom(camera.zoom).build())

@@ -32,6 +32,8 @@ kotlin {
 
 dependencies {
     api(project(":core:model"))
+    // CoverageSelection.View is part of TowerMap's public signature.
+    api(project(":core:coverage"))
     // OkHttpClient and DataStore<Preferences> are part of BasemapLocator's public constructor.
     api(libs.okhttp)
     api(libs.androidx.datastore.preferences)
