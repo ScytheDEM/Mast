@@ -28,8 +28,7 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
 - **HRP file.** `https://cdn.acma.gov.au/rrl/spectra_licence_hrp.zip` is 1,562,523,638 bytes (ETag `0x8DF2EDC716D83D0`,
   Last-Modified 2026-10-20). It contains one entry, `LICENCE_.csv`, of 10,060,668,828 bytes, with header
   `SDD_ID,DEVICE_REGISTRATION_IDENTIFIER,START_ANGLE,STOP_ANGLE,POWER`.
-  - Each device has exactly 360 rows, `START_ANGLE` 0..359 (`STOP_ANGLE` = start+1), and the rows are contiguous per
-    `SDD_ID`.
+  - Each device's rows are contiguous per `SDD_ID` and describe angle intervals (see HRP rule 2; corrected 2026-10-23 after a full-file analysis).
   - `POWER` is the EIRP in dBW in that direction. For example, SDD `2909149471` (EIRP 1521 W, azimuth 270) peaks at
     265° with 33.6 and has a floor of exactly peak − 25.0.
 - **MapLibre.**
@@ -133,8 +132,15 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
 ### HRP import rules (shared by `tools/acma/hrp_reference.py` and the Kotlin importer)
 
 1. **Rows kept:** stream `LICENCE_.csv`, keeping rows whose `SDD_ID` is a carrier in the live `towers.db`.
-2. **Complete devices only:** a device is complete when it has 360 rows covering angles 0..359 exactly once. Devices that
-   are incomplete or out of order are skipped and counted in `skippedIncomplete`.
+2. **Rows are intervals (verified on the full file 2026-10-23).** Each row is a half-open interval `[START_ANGLE, STOP_ANGLE)` in degrees,
+   which may be wider than 1° (equal adjacent degrees are merged), may use a half-degree grid (`359.5–0.5`, `0.5–1.5`, …), may wrap
+   past 360, and may appear in any order. Each SDD's rows are contiguous in the file (one buffered device at a time is enough).
+   - **Rasterise** to 360 bins: bin k (k = 0..359) takes the POWER of the row whose interval contains angle k (mod 360).
+   - **Reject the device** (`skippedIncomplete`) when two rows containing the same bin have different POWER, when any POWER is
+     > 200 or not finite (sentinels such as 2400 occur), when a row is malformed, or when more than 3 bins are empty.
+   - **Fill ≤ 3 empty bins** by circular linear interpolation between the nearest filled bins on either side (this covers the
+     51,980 integer-grid devices that omit `[0,1)`).
+   - `POWER` is used only as a relative pattern; `peak_dbw` is stored for diagnostics and is not a reliable absolute EIRP.
 3. **Normalising a device:**
    - `peak = max(POWER)`.
    - `peakBearing` = the angle of the first maximum.
