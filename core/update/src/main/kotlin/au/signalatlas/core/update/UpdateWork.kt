@@ -20,7 +20,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.io.IOException
@@ -124,11 +123,6 @@ abstract class UpdateWorker(
     protected val deps: UpdateDeps,
 ) : CoroutineWorker(appContext, params) {
 
-    private companion object {
-        /** Process-wide: only one update worker may touch the work directory at a time. */
-        val running = Mutex()
-    }
-
     protected val progress = MutableStateFlow(UpdateWork.PHASE_STARTING to 0f)
     @Volatile private var inForeground = false
 
@@ -143,7 +137,7 @@ abstract class UpdateWorker(
     final override suspend fun doWork(): Result {
         // Visible to the status while this worker waits for another one to finish.
         setProgress(workDataOf(UpdateWork.KEY_PHASE to UpdateWork.PHASE_QUEUED, UpdateWork.KEY_FRACTION to 0f))
-        return running.withLock {
+        return UpdateLocks.running.withLock {
             coroutineScope {
                 val reporter = launch { reportProgress() }
                 try {

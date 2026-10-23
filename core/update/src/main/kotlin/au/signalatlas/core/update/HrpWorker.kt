@@ -13,16 +13,18 @@ import au.signalatlas.core.acma.hrp.HrpImporter
 import au.signalatlas.core.data.PatternInstaller
 import au.signalatlas.core.data.PatternRepository
 import au.signalatlas.core.data.Validation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.EOFException
 import java.io.File
 import java.io.IOException
+import java.util.zip.DataFormatException
 import java.util.zip.ZipException
 
 /** Everything [HrpWorker] needs; the app supplies it through [TowerUpdateWorkerFactory]. */
@@ -43,8 +45,8 @@ interface HrpDeps {
 /**
  * The antenna-pattern job: download ACMA's HRP zip, stream it into `patterns.db.building`, then a
  * validated atomic install and reload of [HrpDeps.patterns]. Unique work [UpdateManager.HRP_WORK]
- * (monthly) or [UpdateManager.HRP_MANUAL_WORK]; one run at a time per process, independent of the
- * tower update (different files, different lock).
+ * (monthly) or [UpdateManager.HRP_MANUAL_WORK]; one run at a time per process, serialised with the
+ * tower update workers by [UpdateLocks.running] (one disk).
  *
  * It skips (success, no download) when the installed patterns already have the published ETag.
  * Before any request it needs [UpdatePolicy.HRP_MIN_FREE_BYTES] free (bytes already downloaded
@@ -71,9 +73,6 @@ class HrpWorker(
         const val LOG_TAG = "HrpWorker"
         /** HEAD + download attempts in one run when the remote version changes underneath. */
         const val VERSION_ATTEMPTS = 3
-
-        /** Process-wide: monthly and manual runs share `patterns.db.building` and the download. */
-        private val running = Mutex()
     }
 
     private val progress = MutableStateFlow(UpdateWork.PHASE_STARTING to 0f)
@@ -87,7 +86,7 @@ class HrpWorker(
 
     override suspend fun doWork(): Result {
         setProgress(workDataOf(UpdateWork.KEY_PHASE to UpdateWork.PHASE_QUEUED, UpdateWork.KEY_FRACTION to 0f))
-        return running.withLock {
+        return UpdateLocks.running.withLock {
             coroutineScope {
                 val reporter = launch {
                     publishProgress(progress) { phase, fraction ->
@@ -161,19 +160,33 @@ class HrpWorker(
             }
         } catch (e: ImportCancelledException) {
             return Result.retry() // stopped by WorkManager; the result is ignored
-        } catch (e: ZipException) {
-            deps.remote.discard(zip) // Ruling BB: corrupt or spliced bytes; download again from 0
+        } catch (e: IOException) {
+            if (e is ZipException || e is EOFException) {
+                // Ruling BB: corrupt, spliced or truncated-deflate bytes; download again from 0
+                deps.remote.discard(zip)
+                return retryOrFail(e, "Downloaded antenna patterns are corrupt")
+            }
+            return retryOrFail(e, "Could not build antenna patterns") // e.g. storage full; the zip is kept
+        } catch (e: DataFormatException) {
+            deps.remote.discard(zip)
             return retryOrFail(e, "Downloaded antenna patterns are corrupt")
         } catch (e: HrpFormatException) {
             deps.remote.discard(zip)
             return Result.failure(workDataOf(UpdateWork.KEY_ERROR to "ACMA pattern format changed: ${e.message}"))
-        } catch (e: IOException) {
-            return retryOrFail(e, "Could not build antenna patterns") // e.g. storage full; the zip is kept
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // SQLiteException (e.g. SQLITE_FULL) and IllegalStateException (carrier count changed)
+            // are not IOExceptions; all are transient or retryable. The zip is kept.
+            return retryOrFail(e, "Could not build antenna patterns")
         }
 
         val validation = withContext(NonCancellable) {
             // A stop before this point installs nothing.
-            if (isStopped) return@withContext null
+            if (isStopped) {
+                deps.installer.building.delete()
+                return@withContext null
+            }
             val result = withContext(Dispatchers.IO) { deps.installer.install(deps.installer.building) }
             if (result == Validation.Ok) {
                 deps.patterns.reload()
@@ -191,7 +204,7 @@ class HrpWorker(
         }
     }
 
-    private fun retryOrFail(e: IOException, prefix: String): Result =
+    private fun retryOrFail(e: Exception, prefix: String): Result =
         if (runAttemptCount >= UpdateWork.MAX_ATTEMPTS) {
             Result.failure(workDataOf(UpdateWork.KEY_ERROR to "$prefix: ${e.message ?: e.javaClass.simpleName}"))
         } else {

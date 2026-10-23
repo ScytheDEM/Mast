@@ -174,6 +174,45 @@ class HrpWorkerTest {
         assertThat(env.hrpGets()).isEqualTo(2)
     }
 
+    // A short deflate stream makes the inflater throw EOFException (a plain IOException): the zip is
+    // still bad, and its sidecar still matches, so it must be discarded or every retry reuses it.
+    @Test fun truncatedDeflateDataDiscardsTheZipAndSidecarAndRetries() {
+        env.seed("202610221934")
+        env.hrpBytes = truncateDeflate(env.hrpFixture)
+        assertThat(env.hrpBytes.size).isEqualTo(env.hrpFixture.size)
+        assertThat(run()).isEqualTo(Result.retry())
+        assertThat(env.hrpZip.exists()).isFalse()
+        assertThat(sidecar.exists()).isFalse()
+        assertThat(live.exists()).isFalse()
+        assertThat(building.exists()).isFalse()
+
+        env.hrpBytes = env.hrpFixture
+        assertThat(run(attempt = 1)).isEqualTo(Result.success())
+        assertThat(env.hrpGets()).isEqualTo(2)
+    }
+
+    // A stop that lands after the import returned but before the install must not leave the
+    // complete candidate behind.
+    @Test fun aStopRightAfterTheImportDeletesTheBuildingFile() {
+        env.seed("202610221934")
+        val w = worker()
+        env.onHrpLog = { if (it.startsWith("phase=total ")) w.stop(WorkInfo.STOP_REASON_CONSTRAINT_CHARGING) }
+        assertThat(runBlocking { w.doWork() }).isEqualTo(Result.retry())
+        env.onHrpLog = {}
+        assertThat(building.exists()).isFalse()
+        assertThat(live.exists()).isFalse()
+        assertThat(env.hrpZip.isFile).isTrue()
+    }
+
+    @Test fun anUnexpectedImportFailureRetriesAndKeepsTheZip() {
+        env.seed("202610221934")
+        env.onHrpLog = { if (it.startsWith("phase=towers ")) throw IllegalStateException("carrier count changed") }
+        assertThat(run()).isEqualTo(Result.retry())
+        env.onHrpLog = {}
+        assertThat(env.hrpZip.isFile).isTrue()
+        assertThat(run(attempt = UpdateWork.MAX_ATTEMPTS)).isEqualTo(Result.success())
+    }
+
     // The CDN's edges mix versions: a GET answering with another ETag than the HEAD restarts from 0
     // with a fresh HEAD in the same run.
     @Test fun aVersionChangeBetweenHeadAndGetRestartsFromZeroInTheSameRun() {
@@ -212,6 +251,17 @@ class HrpWorkerTest {
         env.hrpLastModified = "Fri, 23 Oct 2026 01:00:00 GMT" // same ETag, different file
         assertThat(run(attempt = 1)).isEqualTo(Result.success())
         assertThat(env.hrpGets()).isEqualTo(2)
+    }
+
+    /** Shrinks the entry's compressed size in the central directory: same file length, short stream. */
+    private fun truncateDeflate(zip: ByteArray): ByteArray {
+        val b = zip.copyOf()
+        val cd = (0 until b.size - 4).first {
+            b[it] == 0x50.toByte() && b[it + 1] == 0x4b.toByte() && b[it + 2] == 1.toByte() && b[it + 3] == 2.toByte()
+        }
+        val half = (java.nio.ByteBuffer.wrap(b, cd + 20, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int) / 2
+        java.nio.ByteBuffer.wrap(b, cd + 20, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(half)
+        return b
     }
 
     private fun flipCrc(zip: ByteArray): ByteArray {
