@@ -1,6 +1,6 @@
 """Reference implementation of the Signal Atlas "Terrain model" rules 1-6.
 
-Pure functions (stdlib `math` only). The C++ terrain stage (engine/src/main/cpp/terrain) must reproduce
+Pure functions (stdlib `math` only), Ruling B3 form (excess over the terminal ground line). The C++ terrain stage (engine/src/main/cpp/terrain) must reproduce
 these numbers; tools/engine/make_terrain_vectors.py writes them as test vectors. The equation forms and
 units are listed in tools/engine/README.md ("Terrain model reference").
 
@@ -55,13 +55,14 @@ def nu_max_los(d, h, h_ts, h_rs, f_mhz):
 
 
 def bullington(d, h, h_ts, h_rs, f_mhz):
-    """P.526-16 section 4.5.3 eqs. 41-51, Bullington construction over a profile.
+    """P.526-16 section 4.5.3 eqs. 41-48, Bullington construction over a profile: L_uc (dB).
 
     `d` (km) and `h` (m amsl) include both terminals' ground points (d[0] = 0, d[-1] = path length);
-    `h_ts`, `h_rs` are the antenna heights above sea level (m). Returns (L_uc, L_b) in dB."""
+    `h_ts`, `h_rs` are the antenna heights above sea level (m). The eq. 49 empirical correction is not
+    applied (Ruling B3, rule 5)."""
     n = len(d)
     if n < 3:
-        return 0.0, 0.0                       # no interior point: nothing to diffract over
+        return 0.0                            # no interior point: nothing to diffract over
     dd = d[-1]
     lam = C_LIGHT / (f_mhz * 1e6)
     hb = _bulge_heights(d, h)
@@ -75,69 +76,36 @@ def bullington(d, h, h_ts, h_rs, f_mhz):
         s_rim = max((hb[i] - h_rs) / (dd - d[i]) for i in range(1, n - 1))
     if s_tim < s_tr or s_tim + s_rim <= 0.0:
         # Eqs. 43-44: line of sight (the guard covers exact grazing, where eq. 46 is 0/0 and nu = 0).
-        l_uc = j_nu(nu_max_los(d, h, h_ts, h_rs, f_mhz))
-    else:
-        # Eq. 46: distance of the Bullington point from the transmitter (km).
-        d_b = (h_rs - h_ts + s_rim * dd) / (s_tim + s_rim)
-        # Eq. 47: diffraction parameter at the Bullington point; eq. 48: L_uc = J(nu_b).
-        nu_b = ((h_ts + s_tim * d_b - (h_ts * (dd - d_b) + h_rs * d_b) / dd)
-                * math.sqrt(0.002 * dd / (lam * d_b * (dd - d_b))))
-        l_uc = j_nu(nu_b)
-    # Eq. 49 (rule 3): L_b = L_uc + [1 - exp(-L_uc/6)](10 + 0.02 d).
-    l_b = l_uc + (1.0 - math.exp(-l_uc / 6.0)) * (10.0 + 0.02 * dd)
-    return l_uc, l_b
+        return j_nu(nu_max_los(d, h, h_ts, h_rs, f_mhz))
+    # Eq. 46: distance of the Bullington point from the transmitter (km).
+    d_b = (h_rs - h_ts + s_rim * dd) / (s_tim + s_rim)
+    # Eq. 47: diffraction parameter at the Bullington point; eq. 48: L_uc = J(nu_b).
+    nu_b = ((h_ts + s_tim * d_b - (h_ts * (dd - d_b) + h_rs * d_b) / dd)
+            * math.sqrt(0.002 * dd / (lam * d_b * (dd - d_b))))
+    return j_nu(nu_b)
 
 
-def smooth_terminal_heights(d, h, h_ts, h_rs):
-    """P.526-16 section 4.5.3 eqs. 52-55 (Ruling A3): heights of the smooth-Earth surface at the
-    transmitter and receiver (m amsl), from the least-squares straight line through the profile,
-    lowered where the profile obstructs the terminal line, and never above the terminals' ground."""
-    n = len(d)
-    dd = d[-1]
-    # Eq. 52: v1, v2 over all profile segments.
-    v1 = 0.0
-    v2 = 0.0
-    for i in range(1, n):
-        dx = d[i] - d[i - 1]
-        v1 += dx * (h[i] + h[i - 1])
-        v2 += dx * (h[i] * (2.0 * d[i] + d[i - 1]) + h[i - 1] * (d[i] + 2.0 * d[i - 1]))
-    # Eq. 53: the least-squares line at each end.
-    h_stip = (2.0 * v1 * dd - v2) / (dd * dd)
-    h_srip = (v2 - v1 * dd) / (dd * dd)
-    # Eq. 54: the highest obstruction above the terminal line (no curvature term) and its slopes.
-    h_obs = -math.inf
-    a_obt = -math.inf
-    a_obr = -math.inf
-    for i in range(1, n - 1):
-        hi = h[i] - (h_ts * (dd - d[i]) + h_rs * d[i]) / dd
-        h_obs = max(h_obs, hi)
-        a_obt = max(a_obt, hi / d[i])
-        a_obr = max(a_obr, hi / (dd - d[i]))
-    if h_obs <= 0.0:
-        h_stp, h_srp = h_stip, h_srip
-    else:
-        g_t = a_obt / (a_obt + a_obr)
-        g_r = a_obr / (a_obt + a_obr)
-        h_stp = h_stip - h_obs * g_t
-        h_srp = h_srip - h_obs * g_r
-    # Eq. 55: the smooth surface never rises above the ground at either terminal.
-    return min(h_stp, h[0]), min(h_srp, h[-1])
+def ground_line(dist_m, g_tx, g_rx):
+    """Rule 4 reference profile: the straight ground line g_t + (g_r - g_t) d_i / d at the samples."""
+    dd = dist_m[-1]
+    return [g_tx + (g_rx - g_tx) * x / dd for x in dist_m]
 
 
-def terrain_excess(dist_m, h, h_ts, h_rs, f_mhz):
-    """Rules 3-5 for one profile: (L_bulla, L_bulls, L_terr) in dB.
+def terrain_excess(dist_m, h, g_tx, g_rx, h_tx_agl, h_rx_agl, f_mhz):
+    """Rules 3-5 for one profile: (L_uc actual, L_uc reference, L_terr) in dB.
 
-    `dist_m` are the sample distances from the transmitter (m), `h` the ground heights (m amsl) at them,
-    `h_ts` / `h_rs` the antenna heights (m amsl)."""
+    `dist_m` are the sample distances from the transmitter (m, d[0] = 0, d[-1] = total distance), `h` the
+    ground heights (m amsl) at them (only the interior samples are used), `g_tx` / `g_rx` the terminals'
+    ground heights and `h_tx_agl` / `h_rx_agl` the antenna heights above it. Both constructions use the
+    terminals g + h_agl and the same curvature term; L_terr = max(0, L_uc_actual - L_uc_ref)."""
     if len(dist_m) < 3:
         return 0.0, 0.0, 0.0
     d = [x / 1000.0 for x in dist_m]
-    l_bulla = bullington(d, h, h_ts, h_rs, f_mhz)[1]
-    h_st, h_sr = smooth_terminal_heights(d, h, h_ts, h_rs)
-    # Rule 4: the same construction with every height on the smooth surface (0) and the terminals
-    # measured from it: h_ts' = h_ts - h_st, h_rs' = h_rs - h_sr.
-    l_bulls = bullington(d, [0.0] * len(d), h_ts - h_st, h_rs - h_sr, f_mhz)[1]
-    return l_bulla, l_bulls, max(0.0, l_bulla - l_bulls)
+    h_ts, h_rs = g_tx + h_tx_agl, g_rx + h_rx_agl
+    actual = [g_tx] + list(h[1:-1]) + [g_rx]
+    l_act = bullington(d, actual, h_ts, h_rs, f_mhz)
+    l_ref = bullington(d, ground_line(dist_m, g_tx, g_rx), h_ts, h_rs, f_mhz)
+    return l_act, l_ref, max(0.0, l_act - l_ref)
 
 
 # ---------------------------------------------------------------- rule 1: profiles
@@ -227,7 +195,7 @@ def point_excess(dem, site_lat, site_lon, h_tx_agl, lat, lon, f_mhz):
         if v is None:
             return 0.0, False
         h.append(v)
-    return terrain_excess(dist, h, h[0] + max(h_tx_agl, 3.0), h[-1] + H_RX, f_mhz)[2], True
+    return terrain_excess(dist, h, h[0], h[-1], max(h_tx_agl, 3.0), H_RX, f_mhz)[2], True
 
 
 # ---------------------------------------------------------------- rule 6: polar tables
@@ -259,7 +227,7 @@ def polar_table(dem, site_lat, site_lon, h_tx_agl, f_mhz, radials=None):
     ground = dem.height(site_lat, site_lon)
     if ground is None:
         return codes, mask
-    h_ts = ground + max(h_tx_agl, 3.0)
+    h_tx = max(h_tx_agl, 3.0)
     bins = range_bins_m()
     for b in (range(N_RADIALS) if radials is None else radials):
         # Shared radial samples at i * 90 m (None once a sample has no DEM).
@@ -283,7 +251,7 @@ def polar_table(dem, site_lat, site_lon, h_tx_agl, f_mhz, radials=None):
             dist = [k * STEP_M for k in range(n_below + 1)] + [r]
             h = samples[:n_below + 1] + [end]
             k = b * N_BINS + j
-            codes[k] = quantise(terrain_excess(dist, h, h_ts, end + H_RX, f_mhz)[2])
+            codes[k] = quantise(terrain_excess(dist, h, ground, end, h_tx, H_RX, f_mhz)[2])
             mask[k >> 3] |= 1 << (k & 7)
     return codes, mask
 
@@ -312,5 +280,11 @@ def table_lookup(codes, mask, bearing, r_m):
 
 
 def frequency_key_mhz(f_mhz):
-    """Rule 6: carriers of a site share a table when their frequency rounds to the same 10 MHz."""
+    """Rule 6 table key: the carrier frequency rounded (half up) to 10 MHz; lambda uses this frequency."""
     return int(math.floor(f_mhz / 10.0 + 0.5)) * 10
+
+
+def height_key_m(h_tx_agl):
+    """Rule 6 table key: the antenna height AGL, clamped to >= 3 m (M2 rule 1), rounded half up to 1 m.
+    The table is built with this height."""
+    return int(math.floor(max(h_tx_agl, 3.0) + 0.5))

@@ -100,10 +100,10 @@ def profile_rows():
     for name, d_m, h, h_tx, h_rx in profile_cases():
         dist = ter.profile_distances_m(d_m)
         assert len(dist) == len(h)
-        h_ts, h_rs = h[0] + h_tx, h[-1] + h_rx
         for f in FREQS:
-            bulla, bulls, terr = ter.terrain_excess(dist, [float(v) for v in h], h_ts, h_rs, f)
-            yield (name, f, d_m / 1000.0, float(h_ts), h_rs, " ".join(str(v) for v in h), bulla, bulls, terr)
+            act, ref_, terr = ter.terrain_excess(dist, [float(v) for v in h], float(h[0]), float(h[-1]), h_tx, h_rx, f)
+            yield (name, f, d_m, ter.STEP_M, float(h[0]), float(h[-1]), h_tx, h_rx, " ".join(str(v) for v in h),
+                   act, ref_, terr)
 
 
 # ---------------------------------------------------------------- tables.json (synthetic DEM)
@@ -138,6 +138,7 @@ def dem_doc(dem):
 def table_doc(codes, mask):
     complete = sum(bin(b).count("1") for b in mask)
     return [("complete", complete), ("nonZero", sum(1 for c in codes if c)), ("maxCode", max(codes)),
+            ("capCells", sum(1 for c in codes if c == ter.CODE_MAX)),
             ("codes", b64(codes)), ("mask", b64(mask))]
 
 
@@ -149,12 +150,13 @@ TABLE_LAYOUT = ("codes[b * 256 + j]: uint8 L_terr / 0.25 dB (cap 255) on radial 
 # ---------------------------------------------------------------- the Canberra terrain tile
 
 def tile_tables(carriers, dem):
-    """Rule 6 grouping: one table per (site, 10 MHz frequency key) in first-carrier order. The table's
-    tx height is the highest (clamped) hTx of its carriers and its wavelength uses the key frequency."""
+    """Rule 6 grouping: one table per (site, 10 MHz frequency key, 1 m height key) in first-carrier order,
+    built with the key height and the key frequency."""
     keys = []
     groups = {}
     for i in range(carriers["n"]):
-        key = (carriers["lat"][i], carriers["lon"][i], ter.frequency_key_mhz(carriers["freqMhz"][i]))
+        key = (carriers["lat"][i], carriers["lon"][i], ter.frequency_key_mhz(carriers["freqMhz"][i]),
+               ter.height_key_m(carriers["hTx"][i]))
         if key not in groups:
             groups[key] = []
             keys.append(key)
@@ -162,16 +164,16 @@ def tile_tables(carriers, dem):
     tables = []
     carrier_table = [-1] * carriers["n"]
     for t, key in enumerate(keys):
-        lat, lon, fkey = key
-        h_tx = max(ref.h_tx_clamped(carriers["hTx"][i]) for i in groups[key])
+        lat, lon, fkey, h_tx = key
         codes, mask = ter.polar_table(dem, lat, lon, h_tx, float(fkey))
         for i in groups[key]:
             carrier_table[i] = t
         tables.append({"key": key, "hTx": h_tx, "codes": codes, "mask": mask, "carriers": groups[key],
                        "ground": dem.height(lat, lon)})
-        print("table %d/%d: site (%.6f, %.6f) %d MHz h %.1f: %d complete, %d non-zero, max %d"
+        print("table %d/%d: site (%.6f, %.6f) %d MHz h %d: %d complete, %d non-zero, max %d, %d at the cap"
               % (t + 1, len(keys), lat, lon, fkey, h_tx, sum(bin(b).count("1") for b in mask),
-                 sum(1 for c in codes if c), max(codes)), file=sys.stderr)
+                 sum(1 for c in codes if c), max(codes), sum(1 for c in codes if c == ter.CODE_MAX)),
+              file=sys.stderr)
     return tables, carrier_table
 
 
@@ -214,8 +216,9 @@ def write_tile(path, model, dem_doc_src, dem):
         ("tableLayout", TABLE_LAYOUT),
         ("carrierTable", carrier_table),
         ("tables", [[("siteLat", t["key"][0]), ("siteLon", t["key"][1]), ("freqKeyMhz", t["key"][2]),
-                     ("hTxAgl", t["hTx"]), ("groundM", t["ground"])] + table_doc(t["codes"], t["mask"])
+                     ("hTxAgl", t["key"][3]), ("groundM", t["ground"])] + table_doc(t["codes"], t["mask"])
                     for t in tables]),
+        ("capCells", sum(1 for t in tables for c in t["codes"] if c == ter.CODE_MAX)),
         ("coveredPixels", covered), ("terrainPixels", full),
         ("accuracy", "TERRAIN" if covered and full >= 0.95 * covered else "QUICK"),
         ("pixelsChangedFromQuick", changed),
@@ -246,7 +249,8 @@ def main():
         sys.exit(__doc__)
     fixture, out_dir = sys.argv[1], sys.argv[2]
     mv.write_csv(os.path.join(out_dir, "profiles.csv"),
-                 ["case", "f_mhz", "d_km", "h_tx_asl", "h_rx_asl", "heights", "l_bulla", "l_bulls", "l_terr"],
+                 ["case", "f_mhz", "total_dist_m", "step_m", "g_tx", "g_rx", "h_tx_agl", "h_rx_agl", "heights",
+                  "l_uc_actual", "l_uc_ref", "l_terr"],
                  profile_rows())
     dem = synthetic_dem()
     sites = []
@@ -254,8 +258,7 @@ def main():
         codes, mask = ter.polar_table(dem, lat, lon, h_tx, f)
         sites.append([("name", name), ("siteLat", lat), ("siteLon", lon), ("hTxAgl", h_tx), ("freqMhz", f),
                       ("groundM", dem.height(lat, lon))] + table_doc(codes, mask))
-        print("tables.json %s: %d complete, %d non-zero, max %d" % (name, sites[-1][6][1], sites[-1][7][1],
-                                                                  sites[-1][8][1]), file=sys.stderr)
+        print("tables.json %s: %s" % (name, ", ".join("%s %d" % kv for kv in sites[-1][6:10])), file=sys.stderr)
     write_json(os.path.join(out_dir, "tables.json"),
                [("dem", dem_doc(dem)), ("tableLayout", TABLE_LAYOUT), ("tables", sites)])
     dem_src, real = load_dem(os.path.join(out_dir, DEM_FILE))

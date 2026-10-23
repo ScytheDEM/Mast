@@ -187,8 +187,9 @@ h_UT < 13 m):
 Python reference for the "Terrain model" rules 1–6 (M3a). The C++ terrain stage (`engine/src/main/cpp/terrain`)
 must reproduce its numbers. Stdlib only; run with `python3 -I`.
 
-- `terrain_reference.py`: profiles (rule 1), Bullington over the actual and the smooth profile (rules 2–4), the
-  excess loss (rule 5), polar tables and the renderer lookup (rule 6), and `DemGrid` (bilinear heights).
+- `terrain_reference.py`: profiles (rule 1), Bullington L_uc over the actual profile and over the terminal
+  ground line (rules 2–4, Ruling B3), the excess loss (rule 5), polar tables and the renderer lookup (rule 6),
+  and `DemGrid` (bilinear heights).
 - `glo90_crop.py`: a minimal COG reader (classic/BigTIFF IFD, TileOffsets/TileByteCounts, zlib inflate,
   floating-point predictor 3) over HTTP range requests, every request of a COG pinned with `If-Match` on the
   ETag of its first response (a 412 or a changed ETag restarts the crop). `tags <name>` prints one COG's IFD.
@@ -212,9 +213,9 @@ The output is byte-identical on regeneration.
 ## Equation forms and units
 
 The ITU-R P.526-16 PDF could not be fetched (ITU returned 404 for the known URL patterns), so the forms are the
-published delta-Bullington equations as they appear in P.526 §4.5 (identical in P.452-17 §4.2.1/§4.2.3 and
-P.1812-6 §4.3), with the equation numbers the plan assigns (§4.5.3 eqs. 41–51 Bullington, 52–55 smooth surface,
-Ruling A3). Units exactly as in the recommendation: d, d_i in **km**, heights in **m** above sea level, λ in
+published Bullington equations as they appear in P.526 §4.5 (identical in P.452-17 §4.2.1 and P.1812-6
+§4.3.1), with the equation numbers the plan assigns (§4.5.3 eqs. 41–48). Ruling B3 replaced the smooth-earth
+reference (eqs. 52–55) and dropped the eq. 49 correction. Units exactly as in the recommendation: d, d_i in **km**, heights in **m** above sea level, λ in
 **m** (λ = 3·10⁸ / f), C_e = 1/a_e in **km⁻¹** with a_e = (4/3)·6371 km.
 
 - J(ν) = 6.9 + 20 log10(√((ν − 0.1)² + 1) + ν − 0.1) for ν > −0.78, else 0 (eq. 31).
@@ -225,23 +226,22 @@ Ruling A3). Units exactly as in the recommendation: d, d_i in **km**, heights in
 - Otherwise S_rim = max (h_i + 500·C_e·d_i(d − d_i) − h_rs)/(d − d_i), d_b = (h_rs − h_ts + S_rim·d)/(S_tim + S_rim),
   ν_b = (h_ts + S_tim·d_b − (h_ts(d − d_b) + h_rs·d_b)/d)·√(0.002·d/(λ·d_b(d − d_b))), L_uc = J(ν_b) (eqs. 45–48).
   Guard: S_tim + S_rim ≤ 0 (exact grazing, 0/0) uses the line-of-sight branch (ν = 0 there).
-- L_b = L_uc + (1 − exp(−L_uc/6))·(10 + 0.02·d) (eq. 49).
-- Smooth surface (eqs. 52–55): v1 = Σ (d_i − d_{i−1})(h_i + h_{i−1}),
-  v2 = Σ (d_i − d_{i−1})(h_i(2d_i + d_{i−1}) + h_{i−1}(d_i + 2d_{i−1})) over all segments;
-  h_stip = (2·v1·d − v2)/d², h_srip = (v2 − v1·d)/d²; H_i = h_i − (h_ts(d − d_i) + h_rs·d_i)/d (no curvature term),
-  h_obs = max H_i, α_obt = max H_i/d_i, α_obr = max H_i/(d − d_i); if h_obs > 0 then
-  h_stp = h_stip − h_obs·α_obt/(α_obt + α_obr), h_srp = h_srip − h_obs·α_obr/(α_obt + α_obr), else the ip values;
-  h_st = min(h_stp, h_1), h_sr = min(h_srp, h_n).
-- L_bulls: the same Bullington with every h_i = 0 and terminals h_ts − h_st, h_rs − h_sr (the curvature term
-  stays). L_terr = max(0, L_bulla − L_bulls).
+- **No** eq. 49 correction (1 − exp(−L_uc/6))(10 + 0.02·d) on either profile (Ruling B3).
+- Reference profile (rule 4): interior heights on the straight ground line g_t + (g_r − g_t)·d_i/d, with
+  g_t = DEM(site), g_r = DEM(point), the same terminals h_ts = g_t + h_tx, h_rs = g_r + 1.5 and the same
+  curvature term. L_terr = max(0, L_uc(actual) − L_uc(reference)) (rule 5). Flat or uniformly sloped ground
+  gives 0 (up to rounding), and so does any profile that never rises above the ground line (valleys), since
+  L_uc is non-decreasing in every interior height; the near-terminal Fresnel loss of a 1.5 m receiver is in
+  both and cancels.
 
 ## Interpretation notes (the C++ engine must match)
 
-- **Curvature sign.** Rule 2's text writes the effective height as h_i − d_i(d − d_i)/(2a_e); P.526 (and rule 3)
-  add the bulge: h_i + 500·C_e·d_i(d − d_i) (km in, m out). The reference uses the P.526 form (+).
+- **Curvature.** Interior heights are raised by the bulge h_i + 500·C_e·d_i(d − d_i) (km in, m out), as in
+  P.526 (rule 2 as amended by B3).
 - **Profile.** Samples at 90·i m for every i with 90·i < d, then the endpoint d (the last step is shorter;
   `profile_distances_m`). Heights are bilinear in lat/lon from the DEM nodes; any sample without DEM makes the
-  profile incomplete. h_ts = DEM(site) + max(hTx, 3) (M2 rule 1 clamp), h_rs = DEM(point) + 1.5.
+  profile incomplete. h_ts = DEM(site) + the height key (below), h_rs = DEM(point) + 1.5. Only interior samples
+  enter the maxima; the terminals' ground is g_t, g_r (equal to the first and last profile heights).
 - **Great circle.** A point's profile uses spherical interpolation from the site toward the point (sphere
   R = 6 371 008.8 m, haversine distance). For tables, sample i of radial b is the destination point at 90·i m on
   bearing b, and cell (b, j) ends at the destination at r_j: the same points (differences < 1e-9°), so a radial's
@@ -256,9 +256,8 @@ Ruling A3). Units exactly as in the recommendation: d, d_i in **km**, heights in
   b1 = (b0 + 1) mod 360; bilinear in (bearing, u) of code·0.25. r < 50 m → (0, complete); r > 80 km → (0,
   incomplete); any of the four cells incomplete → (0, incomplete). The renderer uses the haversine d2D and
   initial bearing it already computes (M2 rule 8).
-- **Table sharing.** One table per (site, frequency key = carrier MHz rounded half up to 10 MHz), as rule 6 says.
-  Carriers of one key can have different heights; the table uses the **highest** clamped hTx of its carriers, and
-  λ from the key frequency. (Recorded as an interpretation: rule 6 names no height.)
+- **Table key** (rule 6, B3): (site, frequency rounded half up to 10 MHz, antenna height AGL clamped to ≥ 3 m
+  then rounded half up to 1 m). The table is built with the key height and λ = c / key frequency.
 - **Tile accuracy.** A pixel counts as terrain-complete when its best server (the nearest grid sample, as for
   `best`) had a complete lookup; `accuracy` is TERRAIN when ≥ 95% of covered pixels (RSRP code > 0) are.
 
@@ -268,10 +267,10 @@ Floats have 6 decimals, lines end in LF.
 
 | File | Content |
 |---|---|
-| `profiles.csv` | `case,f_mhz,d_km,h_tx_asl,h_rx_asl,heights,l_bulla,l_bulls,l_terr`; `heights` are the ground heights (m, space-separated) at the samples of `profile_distances_m(d)`: every 90 m plus the endpoint. Cases flat, single_ridge (the hand-checked knife edge), double_ridge, valley, los_hill (mast to mast, ν_max < −0.78 → all 0), rural_60km (60 km, last step 60 m), each at 700 / 1800 / 3500 MHz. |
-| `tables.json` | `dem` (a 361 × 361 synthetic grid, 0.3°, hills, a range and a 0 m lake) and two full tables: A (−35.35, 149.05, 30 m, 1800 MHz) and B (−35.47, 148.93, 45 m, 700 MHz, near the corner so many radials leave the grid). Each has `codes`, `mask` (base64), `complete`, `nonZero`, `maxCode`, `groundM`. |
+| `profiles.csv` | `case,f_mhz,total_dist_m,step_m,g_tx,g_rx,h_tx_agl,h_rx_agl,heights,l_uc_actual,l_uc_ref,l_terr`, matching `bullingtonExcessDb(heights, n, stepM, totalDistM, gTx, gRx, hTxAgl, hRxAgl, freqMhz)`; `heights` are the n ground heights (m, space-separated) at 90·i m while below the total distance, then at the total distance (`profile_distances_m`); `g_tx`/`g_rx` equal the first/last height. Cases flat, single_ridge (the hand-checked knife edge), double_ridge, valley, los_hill (mast to mast, ν_max < −0.78 → all 0), rural_60km (60 km, last step 60 m), each at 700 / 1800 / 3500 MHz. |
+| `tables.json` | `dem` (a 361 × 361 synthetic grid, 0.3°, hills, a range and a 0 m lake) and two full tables: A (−35.35, 149.05, 30 m, 1800 MHz) and B (−35.47, 148.93, 45 m, 700 MHz, near the corner so many radials leave the grid). Each has `codes`, `mask` (base64), `complete`, `nonZero`, `maxCode`, `capCells`, `groundM`. |
 | `dem_canberra_glo90.json` | The real crop: Copernicus GLO-90 nodes for z12/3744/2477 + 40 km (951 × 1170, 357–1905 m), with each COG's name, ETag and layout. |
-| `tile_canberra_terrain_z12.json` | The M2 tile format (TELSTRA fixture carriers, grid 128, area derived = RURAL) rendered with RSRP = M2 − L_terr, plus `terrain`: `dem` (file reference), `carrierTable` (table index per carrier), `tables` (26: site, `freqKeyMhz`, `hTxAgl`, `groundM`, `codes`, `mask` as in `tables.json`), `coveredPixels`, `terrainPixels`, `accuracy`, `pixelsChangedFromQuick`. |
+| `tile_canberra_terrain_z12.json` | The M2 tile format (TELSTRA fixture carriers, grid 128, area derived = RURAL) rendered with RSRP = M2 − L_terr, plus `terrain`: `dem` (file reference), `carrierTable` (table index per carrier), `tables` (one per key: site, `freqKeyMhz`, `hTxAgl` = the height key, `groundM`, `codes`, `mask` as in `tables.json`), `capCells` (all tables), `coveredPixels`, `terrainPixels`, `accuracy`, `pixelsChangedFromQuick`. |
 
 GLO-90 facts checked with `glo90_crop.py tags` (S35/S36 × E148/E149, 2026-10-23): little-endian classic TIFF,
 1200 × 1200 float32, **one 2048 × 2048 internal tile** (so a range read fetches ~3.8 MB of ~5.2 MB), DEFLATE,

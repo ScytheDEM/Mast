@@ -75,14 +75,15 @@ class KnifeEdge(unittest.TestCase):
         nu = h_clear * math.sqrt(2.0 * d / (lam * d1 * d2))
         self.assertAlmostEqual(nu, 3.17568, places=4)
         self.assertAlmostEqual(ter.j_nu(nu), 22.9004, places=3)   # by hand: 6.9 + 20 log10(6.30985)
-        l_uc, l_b = ter.bullington([x / 1000.0 for x in self.dist], self.h, 30.0, 1.5, 1800.0)
-        self.assertAlmostEqual(l_uc, ter.j_nu(nu), places=9)
-        self.assertAlmostEqual(l_b, l_uc + (1 - math.exp(-l_uc / 6.0)) * (10 + 0.02 * 10.0), places=9)
+        l_uc = ter.bullington([x / 1000.0 for x in self.dist], self.h, 30.0, 1.5, 1800.0)
+        self.assertAlmostEqual(l_uc, ter.j_nu(nu), places=9)      # no eq. 49 correction (B3)
 
-    def test_excess_is_positive_and_below_actual(self):
-        bulla, bulls, terr = ter.terrain_excess(self.dist, self.h, 30.0, 1.5, 1800.0)
-        self.assertGreater(terr, 15.0)
-        self.assertAlmostEqual(terr, bulla - bulls, places=12)
+    def test_excess_is_j_of_the_ridge_less_the_ground_line(self):
+        act, ref_, terr = ter.terrain_excess(self.dist, self.h, 0.0, 0.0, 30.0, 1.5, 1800.0)
+        self.assertAlmostEqual(act, 22.9004, places=3)
+        self.assertLess(ref_, 3.0)                   # flat ground line: near-rx Fresnel clearance (2.57 dB)
+        self.assertAlmostEqual(terr, act - ref_, places=12)
+        self.assertGreater(terr, 20.0)
 
 
 class Sanity(unittest.TestCase):
@@ -90,23 +91,36 @@ class Sanity(unittest.TestCase):
         for elev in (0.0, 612.0):
             for d in (500.0, 10000.0, 60000.0):
                 dist, h = flat_profile(d, elev)
-                bulla, bulls, terr = ter.terrain_excess(dist, h, elev + 30.0, elev + 1.5, 1800.0)
-                self.assertAlmostEqual(bulla, bulls, places=9)
-                self.assertAlmostEqual(terr, 0.0, places=9)   # exact up to rounding of the shifted heights
-                self.assertEqual(ter.quantise(terr), 0)
+                act, ref_, terr = ter.terrain_excess(dist, h, elev, elev, 30.0, 1.5, 1800.0)
+                self.assertEqual(act, ref_)
+                self.assertEqual(terr, 0.0)
+
+    def test_sloped_plane_is_zero(self):
+        dist = ter.profile_distances_m(20000.0)
+        h = [100.0 + 0.02 * x for x in dist]
+        self.assertAlmostEqual(ter.terrain_excess(dist, h, h[0], h[-1], 30.0, 1.5, 700.0)[2], 0.0, places=9)
+
+    def test_valley_below_the_ground_line_is_zero(self):
+        dist, h = flat_profile(15000.0, 500.0)
+        for i, x in enumerate(dist):
+            h[i] = 500.0 - max(0.0, 200.0 * (1.0 - abs(x - 7500.0) / 4500.0))
+        for f in (700.0, 1800.0, 3500.0):
+            act, ref_, terr = ter.terrain_excess(dist, h, 500.0, 500.0, 30.0, 1.5, f)
+            self.assertGreater(ref_, 0.0)            # the near-rx loss is in both and cancels
+            self.assertEqual(terr, 0.0)
 
     def test_los_over_low_hill_is_zero(self):
         dist, h = flat_profile(10000.0)
         for i, x in enumerate(dist):           # 5 m hill, 2 km wide, mid path; tx/rx 60 m
             h[i] = max(0.0, 5.0 * (1 - abs(x - 5000.0) / 1000.0))
         d_km = [x / 1000.0 for x in dist]
-        l_uc, _ = ter.bullington(d_km, h, 60.0, 60.0, 1800.0)
         self.assertLess(ter.nu_max_los(d_km, h, 60.0, 60.0, 1800.0), -0.78)
-        self.assertEqual(l_uc, 0.0)
-        self.assertEqual(ter.terrain_excess(dist, h, 60.0, 60.0, 1800.0)[2], 0.0)
+        self.assertEqual(ter.bullington(d_km, h, 60.0, 60.0, 1800.0), 0.0)
+        self.assertEqual(ter.terrain_excess(dist, h, 0.0, 0.0, 60.0, 60.0, 1800.0), (0.0, 0.0, 0.0))
 
     def test_short_path_without_interior_samples_is_zero(self):
-        self.assertEqual(ter.terrain_excess([0.0, 60.0], [100.0, 300.0], 130.0, 301.5, 700.0), (0.0, 0.0, 0.0))
+        self.assertEqual(ter.terrain_excess([0.0, 60.0], [100.0, 300.0], 100.0, 300.0, 30.0, 1.5, 700.0),
+                         (0.0, 0.0, 0.0))
 
     def test_raising_a_ridge_never_reduces_the_excess(self):
         for f in (700.0, 1800.0, 3500.0):
@@ -115,16 +129,15 @@ class Sanity(unittest.TestCase):
                 last = -1.0
                 for top in range(200, 420, 5):
                     h[k] = float(top)
-                    terr = ter.terrain_excess(dist, h, 230.0, 201.5, f)[2]
+                    terr = ter.terrain_excess(dist, h, 200.0, 200.0, 30.0, 1.5, f)[2]
                     self.assertGreaterEqual(terr, last - 1e-9, (f, d, k, top))
                     last = terr
 
-    def test_smooth_surface_of_a_plane_is_the_plane(self):
-        dist = ter.profile_distances_m(5000.0)
-        h = [100.0 + 0.01 * x for x in dist]
-        h_st, h_sr = ter.smooth_terminal_heights([x / 1000.0 for x in dist], h, 130.0, 151.5)
-        self.assertAlmostEqual(h_st, 100.0, places=9)
-        self.assertAlmostEqual(h_sr, 150.0, places=9)
+    def test_height_key(self):
+        self.assertEqual(ter.height_key_m(16.5), 17)
+        self.assertEqual(ter.height_key_m(16.49), 16)
+        self.assertEqual(ter.height_key_m(0.0), 3)
+        self.assertEqual(ter.frequency_key_mhz(2125.0), 2130)
 
 
 class Table(unittest.TestCase):
