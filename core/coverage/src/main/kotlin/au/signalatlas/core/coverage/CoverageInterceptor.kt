@@ -17,6 +17,12 @@ import java.util.concurrent.TimeoutException
  * through. Blocks the calling (OkHttp) thread until the tile is ready, up to [timeoutMs], and gives up early when
  * the call is cancelled.
  *
+ * Contract for the app (MapLibre setup):
+ * - The OkHttp client given to MapLibre needs `Dispatcher.maxRequestsPerHost >= 16` (the default of 5 would starve
+ *   the render pool, since every tile request blocks one dispatcher thread until its render is done).
+ * - `CoverageTileService.setVisible` must contain every tile MapLibre requests for the current camera, including
+ *   its parent and prefetch tiles at z-1 and z-2; anything missing is cancelled and answered with 503.
+ *
  * 200 `image/png` (`Cache-Control: no-store`); 204 outside zooms 8..16; 404 for a malformed path or coverage off;
  * 410 for a URL naming a stale selection or data version; 503 when the render was cancelled; 504 on timeout.
  */
@@ -32,7 +38,11 @@ class CoverageInterceptor(
         if (tile.z < CoverageTileService.MIN_ZOOM || tile.z > CoverageTileService.MAX_ZOOM) {
             return empty(request, 204, "No Content")
         }
-        val future = service.tileFuture(tile)
+        val future = try {
+            service.tileFuture(tile)
+        } catch (e: Exception) {
+            return empty(request, 500, "Internal Server Error")
+        }
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
         while (true) {
             if (chain.call().isCanceled()) throw IOException("Canceled")

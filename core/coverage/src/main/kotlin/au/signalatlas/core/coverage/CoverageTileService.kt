@@ -64,7 +64,7 @@ class CoverageTileService internal constructor(
     /** Null = coverage off. */
     val selection: MutableStateFlow<CoverageSelection?> = MutableStateFlow(null)
 
-    /** [prepared] is null in the marker left under a level whose batch exceeded the engine's carrier cap. */
+    /** [prepared] is null when the batch exceeded the engine's carrier cap (it is then never cached). */
     private class Region(val prepared: PreparedRegion?, val batch: CarrierBatch)
 
     /**
@@ -76,6 +76,18 @@ class CoverageTileService internal constructor(
     )
 
     private val inflight = HashMap<TileKey, CompletableFuture<RenderedTile>>()
+    /** Active renders' tokens, so renders whose key went stale can be cancelled. */
+    private val active = java.util.concurrent.ConcurrentHashMap<TileKey, CancelToken>()
+
+    /**
+     * Region keys whose batch exceeded the engine's carrier cap (ruling JJ): the next level is used directly, without
+     * repeating the oversized query. Small, bounded, and separate from the [regions] LRU (which holds only real
+     * prepared regions). Guarded by `synchronized(regions)`.
+     */
+    private val overflowed = object : LinkedHashMap<RegionKey, Boolean>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RegionKey, Boolean>) = size > MAX_OVERFLOW_HINTS
+    }
+
     private val regions = object : LinkedHashMap<RegionKey, CompletableFuture<Region>>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RegionKey, CompletableFuture<Region>>) =
             size > MAX_REGIONS
@@ -105,6 +117,7 @@ class CoverageTileService internal constructor(
 
     /** Blocking-friendly form of [tilePng], used by the interceptor. */
     internal fun tileFuture(tile: TileUrl): CompletableFuture<ByteArray> {
+        cancelStale()
         val sel = selection.value ?: return failed(CoverageOffException())
         val stamp = towers.stamp()
         if (stamp == null || tile.selectionId != sel.cacheId() || tile.towerStamp != stamp ||
@@ -117,7 +130,15 @@ class CoverageTileService internal constructor(
     }
 
     /** Tiles the viewport needs; other queued or running renders are cancelled. */
-    fun setVisible(tiles: Set<Triple<Int, Int, Int>>) = pool.setVisible(tiles)
+    fun setVisible(tiles: Set<Triple<Int, Int, Int>>) {
+        cancelStale()
+        pool.setVisible(tiles)
+    }
+
+    /** Cancels running renders whose selection or data version is no longer current, so dead keys are never written. */
+    private fun cancelStale() {
+        for ((key, token) in active) if (!isCurrent(key)) token.cancel()
+    }
 
     /**
      * The sample at the point from the highest-zoom tile already in the memory cache for the current selection and
@@ -138,7 +159,7 @@ class CoverageTileService internal constructor(
             return CoverageSample(
                 rsrpDbm = if (covered) rsrpCode / 2f - 140f else null,
                 sinrDb = if (covered) (tile.sinr[i].toInt() and 0xFF) / 4f - 20f else null,
-                probability = (tile.prob[i].toInt() and 0xFF) / 255f,
+                probability = if (covered) (tile.prob[i].toInt() and 0xFF) / 255f else null,
                 best = if (covered) bestServer(key, tile, i, lat, lon) else null,
             )
         }
@@ -186,10 +207,14 @@ class CoverageTileService internal constructor(
                 future.completeExceptionally(TileCancelledException())
                 return
             }
-            val tile = cache.getDisk(key) ?: render(key, sel, cancel)?.also { cache.put(key, it) }
+            active[key] = cancel
+            val tile = cache.getDisk(key)
+                ?: render(key, sel, cancel)?.takeIf { !cancel.isCancelled && isCurrent(key) }?.also { cache.put(key, it) }
             if (tile == null) future.completeExceptionally(TileCancelledException()) else future.complete(tile)
         } catch (t: Throwable) {
             future.completeExceptionally(t)
+        } finally {
+            active.remove(key, cancel)
         }
     }
 
@@ -221,20 +246,29 @@ class CoverageTileService internal constructor(
 
     /** The prepared region for [key]'s tile at the first fallback level whose batch fits the engine. */
     private fun region(key: TileKey, sel: CoverageSelection): Region {
+        var reuse: CarrierBatch? = null
         for (level in 0 until MAX_LEVEL) {
-            val r = regionAt(regionKey(key, level), sel, key)
+            val rk = regionKey(key, level)
+            if (synchronized(regions) { rk in overflowed }) continue
+            val r = regionAt(rk, sel, null)
             if (r.prepared != null) return r
+            if (level == MAX_LEVEL - 1) reuse = r.batch // level 2 works on the level-1 batch
         }
-        return regionAt(regionKey(key, MAX_LEVEL), sel, key)
+        return regionAt(regionKey(key, MAX_LEVEL), sel, reuse)
     }
 
-    /** Get-or-build of one cache entry: built by the first caller while others wait. */
-    private fun regionAt(rk: RegionKey, sel: CoverageSelection, key: TileKey): Region {
+    /**
+     * Get-or-build of one cache entry: built by the first caller while others wait. An over-cap result is returned
+     * (carrying its batch) but not cached; its key goes to [overflowed] instead.
+     */
+    private fun regionAt(rk: RegionKey, sel: CoverageSelection, reuse: CarrierBatch?): Region {
         val mine = CompletableFuture<Region>()
         val existing = synchronized(regions) { regions[rk] ?: run { regions[rk] = mine; null } }
         if (existing == null) {
             try {
-                mine.complete(buildRegion(rk, sel, key))
+                val built = buildRegion(rk, sel, reuse)
+                if (built.prepared == null) synchronized(regions) { regions.remove(rk, mine); overflowed[rk] = true }
+                mine.complete(built)
             } catch (t: Throwable) {
                 synchronized(regions) { regions.remove(rk, mine) }
                 mine.completeExceptionally(t)
@@ -248,21 +282,21 @@ class CoverageTileService internal constructor(
     }
 
     /**
-     * Ruling JJ. Level 0 queries the z8 tile + 80 km, level 1 the z10 tile + 80 km; a batch over the engine's cap
-     * leaves a marker (no prepared carriers) so the next level is tried. Level 2 culls the level-1 batch to
-     * carriers whose range reaches the z10 tile and, if still over the cap, keeps the nearest ones, with a warning.
+     * Ruling JJ. Level 0 queries the z8 tile + 80 km, level 1 the z10 tile + 80 km; a batch over the engine's cap is
+     * reported as unprepared so the next level is tried. Level 2 culls the level-1 batch (passed in as [reuse], or
+     * queried again if it is not at hand) to carriers whose range reaches the z10 tile and, if still over the cap,
+     * keeps the nearest ones, with a warning.
      */
-    private fun buildRegion(rk: RegionKey, sel: CoverageSelection, key: TileKey): Region {
+    private fun buildRegion(rk: RegionKey, sel: CoverageSelection, reuse: CarrierBatch?): Region {
         val area = TileMath.bounds(rk.zf, rk.rx, rk.ry)
-        val bounds = TileMath.expand(area, REGION_MARGIN_M)
-        var batch = towers.withTowers { t ->
+        var batch = reuse ?: towers.withTowers { t ->
             if (t.stamp != rk.stamp) throw StaleTileException()
-            t.carriersIn(bounds, setOf(sel.network), sel.techs, sel.bands)
+            t.carriersIn(TileMath.expand(area, REGION_MARGIN_M), setOf(sel.network), sel.techs, sel.bands)
         } ?: throw StaleTileException()
         val patternStore = patterns.value
         if ((patternStore?.etag ?: "none") != rk.etag) throw StaleTileException()
         if (rk.level < MAX_LEVEL) {
-            if (batch.size > MAX_CARRIERS) return Region(null, batch.empty())
+            if (batch.size > MAX_CARRIERS) return Region(null, batch)
         } else if (batch.size > MAX_CARRIERS) {
             val before = batch.size
             batch = batch.subset(CarrierCulling.reaching(batch, area))
@@ -284,7 +318,8 @@ class CoverageTileService internal constructor(
         const val HOST = "coverage.signalatlas.invalid"
         const val MIN_ZOOM = 8
         const val MAX_ZOOM = 16
-        private const val MAX_REGIONS = 8
+        private const val MAX_REGIONS = 16
+        private const val MAX_OVERFLOW_HINTS = 512
         private const val MAX_CARRIERS = 65535 // PreparedCarriers.MAX_CARRIERS
         private const val MAX_LEVEL = 2
         private const val FALLBACK_ZOOM = 10

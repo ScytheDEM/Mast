@@ -101,9 +101,9 @@ class TileCache(
     private fun writeDisk(key: TileKey, tile: RenderedTile) {
         val name = fileName(key)
         val bytes = encode(tile)
+        val tmp = File(dir, name + TMP_SUFFIX)
         try {
             dir.mkdirs()
-            val tmp = File(dir, name + TMP_SUFFIX)
             tmp.writeBytes(bytes)
             val target = File(dir, name)
             if (!tmp.renameTo(target)) {
@@ -116,7 +116,8 @@ class TileCache(
                 trim(idx)
             }
         } catch (e: IOException) {
-            // Disk full or unwritable: the tile just stays memory-only.
+            // Disk full or unwritable: the tile just stays memory-only; don't leave a partial file behind.
+            tmp.delete()
         }
     }
 

@@ -177,13 +177,13 @@ class CoverageTileServiceTest {
         assertThat(q.east).isGreaterThan(region.east)
     }
 
-    @Test fun onlyTheEightMostRecentRegionsStayPrepared() {
+    @Test fun onlyTheSixteenMostRecentRegionsStayPrepared() {
         val r = rig()
-        for (i in 0 until 9) r.tile(8, 100 + i, 100).await()
-        assertThat(r.renderer.prepares.get()).isEqualTo(9)
-        // The oldest region (x=100) was evicted by the ninth, so a new tile there prepares again.
+        for (i in 0 until 17) r.tile(8, 100 + i, 100).await()
+        assertThat(r.renderer.prepares.get()).isEqualTo(17)
+        // The oldest region (x=100) was evicted by the seventeenth, so a new tile there prepares again.
         r.tile(9, 200, 200).await() // region (100,100) again
-        assertThat(r.renderer.prepares.get()).isEqualTo(10)
+        assertThat(r.renderer.prepares.get()).isEqualTo(18)
     }
 
     @Test fun valueAtDecodesTheHighestZoomCachedTileAndNamesTheBestServer() {
@@ -220,6 +220,7 @@ class CoverageTileServiceTest {
         val s = r.service.valueAt(-33.87, 151.21)!!
         assertThat(s.rsrpDbm).isNull()
         assertThat(s.sinrDb).isNull()
+        assertThat(s.probability).isNull()
         assertThat(s.best).isNull()
         r.towers.stampValue = "stamp2"
         assertThat(r.service.valueAt(-33.87, 151.21)).isNull()
@@ -267,11 +268,51 @@ class CoverageTileServiceTest {
         val at = TileMath.locate(-33.87, 151.21, 10)!!
         r.tile(10, at.x, at.y).await()
         assertThat(r.service.valueAt(-33.87, 151.21)!!.best).isNotNull()
-        for (i in 0 until 9) r.tile(8, 100 + i, 100).await() // pushes the region out of the 8-region LRU
+        for (i in 0 until 17) r.tile(8, 100 + i, 100).await() // pushes the region out of the region LRU
         val s = r.service.valueAt(-33.87, 151.21)!!
         assertThat(s.rsrpDbm).isEqualTo(-90f)
         assertThat(s.sinrDb).isEqualTo(0f)
         assertThat(s.probability).isNotNull()
         assertThat(s.best).isNull()
+    }
+
+    /** Requests every z11 child of the 2x2 z10 tiles around Sydney, twice; returns the 4 z10 tiles. */
+    private fun denseViewport(r: Rig) {
+        val at = TileMath.locate(-33.87, 151.21, 10)!!
+        // The 2x2 block must sit inside one z8 tile.
+        val x0 = at.x and 1.inv(); val y0 = at.y and 1.inv()
+        repeat(2) {
+            for (dx in 0..1) for (dy in 0..1) for (cx in 0..1) for (cy in 0..1) {
+                r.tile(11, (x0 + dx) * 2 + cx, (y0 + dy) * 2 + cy).await()
+            }
+        }
+    }
+
+    @Test fun aDenseViewportPreparesEachZ10RegionOnceAndSkipsTheOversizedQuery() {
+        // z8 + 80 km is over the cap; each z10 + 80 km fits.
+        val r = rig(towers = FakeTowers().apply { batchFor = { if (spanDeg(it) > 2.4) bigBatch(70_000) else bigBatch(1000) } })
+        denseViewport(r)
+        assertThat(r.renderer.prepares.get()).isEqualTo(4)
+        assertThat(r.towers.queries).hasSize(5) // one z8 attempt, then one per z10 tile
+    }
+
+    @Test fun levelTwoReusesTheLevelOneBatchInsteadOfQueryingAgain() {
+        val r = rig(towers = FakeTowers().apply { batchFor = { bigBatch(70_000, farEvery = 2) } })
+        denseViewport(r)
+        assertThat(r.renderer.prepares.get()).isEqualTo(4)
+        assertThat(r.towers.queries).hasSize(5) // z8, then one per z10 tile (not two)
+    }
+
+    @Test fun aRenderWhoseKeyWentStaleIsCancelledAndNeverCached() {
+        val r = rig()
+        r.renderer.hold = true
+        val old = r.tile(10, 900, 600)
+        waitUntil { r.renderer.renders.size == 1 }
+        r.towers.stampValue = "stamp2"
+        r.renderer.hold = false
+        r.tile(10, 900, 600, stamp = "stamp2").await() // the new request cancels the dead render
+        assertThat(r.renderer.renders.first().cancel.isCancelled).isTrue()
+        assertThat(failure(old)).isInstanceOf(TileCancelledException::class.java)
+        assertThat(r.cache.getMemory(TileKey(10, 900, 600, r.selection.cacheId(), "stamp1", "none"))).isNull()
     }
 }
