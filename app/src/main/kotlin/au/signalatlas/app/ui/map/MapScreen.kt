@@ -27,8 +27,6 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -251,7 +249,7 @@ fun MapScreen(
                 camera = camera,
                 onSiteClick = { vm.selectSite(it) },
                 onCameraIdle = { },
-                coverageUrlTemplate = state.coverage.urlTemplate,
+                coverageUrlTemplate = state.coverage.urlTemplate.takeIf { state.coverage.on },
                 coverageView = state.coverage.view,
                 onVisibleTiles = vm::onVisibleTiles,
                 onZoom = vm::onZoom,
@@ -486,13 +484,18 @@ private fun MapControls(
                     UpdateChip(state.update, onClick = onOpenUpdates, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
                 AnimatedVisibility(state.coverage.needsZoom(state.zoom), enter = fadeIn(), exit = fadeOut()) {
-                    AssistChip(
-                        onClick = { },
-                        label = { Text(stringResource(R.string.coverage_zoom_in)) },
-                        colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-                        border = null,
+                    // A label, not a chip: nothing to press (and nothing for TalkBack to offer).
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        shape = MaterialTheme.shapes.small,
                         modifier = Modifier.padding(start = 16.dp, top = 4.dp),
-                    )
+                    ) {
+                        Text(
+                            stringResource(R.string.coverage_zoom_in),
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
                 }
                 state.coverage.readout?.let {
                     PointReadout(it.result, Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))

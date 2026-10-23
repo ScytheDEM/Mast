@@ -69,6 +69,8 @@ class MapViewModel(
     private var networkChosen = false
 
     init {
+        // The service outlives this view model; a fresh one starts with coverage off, so the overlay must be too.
+        coverage.selection = null
         combine(data.started, data.changes) { started, snap -> started to snap }
             .onEach { (started, snap) ->
                 _state.update {
@@ -149,9 +151,13 @@ class MapViewModel(
     }
 
     fun setFilter(f: TowerFilter) {
+        val bandsChanged = filter.value.bands != f.bands
         filter.value = f
         _state.update { it.copy(filter = f) }
-        if (_state.value.coverage.on) applyCoverage() // the band filter narrows the overlay too
+        if (_state.value.coverage.on && bandsChanged) { // the band filter narrows the overlay too
+            dismissReadout()
+            applyCoverage()
+        }
     }
 
     /**
@@ -188,7 +194,8 @@ class MapViewModel(
      * is there or [READOUT_TIMEOUT_MS] has passed.
      */
     fun longPress(lat: Double, lon: Double) {
-        if (!_state.value.coverage.on) return
+        val c = _state.value.coverage
+        if (!c.on || c.needsZoom(_state.value.zoom)) return // the zoom chip already says why there is nothing
         readoutJob?.cancel()
         setReadout(Readout(lat, lon, ReadoutResult.Calculating))
         readoutJob = viewModelScope.launch {

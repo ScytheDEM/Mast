@@ -253,4 +253,34 @@ class CoverageViewModelTest {
         assertThat(r.lat).isEqualTo(-36.0)
         assertThat(r.result).isInstanceOf(ReadoutResult.Predicted::class.java)
     }
+
+    @Test fun aFreshViewModelStartsOffAndClearsASelectionLeftByAnEarlierOne() = runTest(dispatcher) {
+        coverage.selection = CoverageSelection(Network.OPTUS, setOf(Tech.NR), null, true, View.PROBABILITY)
+        val vm = vm()
+        assertThat(vm.state.value.coverage.on).isFalse()
+        assertThat(coverage.selection).isNull()
+        assertThat(vm.state.value.coverage.urlTemplate).isNull()
+    }
+
+    @Test fun aLongPressBelowZ8DoesNotWait() = runTest(dispatcher) {
+        val vm = vm()
+        vm.setCoverageOn(true)
+        vm.onZoom(6.0)
+        vm.longPress(-35.28, 149.13)
+        runCurrent()
+        assertThat(vm.state.value.coverage.readout).isNull()
+        assertThat(coverage.valueAtCalls).isEqualTo(0)
+    }
+
+    @Test fun aBandFilterChangeDismissesTheReadout() = runTest(dispatcher) {
+        val vm = vm()
+        vm.setCoverageOn(true)
+        coverage.sample = sample
+        vm.longPress(-35.28, 149.13)
+        runCurrent()
+        vm.setFilter(TowerFilter(networks = setOf(Network.OPTUS))) // not a band change: keeps it
+        assertThat(vm.state.value.coverage.readout).isNotNull()
+        vm.setFilter(TowerFilter(bands = setOf("n78")))
+        assertThat(vm.state.value.coverage.readout).isNull()
+    }
 }
