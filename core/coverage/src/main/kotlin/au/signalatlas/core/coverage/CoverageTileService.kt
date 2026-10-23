@@ -7,6 +7,7 @@ import au.signalatlas.core.model.Network
 import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.engine.RenderedTile
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.future.await
@@ -48,6 +49,7 @@ class CoverageTileService internal constructor(
     private val renderer: TileRenderer,
     private val cache: TileCache,
     private val pool: RenderPool,
+    private val warn: (String) -> Unit = { Log.w(TAG, it) },
 ) {
     constructor(
         repo: TowerRepository, patterns: StateFlow<PatternStore?>, engine: CoverageEngine, cache: TileCache,
@@ -62,8 +64,16 @@ class CoverageTileService internal constructor(
     /** Null = coverage off. */
     val selection: MutableStateFlow<CoverageSelection?> = MutableStateFlow(null)
 
-    private class Region(val prepared: PreparedRegion, val batch: CarrierBatch)
-    private data class RegionKey(val selectionId: String, val stamp: String, val etag: String, val rx: Int, val ry: Int)
+    /** [prepared] is null in the marker left under a level whose batch exceeded the engine's carrier cap. */
+    private class Region(val prepared: PreparedRegion?, val batch: CarrierBatch)
+
+    /**
+     * [level] is the fallback level used (ruling JJ): 0 = the z8 tile + 80 km, 1 = the z10 tile + 80 km,
+     * 2 = level 1 culled by range (and capped). [zf]/[rx]/[ry] address the tile the bounds come from.
+     */
+    private data class RegionKey(
+        val selectionId: String, val stamp: String, val etag: String, val level: Int, val zf: Int, val rx: Int, val ry: Int,
+    )
 
     private val inflight = HashMap<TileKey, CompletableFuture<RenderedTile>>()
     private val regions = object : LinkedHashMap<RegionKey, CompletableFuture<Region>>(16, 0.75f, true) {
@@ -137,9 +147,11 @@ class CoverageTileService internal constructor(
 
     private fun bestServer(key: TileKey, tile: RenderedTile, pixel: Int, lat: Double, lon: Double): BestServer? {
         val carrier = tile.bestCarrier(pixel).takeIf { it >= 0 } ?: return null
-        val region = synchronized(regions) { regions[regionKey(key)] }
-            ?.takeIf { it.isDone && !it.isCompletedExceptionally }?.getNow(null) ?: return null
-        val row = region.prepared.batchIndex(carrier)
+        val region = (0..MAX_LEVEL).firstNotNullOfOrNull { level ->
+            synchronized(regions) { regions[regionKey(key, level)] }
+                ?.takeIf { it.isDone && !it.isCompletedExceptionally }?.getNow(null)?.takeIf { it.prepared != null }
+        } ?: return null
+        val row = region.prepared!!.batchIndex(carrier)
         val b = region.batch
         return BestServer(
             Network.entries[b.network[row].toInt()],
@@ -193,20 +205,36 @@ class CoverageTileService internal constructor(
                 t.siteCountWithin(TileMath.centreLat(key.z, key.y), TileMath.centreLon(key.z, key.x), AreaClassifier.RADIUS_M),
             )
         } ?: throw StaleTileException()
-        return renderer.render(region.prepared, key.z, key.x, key.y, area, THRESHOLD_DBM, cancel)
+        return renderer.render(region.prepared!!, key.z, key.x, key.y, area, THRESHOLD_DBM, cancel)
     }
 
-    private fun regionKey(k: TileKey) =
-        RegionKey(k.selectionId, k.towerStamp, k.patternsEtag, k.x shr (k.z - MIN_ZOOM), k.y shr (k.z - MIN_ZOOM))
+    private fun regionKey(k: TileKey, level: Int): RegionKey {
+        if (level == 0) {
+            val d = k.z - MIN_ZOOM
+            return RegionKey(k.selectionId, k.towerStamp, k.patternsEtag, 0, MIN_ZOOM, k.x shr d, k.y shr d)
+        }
+        // z10 tile containing the tile; tiles above z10 (z8, z9) are their own area.
+        val zf = if (k.z >= FALLBACK_ZOOM) FALLBACK_ZOOM else k.z
+        val d = k.z - zf
+        return RegionKey(k.selectionId, k.towerStamp, k.patternsEtag, level, zf, k.x shr d, k.y shr d)
+    }
 
-    /** The prepared region for [key]'s tile, built by the first caller while others wait. */
+    /** The prepared region for [key]'s tile at the first fallback level whose batch fits the engine. */
     private fun region(key: TileKey, sel: CoverageSelection): Region {
-        val rk = regionKey(key)
+        for (level in 0 until MAX_LEVEL) {
+            val r = regionAt(regionKey(key, level), sel, key)
+            if (r.prepared != null) return r
+        }
+        return regionAt(regionKey(key, MAX_LEVEL), sel, key)
+    }
+
+    /** Get-or-build of one cache entry: built by the first caller while others wait. */
+    private fun regionAt(rk: RegionKey, sel: CoverageSelection, key: TileKey): Region {
         val mine = CompletableFuture<Region>()
         val existing = synchronized(regions) { regions[rk] ?: run { regions[rk] = mine; null } }
         if (existing == null) {
             try {
-                mine.complete(buildRegion(rk, sel))
+                mine.complete(buildRegion(rk, sel, key))
             } catch (t: Throwable) {
                 synchronized(regions) { regions.remove(rk, mine) }
                 mine.completeExceptionally(t)
@@ -219,14 +247,32 @@ class CoverageTileService internal constructor(
         }
     }
 
-    private fun buildRegion(rk: RegionKey, sel: CoverageSelection): Region {
-        val bounds = TileMath.expand(TileMath.bounds(MIN_ZOOM, rk.rx, rk.ry), REGION_MARGIN_M)
-        val batch = towers.withTowers { t ->
+    /**
+     * Ruling JJ. Level 0 queries the z8 tile + 80 km, level 1 the z10 tile + 80 km; a batch over the engine's cap
+     * leaves a marker (no prepared carriers) so the next level is tried. Level 2 culls the level-1 batch to
+     * carriers whose range reaches the z10 tile and, if still over the cap, keeps the nearest ones, with a warning.
+     */
+    private fun buildRegion(rk: RegionKey, sel: CoverageSelection, key: TileKey): Region {
+        val area = TileMath.bounds(rk.zf, rk.rx, rk.ry)
+        val bounds = TileMath.expand(area, REGION_MARGIN_M)
+        var batch = towers.withTowers { t ->
             if (t.stamp != rk.stamp) throw StaleTileException()
             t.carriersIn(bounds, setOf(sel.network), sel.techs, sel.bands)
         } ?: throw StaleTileException()
         val patternStore = patterns.value
         if ((patternStore?.etag ?: "none") != rk.etag) throw StaleTileException()
+        if (rk.level < MAX_LEVEL) {
+            if (batch.size > MAX_CARRIERS) return Region(null, batch.empty())
+        } else if (batch.size > MAX_CARRIERS) {
+            val before = batch.size
+            batch = batch.subset(CarrierCulling.reaching(batch, area))
+            if (batch.size > MAX_CARRIERS) {
+                batch = batch.subset(CarrierCulling.nearest(batch, TileMath.centreLat(rk.zf, rk.ry), TileMath.centreLon(rk.zf, rk.rx), MAX_CARRIERS))
+                warn("coverage region ${rk.zf}/${rk.rx}/${rk.ry}: $before carriers, kept the $MAX_CARRIERS nearest the tile centre")
+            } else {
+                warn("coverage region ${rk.zf}/${rk.rx}/${rk.ry}: $before carriers, culled to ${batch.size} by range")
+            }
+        }
         return Region(renderer.prepare(batch, patternStore, sel.indoor), batch)
     }
 
@@ -239,6 +285,10 @@ class CoverageTileService internal constructor(
         const val MIN_ZOOM = 8
         const val MAX_ZOOM = 16
         private const val MAX_REGIONS = 8
+        private const val MAX_CARRIERS = 65535 // PreparedCarriers.MAX_CARRIERS
+        private const val MAX_LEVEL = 2
+        private const val FALLBACK_ZOOM = 10
+        private const val TAG = "CoverageTileService"
         private const val REGION_MARGIN_M = 80_000.0
         private const val THRESHOLD_DBM = -118f
     }

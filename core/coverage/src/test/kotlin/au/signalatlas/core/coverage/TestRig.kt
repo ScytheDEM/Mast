@@ -33,7 +33,20 @@ fun fakeBatch(): CarrierBatch = CarrierBatch(
     sectorId = intArrayOf(1, 2), sddId = longArrayOf(11, 12), bandIdx = byteArrayOf(0, 1), bandLabels = listOf("n78", "B28"),
 )
 
+/** [n] carriers around (-33.87, 151.21); every [farEvery]th (0 = none) is ~550 km north. Ids make rows distinguishable. */
+fun bigBatch(n: Int, farEvery: Int = 0): CarrierBatch {
+    val lat = DoubleArray(n) { if (farEvery > 0 && it % farEvery == 0) -29.0 else -33.87 + (it % 100) * 1e-4 }
+    return CarrierBatch(
+        n, lat, DoubleArray(n) { 151.21 + (it % 97) * 1e-4 }, FloatArray(n) { 30f }, FloatArray(n) { 0f }, FloatArray(n) { 0f },
+        FloatArray(n) { 60f }, FloatArray(n) { 700f }, IntArray(n) { 10_000_000 }, ByteArray(n), ByteArray(n),
+        FloatArray(n) { 65f }, FloatArray(n) { 25f }, FloatArray(n) { 15f }, IntArray(n) { it }, LongArray(n) { it.toLong() },
+        ByteArray(n), listOf("B28"),
+    )
+}
+
 internal class FakeTowers(var stampValue: String? = "stamp1", var sites: Int = 0) : TowerData {
+    /** Overrides the batch returned for a query. */
+    var batchFor: (GeoBounds) -> CarrierBatch = { fakeBatch() }
     val queries = CopyOnWriteArrayList<GeoBounds>()
     override fun stamp() = stampValue
     override fun <T> withTowers(block: (Towers) -> T): T? {
@@ -42,7 +55,7 @@ internal class FakeTowers(var stampValue: String? = "stamp1", var sites: Int = 0
             override val stamp = s
             override fun carriersIn(b: GeoBounds, networks: Set<Network>, techs: Set<Tech>, bands: Set<String>?): CarrierBatch {
                 queries += b
-                return fakeBatch()
+                return batchFor(b)
             }
             override fun siteCountWithin(lat: Double, lon: Double, radiusM: Double) = sites
         })
@@ -53,6 +66,7 @@ class FakeRenderer : TileRenderer {
     class Rendered(val z: Int, val x: Int, val y: Int, val area: AreaClass, val cancel: CancelToken)
 
     val prepares = AtomicInteger()
+    val preparedSizes = CopyOnWriteArrayList<Int>()
     val renders = CopyOnWriteArrayList<Rendered>()
     private val concurrent = AtomicInteger()
     @Volatile var maxConcurrent = 0
@@ -63,6 +77,8 @@ class FakeRenderer : TileRenderer {
 
     override fun prepare(batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean): PreparedRegion {
         prepares.incrementAndGet()
+        preparedSizes += batch.size
+        require(batch.size <= 65535) { "too many carriers" }
         // Carrier i of the prepared region = batch row (size - 1 - i): proves batchIndex is used.
         return object : PreparedRegion { override fun batchIndex(i: Int) = batch.size - 1 - i }
     }
@@ -92,10 +108,11 @@ internal class Rig(
     memoryTiles: Int = 96,
     val towers: FakeTowers = FakeTowers(),
     val renderer: FakeRenderer = FakeRenderer(),
+    val warnings: MutableList<String> = CopyOnWriteArrayList(),
 ) {
     val cache = TileCache(dir, memoryTiles = memoryTiles)
     val pool = RenderPool({ threads })
-    val service = CoverageTileService(towers, MutableStateFlow(null), renderer, cache, pool)
+    val service = CoverageTileService(towers, MutableStateFlow(null), renderer, cache, pool, warnings::add)
 
     val selection = CoverageSelection(Network.TELSTRA, setOf(Tech.LTE, Tech.NR), null, false, CoverageSelection.View.RSRP)
 

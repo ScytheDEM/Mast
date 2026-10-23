@@ -18,7 +18,8 @@ class CoverageTileServiceTest {
     @get:Rule val tmp = TemporaryFolder()
     private var rig: Rig? = null
 
-    private fun rig(threads: Int = 2, memoryTiles: Int = 96) = Rig(tmp.newFolder(), threads, memoryTiles).also { rig = it }
+    private fun rig(threads: Int = 2, memoryTiles: Int = 96, towers: FakeTowers = FakeTowers()) =
+        Rig(tmp.newFolder(), threads, memoryTiles, towers).also { rig = it }
 
     @After fun tearDown() { rig?.close() }
 
@@ -222,5 +223,55 @@ class CoverageTileServiceTest {
         assertThat(s.best).isNull()
         r.towers.stampValue = "stamp2"
         assertThat(r.service.valueAt(-33.87, 151.21)).isNull()
+    }
+
+    private fun spanDeg(b: au.signalatlas.core.model.GeoBounds) = b.north - b.south
+
+    @Test fun anOversizedRegionFallsBackToTheZ10TileAndIsPrepared() {
+        // Only the z8 + 80 km query is too big; the z10 + 80 km query fits.
+        val towers = FakeTowers().apply { batchFor = { if (spanDeg(it) > 2.4) bigBatch(70_000) else bigBatch(1000) } }
+        val r = rig(towers = towers)
+        r.tile(10, 900, 600).await()
+        assertThat(r.renderer.preparedSizes).containsExactly(1000)
+        assertThat(r.towers.queries).hasSize(2) // the z8 attempt, then the z10 one
+        assertThat(r.warnings).isEmpty()
+        // Another tile in the same z10 tile reuses the fallback; the level-0 overflow is remembered too.
+        r.tile(11, 1800, 1200).await()
+        assertThat(r.towers.queries).hasSize(2)
+        assertThat(r.renderer.prepares.get()).isEqualTo(1)
+        // A different z10 tile in the same z8 region needs its own fallback query (but not another z8 one).
+        r.tile(10, 901, 600).await()
+        assertThat(r.towers.queries).hasSize(3)
+    }
+
+    @Test fun stillOversizedBatchesAreCulledByRangeAndLogged() {
+        // Every second carrier is ~550 km away and cannot reach the tile.
+        val r = rig(towers = FakeTowers().apply { batchFor = { bigBatch(70_000, farEvery = 2) } })
+        val at = TileMath.locate(-33.87, 151.21, 10)!!
+        r.tile(10, at.x, at.y).await()
+        assertThat(r.renderer.preparedSizes.single()).isEqualTo(35_000)
+        assertThat(r.warnings.single()).contains("culled to 35000")
+    }
+
+    @Test fun ifCullingIsNotEnoughTheNearest65535AreKeptAndLogged() {
+        val r = rig(towers = FakeTowers().apply { batchFor = { bigBatch(70_000) } })
+        val at = TileMath.locate(-33.87, 151.21, 10)!!
+        r.tile(10, at.x, at.y).await()
+        assertThat(r.renderer.preparedSizes.single()).isEqualTo(65_535)
+        assertThat(r.warnings.single()).contains("nearest")
+        assertThat(r.cache.getMemory(TileKey(10, at.x, at.y, r.selection.cacheId(), "stamp1", "none"))).isNotNull()
+    }
+
+    @Test fun valueAtKeepsTheCodesWhenTheRegionIsGone() {
+        val r = rig()
+        val at = TileMath.locate(-33.87, 151.21, 10)!!
+        r.tile(10, at.x, at.y).await()
+        assertThat(r.service.valueAt(-33.87, 151.21)!!.best).isNotNull()
+        for (i in 0 until 9) r.tile(8, 100 + i, 100).await() // pushes the region out of the 8-region LRU
+        val s = r.service.valueAt(-33.87, 151.21)!!
+        assertThat(s.rsrpDbm).isEqualTo(-90f)
+        assertThat(s.sinrDb).isEqualTo(0f)
+        assertThat(s.probability).isNotNull()
+        assertThat(s.best).isNull()
     }
 }
