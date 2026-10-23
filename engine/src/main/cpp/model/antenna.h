@@ -50,7 +50,10 @@ struct PreparedAntenna {
         } else if (omni) {
             aH = 0.0;
         } else {
-            double dphi = std::fmod(bearing - azimuth + 180.0, 360.0);
+            // fmod(t, 360) without the libm call for the usual |t| < 720 (the exact result is representable, so
+            // the subtraction is exact and identical to fmod).
+            const double t = bearing - azimuth + 180.0;
+            double dphi = (t >= 0.0 && t < 360.0) ? t : (t >= 360.0 && t < 720.0) ? t - 360.0 : std::fmod(t, 360.0);
             if (dphi < 0.0) dphi += 360.0;
             dphi -= 180.0;
             const double q = dphi / hbw;

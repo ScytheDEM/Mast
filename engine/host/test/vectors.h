@@ -57,16 +57,55 @@ inline double num(const std::string& s) {
     return std::strtod(s.c_str(), nullptr);
 }
 
-// The numbers of `"key":[ ... ]` in a tile JSON (null -> NaN).
+// Position just after `"key"` + optional spaces + ':' + optional spaces, or npos. Vectors are single-line JSON, so
+// the extractors below never depend on line layout. Keys are matched with their quotes, so a string value equal to
+// the key cannot be mistaken for it only when it is followed by ':' (values never are).
+inline size_t jsonValueAt(const std::string& json, const std::string& key) {
+    const std::string needle = "\"" + key + "\"";
+    size_t at = 0;
+    while ((at = json.find(needle, at)) != std::string::npos) {
+        size_t q = at + needle.size();
+        while (q < json.size() && (json[q] == ' ' || json[q] == '\t' || json[q] == '\n' || json[q] == '\r')) ++q;
+        if (q < json.size() && json[q] == ':') {
+            ++q;
+            while (q < json.size() && (json[q] == ' ' || json[q] == '\t' || json[q] == '\n' || json[q] == '\r')) ++q;
+            return q;
+        }
+        at += needle.size();
+    }
+    return std::string::npos;
+}
+
+// The numbers of `"key": [ ... ]` (null -> NaN); empty when the key is missing.
 inline std::vector<double> jsonArray(const std::string& json, const std::string& key) {
     std::vector<double> out;
-    const std::string needle = "\"" + key + "\":[";
-    const size_t at = json.find(needle);
-    if (at == std::string::npos) return out;
-    const size_t start = at + needle.size();
-    const size_t end = json.find(']', start);
-    for (const std::string& tok : split(json.substr(start, end - start), ',')) out.push_back(num(tok));
+    size_t q = jsonValueAt(json, key);
+    if (q == std::string::npos || q >= json.size() || json[q] != '[') return out;
+    ++q;
+    const size_t end = json.find(']', q);
+    if (end == std::string::npos) return out;
+    for (const std::string& tok : split(json.substr(q, end - q), ',')) {
+        size_t a = tok.find_first_not_of(" \t\r\n");
+        out.push_back(a == std::string::npos ? std::numeric_limits<double>::quiet_NaN() : num(tok.substr(a)));
+    }
     return out;
+}
+
+// A scalar number (or true/false as 1/0); NaN when missing.
+inline double jsonNumber(const std::string& json, const std::string& key) {
+    const size_t q = jsonValueAt(json, key);
+    if (q == std::string::npos) return std::numeric_limits<double>::quiet_NaN();
+    if (json.compare(q, 4, "true") == 0) return 1.0;
+    if (json.compare(q, 5, "false") == 0) return 0.0;
+    return std::strtod(json.c_str() + q, nullptr);
+}
+
+// A string value without quotes; empty when missing.
+inline std::string jsonString(const std::string& json, const std::string& key) {
+    size_t q = jsonValueAt(json, key);
+    if (q == std::string::npos || q >= json.size() || json[q] != '"') return "";
+    const size_t end = json.find('"', q + 1);
+    return end == std::string::npos ? "" : json.substr(q + 1, end - q - 1);
 }
 
 }  // namespace sa_test
