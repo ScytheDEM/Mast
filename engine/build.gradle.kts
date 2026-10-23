@@ -11,6 +11,7 @@ android {
 
     defaultConfig {
         minSdk = 29
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // Same -Pabis switch as :app (phone-only builds drop x86_64).
             abiFilters += (findProperty("abis") as String?)?.split(",") ?: listOf("arm64-v8a", "x86_64")
@@ -32,6 +33,19 @@ android {
 
 kotlin {
     jvmToolchain(17)
+}
+
+dependencies {
+    // Kotlin side only: the C++ engine stays pure (it never sees these types).
+    implementation(project(":core:data"))
+    implementation(project(":core:model"))
+
+    testImplementation(libs.junit)
+    testImplementation(libs.truth)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.truth)
 }
 
 // Fast host (macOS) GoogleTest run of the shared engine sources.
