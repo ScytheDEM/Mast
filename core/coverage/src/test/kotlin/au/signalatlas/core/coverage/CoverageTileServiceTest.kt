@@ -32,11 +32,11 @@ class CoverageTileServiceTest {
         val r = rig()
         val id = r.selection.cacheId()
         assertThat(r.service.tileUrlTemplate()).isEqualTo(
-            "https://coverage.signalatlas.invalid/v1/$id/rsrp/stamp1/none/{z}/{x}/{y}.png",
+            "https://coverage.signalatlas.invalid/v1/$id/rsrp/stamp1/none/t0/{z}/{x}/{y}.png",
         )
         r.service.selection.value = r.selection.copy(view = CoverageSelection.View.PROBABILITY)
         assertThat(r.service.tileUrlTemplate()).isEqualTo(
-            "https://coverage.signalatlas.invalid/v1/$id/prob/stamp1/none/{z}/{x}/{y}.png",
+            "https://coverage.signalatlas.invalid/v1/$id/prob/stamp1/none/t0/{z}/{x}/{y}.png",
         )
         r.service.selection.value = null
         assertThat(r.service.tileUrlTemplate()).isNull()
@@ -66,7 +66,7 @@ class CoverageTileServiceTest {
             r.service.selection.value = r.selection.copy(network = n)
             val sel = r.service.selection.value!!
             r.towers.networkQueries.clear()
-            val url = "https://${CoverageTileService.HOST}/v1/${sel.cacheId()}/rsrp/stamp1/none/10/900/600.png"
+            val url = "https://${CoverageTileService.HOST}/v1/${sel.cacheId()}/rsrp/stamp1/none/t0/10/900/600.png"
             r.service.tileFuture(TileUrl.parse(url.toHttpUrl())!!).await()
             assertThat(r.towers.networkQueries.first()).containsExactly(n, jv)
         }

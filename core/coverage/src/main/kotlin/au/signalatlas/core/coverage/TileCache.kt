@@ -18,7 +18,9 @@ import java.util.zip.CRC32
  * a read that fails its magic, version, length or CRC check is a miss and deletes the file.
  *
  * File layout (little-endian): magic `"SATL"`, version int (both 8 bytes together), rsrp, sinr, prob (65536 bytes
- * each), best (65536 shorts), CRC32 of everything before it.
+ * each), best (65536 shorts), covered-pixel count and terrain-incomplete-pixel count (ints; the inputs of the
+ * [Accuracy] label, so a restored tile keeps it), CRC32 of everything before it. Version 1 files (no counts) are
+ * misses.
  */
 class TileCache(
     private val dir: File,
@@ -138,15 +140,15 @@ class TileCache(
     }
 
     internal companion object {
-        const val FILE_BYTES = 8 + 3 * RenderedTile.PIXELS + 2 * RenderedTile.PIXELS + 4
+        const val FILE_BYTES = 8 + 3 * RenderedTile.PIXELS + 2 * RenderedTile.PIXELS + 8 + 4
         private const val MAGIC = 0x4C544153 // "SATL" little-endian
-        private const val VERSION = 1
+        private const val VERSION = 2
         private const val FILE_SUFFIX = ".tile"
         private const val TMP_SUFFIX = ".tmp"
         private const val MAX_PENDING_WRITES = 64
 
         fun fileName(key: TileKey): String {
-            val id = "${key.z}/${key.x}/${key.y}/${key.selectionId}/${key.towerStamp}/${key.patternsEtag}/${key.engineVersion}"
+            val id = "${key.z}/${key.x}/${key.y}/${key.selectionId}/${key.towerStamp}/${key.patternsEtag}/${key.terrainVersion}/${key.engineVersion}"
             val digest = MessageDigest.getInstance("SHA-256").digest(id.toByteArray())
             return digest.take(16).joinToString("") { "%02x".format(it) } + FILE_SUFFIX
         }
@@ -156,6 +158,7 @@ class TileCache(
             buf.putInt(MAGIC).putInt(VERSION).put(t.rsrp).put(t.sinr).put(t.prob)
             buf.asShortBuffer().put(t.best)
             buf.position(buf.position() + 2 * RenderedTile.PIXELS)
+            buf.putInt(t.coveredPixels).putInt(t.terrainIncompletePixels)
             val crc = CRC32().apply { update(buf.array(), 0, FILE_BYTES - 4) }
             buf.putInt(crc.value.toInt())
             return buf.array()
@@ -173,7 +176,11 @@ class TileCache(
             val sinr = ByteArray(n).also { buf.get(it) }
             val prob = ByteArray(n).also { buf.get(it) }
             val best = ShortArray(n).also { buf.asShortBuffer().get(it) }
-            return RenderedTile(key.z, key.x, key.y, rsrp, sinr, prob, best)
+            buf.position(buf.position() + 2 * n)
+            val covered = buf.getInt()
+            val incomplete = buf.getInt()
+            if (covered < 0 || covered > n || incomplete < 0 || incomplete > covered) return null
+            return RenderedTile(key.z, key.x, key.y, rsrp, sinr, prob, best, covered, incomplete)
         }
     }
 }

@@ -8,11 +8,15 @@ import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.engine.RenderedTile
 import android.util.Log
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.future.await
 import java.net.URLEncoder
 import java.util.concurrent.CompletableFuture
+import java.lang.ref.WeakReference
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutionException
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
@@ -42,6 +46,11 @@ data class CoverageSample(
  * Requests for the same [TileKey] share one render. A render needs carriers prepared once per region (the z8 tile
  * containing the tile = 4x4 z10 tiles, expanded by 80 km) and data version; the 8 most recently used regions are
  * kept, with their [CarrierBatch] so [valueAt] can name the best server.
+ *
+ * With a [TerrainSupport] the service is terrain-aware (see [TerrainCoordinator]): [TileKey.terrainVersion] and the URL's
+ * terrain segment ([terrainEpoch]) change as elevation chunks and terrain tables arrive, tiles carry an [Accuracy]
+ * ([accuracyFor]), camera rests at z >= 10 auto-cache missing chunks on unmetered networks, and [increaseResolution]
+ * downloads them on request. Without it every tile is quick-model and the version is always 0.
  */
 class CoverageTileService internal constructor(
     private val towers: TowerData,
@@ -50,22 +59,26 @@ class CoverageTileService internal constructor(
     private val cache: TileCache,
     private val pool: RenderPool,
     private val warn: (String) -> Unit = { Log.w(TAG, it) },
+    terrainSupport: TerrainSupport? = null,
 ) {
     constructor(
         repo: TowerRepository, patterns: StateFlow<PatternStore?>, engine: CoverageEngine, cache: TileCache,
-        pool: RenderPool,
-    ) : this(RepositoryTowerData(repo), patterns, EngineTileRenderer(engine), cache, pool)
+        pool: RenderPool, terrain: TerrainSupport? = null,
+    ) : this(RepositoryTowerData(repo), patterns, EngineTileRenderer(engine), cache, pool, { Log.w(TAG, it) }, terrain)
 
     constructor(
         repo: TowerRepository, patterns: StateFlow<PatternStore?>, renderer: TileRenderer, cache: TileCache,
-        pool: RenderPool,
-    ) : this(RepositoryTowerData(repo), patterns, renderer, cache, pool)
+        pool: RenderPool, terrain: TerrainSupport? = null,
+    ) : this(RepositoryTowerData(repo), patterns, renderer, cache, pool, { Log.w(TAG, it) }, terrain)
 
     /** Null = coverage off. */
     val selection: MutableStateFlow<CoverageSelection?> = MutableStateFlow(null)
 
     /** [prepared] is null when the batch exceeded the engine's carrier cap (it is then never cached). */
-    private class Region(val prepared: PreparedRegion?, val batch: CarrierBatch)
+    private class Region(val key: RegionKey, val prepared: PreparedRegion?, val batch: CarrierBatch)
+
+    /** A region prepared with the terrain tables of one [TerrainSnapshot] version. */
+    private data class TerrainPrepKey(val region: RegionKey, val terrain: TerrainKey, val version: Long)
 
     /**
      * [level] is the fallback level used (ruling JJ): 0 = the z8 tile + 80 km, 1 = the z10 tile + 80 km,
@@ -93,7 +106,37 @@ class CoverageTileService internal constructor(
             size > MAX_REGIONS
     }
 
+    private val terrainPrepared = object : LinkedHashMap<TerrainPrepKey, CompletableFuture<PreparedRegion>>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TerrainPrepKey, CompletableFuture<PreparedRegion>>) =
+            size > MAX_TERRAIN_PREPARED
+    }
+
+    private class Tracker(val flow: WeakReference<MutableStateFlow<Accuracy>>, val tiles: Set<TileAddress>)
+    private val trackers = CopyOnWriteArrayList<Tracker>()
+
+    private val terrain: TerrainCoordinator? =
+        terrainSupport?.let { TerrainCoordinator(it, renderer, pool, ::onTerrainChanged, warn) }
+
+    /** Changes whenever terrain data of any region changes (chunks arrived, tables published); part of the tile URL. */
+    val terrainEpoch: StateFlow<Long> = terrain?.epoch ?: MutableStateFlow(0L)
+
     private fun patternsEtag(): String = patterns.value?.etag ?: "none"
+
+    private fun terrainSegment(): String = "t${terrainEpoch.value}"
+
+    /** The terrain version a tile of this selection and data has now (0 = quick only); [create] adds its region if new. */
+    private fun terrainVersion(
+        selectionId: String, stamp: String, etag: String, z: Int, x: Int, y: Int, create: Boolean = false, recheck: Boolean = false,
+    ): Long {
+        val tc = terrain ?: return 0L
+        val k = tc.keyFor(selectionId, stamp, etag, z, x, y)
+        return if (create) tc.versionOf(k, recheck) else tc.peekVersion(k)
+    }
+
+    private fun onTerrainChanged() {
+        cancelStale()
+        refreshAccuracy()
+    }
 
     /**
      * The URL template for the current selection and data versions, or null when coverage is off or no tower DB is
@@ -102,7 +145,7 @@ class CoverageTileService internal constructor(
     fun tileUrlTemplate(): String? {
         val sel = selection.value ?: return null
         val stamp = towers.stamp() ?: return null
-        return "https://$HOST/v1/${sel.cacheId()}/${sel.view.segment}/${encode(stamp)}/${encode(patternsEtag())}/{z}/{x}/{y}.png"
+        return "https://$HOST/v1/${sel.cacheId()}/${sel.view.segment}/${encode(stamp)}/${encode(patternsEtag())}/${terrainSegment()}/{z}/{x}/{y}.png"
     }
 
     /**
@@ -121,19 +164,75 @@ class CoverageTileService internal constructor(
         val sel = selection.value ?: return failed(CoverageOffException())
         val stamp = towers.stamp()
         if (stamp == null || tile.selectionId != sel.cacheId() || tile.towerStamp != stamp ||
-            tile.patternsEtag != patternsEtag()
+            tile.patternsEtag != patternsEtag() || tile.terrainSegment != terrainSegment()
         ) {
             return failed(StaleTileException())
         }
-        val key = TileKey(tile.z, tile.x, tile.y, tile.selectionId, stamp, tile.patternsEtag)
+        val version = terrainVersion(tile.selectionId, stamp, tile.patternsEtag, tile.z, tile.x, tile.y, create = true, recheck = true)
+        val key = TileKey(tile.z, tile.x, tile.y, tile.selectionId, stamp, tile.patternsEtag, version)
         return rawTile(key, sel).thenApply { TerrariumEncoder.encode(it.rsrp, tile.view, it.prob) }
+    }
+
+    /** The key a tile of the current selection and data has now (creating its terrain region); null when coverage is off. */
+    internal fun currentKey(z: Int, x: Int, y: Int): TileKey? {
+        val sel = selection.value ?: return null
+        val stamp = towers.stamp() ?: return null
+        val etag = patternsEtag()
+        return TileKey(z, x, y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, x, y, create = true))
     }
 
     /** Tiles the viewport needs; other queued or running renders are cancelled. */
     fun setVisible(tiles: Set<Triple<Int, Int, Int>>) {
         cancelStale()
         pool.setVisible(tiles)
+        val sel = selection.value
+        val stamp = towers.stamp()
+        terrain?.onVisible(tiles, if (sel == null || stamp == null) null else TerrainCoordinator.Context(sel.cacheId(), stamp, patternsEtag()))
     }
+
+    /**
+     * The accuracy of the tiles of [visible] (the ones at its highest zoom; lower ones are parents and prefetch):
+     * [Accuracy.TERRAIN] only if every one is a terrain tile, [Accuracy.PARTIAL] if some are, else [Accuracy.QUICK]
+     * (also for tiles not rendered yet, and without terrain support). Follows tiles as they render and terrain data
+     * changes; hold the returned flow for as long as it is shown.
+     */
+    fun accuracyFor(visible: Set<Triple<Int, Int, Int>>): StateFlow<Accuracy> {
+        val flow = MutableStateFlow(accuracyOf(visible))
+        trackers += Tracker(WeakReference(flow), visible.toSet())
+        return flow
+    }
+
+    private fun accuracyOf(visible: Set<TileAddress>): Accuracy {
+        val sel = selection.value ?: return Accuracy.QUICK
+        val stamp = towers.stamp() ?: return Accuracy.QUICK
+        val top = visible.maxOfOrNull { it.first } ?: return Accuracy.QUICK
+        val etag = patternsEtag()
+        return Accuracy.summary(
+            visible.filter { it.first == top }.map { (z, x, y) ->
+                val key = TileKey(z, x, y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, x, y))
+                cache.getMemory(key)?.let { Accuracy.of(key, it) } ?: Accuracy.QUICK
+            },
+        )
+    }
+
+    private fun refreshAccuracy() {
+        for (t in trackers) {
+            val flow = t.flow.get()
+            if (flow == null) trackers.remove(t) else flow.value = accuracyOf(t.tiles)
+        }
+    }
+
+    /** Bytes [increaseResolution] would download for the current view; null while offline, without a view or below z10. */
+    suspend fun estimateIncreaseBytes(): Long? = terrain?.estimateBytes()
+
+    /**
+     * Downloads the elevation chunks the current view (viewport + 40 km) is missing: [FetchProgress.Estimating] first,
+     * then [FetchProgress.Fetching] by bytes, then [FetchProgress.Done], or [FetchProgress.Failed] ("offline", "metered",
+     * "storage", "no view", "zoom in" or the I/O error). Metered networks need [allowMetered] (the UI confirms the
+     * size first). Cancel by cancelling the collection. Tiles re-request once the chunks are in.
+     */
+    fun increaseResolution(allowMetered: Boolean): Flow<FetchProgress> =
+        terrain?.increaseResolution(allowMetered) ?: flowOf(FetchProgress.Failed("terrain unavailable"))
 
     /** Cancels running renders whose selection or data version is no longer current, so dead keys are never written. */
     private fun cancelStale() {
@@ -151,7 +250,7 @@ class CoverageTileService internal constructor(
         val etag = patternsEtag()
         for (z in MAX_ZOOM downTo MIN_ZOOM) {
             val at = TileMath.locate(lat, lon, z) ?: return null
-            val key = TileKey(z, at.x, at.y, sel.cacheId(), stamp, etag)
+            val key = TileKey(z, at.x, at.y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, at.x, at.y))
             val tile = cache.getMemory(key) ?: continue
             val i = at.py * 256 + at.px
             val rsrpCode = tile.rsrp[i].toInt() and 0xFF
@@ -211,6 +310,7 @@ class CoverageTileService internal constructor(
             val tile = cache.getDisk(key)
                 ?: render(key, sel, cancel)?.takeIf { !cancel.isCancelled && isCurrent(key) }?.also { cache.put(key, it) }
             if (tile == null) future.completeExceptionally(TileCancelledException()) else future.complete(tile)
+            if (tile != null) refreshAccuracy()
         } catch (t: Throwable) {
             future.completeExceptionally(t)
         } finally {
@@ -220,7 +320,8 @@ class CoverageTileService internal constructor(
 
     private fun isCurrent(key: TileKey): Boolean =
         selection.value?.cacheId() == key.selectionId && towers.stamp() == key.towerStamp &&
-            patternsEtag() == key.patternsEtag
+            patternsEtag() == key.patternsEtag &&
+            terrainVersion(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y) == key.terrainVersion
 
     private fun render(key: TileKey, sel: CoverageSelection, cancel: CancelToken): RenderedTile? {
         val region = region(key, sel)
@@ -230,7 +331,42 @@ class CoverageTileService internal constructor(
                 t.siteCountWithin(TileMath.centreLat(key.z, key.y), TileMath.centreLon(key.z, key.x), AreaClassifier.RADIUS_M),
             )
         } ?: throw StaleTileException()
-        return renderer.render(region.prepared!!, key.z, key.x, key.y, area, THRESHOLD_DBM, cancel)
+        return renderer.render(preparedFor(key, sel, region), key.z, key.x, key.y, area, THRESHOLD_DBM, cancel)
+    }
+
+    /**
+     * The region prepared for [key]'s terrain version: the plain quick-model one while its region has no tables, else
+     * one built from exactly the tables of that version's snapshot (no mixing). Asks for the region's missing tables.
+     * Fails with [TileCancelledException] if the region moved on to another version meanwhile.
+     */
+    private fun preparedFor(key: TileKey, sel: CoverageSelection, region: Region): PreparedRegion {
+        val tc = terrain
+        if (tc == null || key.terrainVersion == 0L) return region.prepared!!
+        val tr = tc.region(tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y))
+        tc.setDemand(tr, region.batch)
+        val snap = tc.snapshot(tr)
+        if (snap.version != key.terrainVersion) throw TileCancelledException()
+        tc.ensureTables(tr, Triple(key.z, key.x, key.y))
+        if (snap.tables.isEmpty()) return region.prepared!!
+        val pk = TerrainPrepKey(region.key, tr.key, snap.version)
+        val mine = CompletableFuture<PreparedRegion>()
+        val existing = synchronized(terrainPrepared) { terrainPrepared[pk] ?: run { terrainPrepared[pk] = mine; null } }
+        if (existing == null) {
+            try {
+                val store = patterns.value
+                if ((store?.etag ?: "none") != key.patternsEtag) throw StaleTileException()
+                val provider = { row: Int -> tc.tableKey(tr, region.batch, row)?.let { snap.tables[it] } }
+                mine.complete(renderer.prepare(region.batch, store, sel.indoor, provider))
+            } catch (t: Throwable) {
+                synchronized(terrainPrepared) { terrainPrepared.remove(pk, mine) }
+                mine.completeExceptionally(t)
+            }
+        }
+        try {
+            return (existing ?: mine).get()
+        } catch (e: ExecutionException) {
+            throw e.cause ?: e
+        }
     }
 
     private fun regionKey(k: TileKey, level: Int): RegionKey {
@@ -296,7 +432,7 @@ class CoverageTileService internal constructor(
         val patternStore = patterns.value
         if ((patternStore?.etag ?: "none") != rk.etag) throw StaleTileException()
         if (rk.level < MAX_LEVEL) {
-            if (batch.size > MAX_CARRIERS) return Region(null, batch)
+            if (batch.size > MAX_CARRIERS) return Region(rk, null, batch)
         } else if (batch.size > MAX_CARRIERS) {
             val before = batch.size
             batch = batch.subset(CarrierCulling.reaching(batch, area))
@@ -307,7 +443,7 @@ class CoverageTileService internal constructor(
                 warn("coverage region ${rk.zf}/${rk.rx}/${rk.ry}: $before carriers, culled to ${batch.size} by range")
             }
         }
-        return Region(renderer.prepare(batch, patternStore, sel.indoor), batch)
+        return Region(rk, renderer.prepare(batch, patternStore, sel.indoor), batch)
     }
 
     private fun <T> failed(e: Throwable): CompletableFuture<T> = CompletableFuture<T>().also { it.completeExceptionally(e) }
@@ -320,6 +456,7 @@ class CoverageTileService internal constructor(
         const val MAX_ZOOM = 16
         private const val MAX_REGIONS = 16
         private const val MAX_OVERFLOW_HINTS = 512
+        private const val MAX_TERRAIN_PREPARED = 8
         private const val MAX_CARRIERS = 65535 // PreparedCarriers.MAX_CARRIERS
         private const val MAX_LEVEL = 2
         private const val FALLBACK_ZOOM = 10

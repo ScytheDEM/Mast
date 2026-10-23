@@ -15,7 +15,7 @@ typealias TileAddress = Triple<Int, Int, Int>
  *
  * Which queued job runs next is decided when a slot frees: tiles in the visible set first, closest to the viewport
  * centre first, then everything else in submission order (until the first [setVisible], every job counts as
- * visible). [setVisible] cancels the [CancelToken] of running jobs outside the set and drops queued ones
+ * visible; a lower `priority` goes first among visible jobs). [setVisible] cancels the [CancelToken] of running jobs outside the set and drops queued ones
  * (calling their `onCancelled`).
  *
  * The thread budget is re-read at most every 5 s ([REEVALUATE_NANOS]), at job boundaries, so a thermal change takes
@@ -29,6 +29,7 @@ class RenderPool internal constructor(
 
     private class Job(
         val tile: TileAddress,
+        val priority: Int,
         val seq: Long,
         val work: (CancelToken) -> Unit,
         val onCancelled: () -> Unit,
@@ -56,9 +57,16 @@ class RenderPool internal constructor(
      * Queues [work] for [tile]. [work] runs on a pool thread with the job's token and must complete whatever
      * waits on it, also when the token fires. [onCancelled] runs instead if the job is dropped before it starts.
      */
-    fun submit(tile: TileAddress, work: (CancelToken) -> Unit, onCancelled: () -> Unit) {
+    fun submit(tile: TileAddress, work: (CancelToken) -> Unit, onCancelled: () -> Unit) =
+        submit(tile, PRIORITY_RENDER, work, onCancelled)
+
+    /**
+     * As above, with a [priority] (lower runs first among visible jobs): tile renders use [PRIORITY_RENDER], terrain
+     * table builds [PRIORITY_TABLE], so a table never delays a visible tile's render.
+     */
+    fun submit(tile: TileAddress, priority: Int, work: (CancelToken) -> Unit, onCancelled: () -> Unit) {
         val job = synchronized(lock) {
-            if (shutDown) null else Job(tile, seq++, work, onCancelled).also { pending += it }
+            if (shutDown) null else Job(tile, priority, seq++, work, onCancelled).also { pending += it }
         }
         if (job == null) onCancelled() else pump()
     }
@@ -136,6 +144,7 @@ class RenderPool internal constructor(
         val va = isVisible(a)
         val vb = isVisible(b)
         if (va != vb) return if (va) -1 else 1
+        if (va && a.priority != b.priority) return a.priority.compareTo(b.priority)
         if (va && visible != null) {
             val c = distance(a).compareTo(distance(b))
             if (c != 0) return c
@@ -154,6 +163,8 @@ class RenderPool internal constructor(
 
     companion object {
         const val MAX_THREADS = 8
+        const val PRIORITY_RENDER = 0
+        const val PRIORITY_TABLE = 1
         const val REEVALUATE_NANOS = 5_000_000_000L
         private const val THROTTLE_HEADROOM = 0.85f
 

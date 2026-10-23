@@ -88,8 +88,62 @@ class TileCacheTest {
         val fresh = TileCache(dir)
         assertThat(fresh.getDisk(key(1, stamp = "s2"))).isNull()
         assertThat(fresh.getDisk(key(1).copy(patternsEtag = "e"))).isNull()
-        assertThat(fresh.getDisk(key(1).copy(engineVersion = 2))).isNull()
+        assertThat(fresh.getDisk(key(1).copy(engineVersion = 3))).isNull()
         assertThat(fresh.getDisk(key(1).copy(selectionId = "other"))).isNull()
+        assertThat(fresh.getDisk(key(1).copy(terrainVersion = 7))).isNull()
         assertThat(fresh.getDisk(key(1))).isNotNull()
+    }
+
+    private fun counted(x: Int, covered: Int, incomplete: Int): RenderedTile {
+        val n = RenderedTile.PIXELS
+        return RenderedTile(10, x, 5, ByteArray(n) { 9 }, ByteArray(n), ByteArray(n), ShortArray(n), covered, incomplete)
+    }
+
+    @Test fun pixelCountsAndSoTheAccuracyLabelSurviveTheDiskCache() {
+        val dir = tmp.newFolder()
+        val terrain = key(1).copy(terrainVersion = 99)
+        val cache = TileCache(dir)
+        cache.put(terrain, counted(1, covered = 1000, incomplete = 40)) // 96% complete: TERRAIN
+        cache.put(key(2).copy(terrainVersion = 99), counted(2, covered = 1000, incomplete = 400))
+        cache.put(key(3), counted(3, covered = 1000, incomplete = 0)) // no terrain version: QUICK whatever the counts
+        cache.flush()
+
+        val fresh = TileCache(dir)
+        val a = fresh.getDisk(terrain)!!
+        assertThat(a.coveredPixels).isEqualTo(1000)
+        assertThat(a.terrainIncompletePixels).isEqualTo(40)
+        assertThat(Accuracy.of(terrain, a)).isEqualTo(Accuracy.TERRAIN)
+        assertThat(Accuracy.of(key(2).copy(terrainVersion = 99), fresh.getDisk(key(2).copy(terrainVersion = 99))!!)).isEqualTo(Accuracy.QUICK)
+        assertThat(Accuracy.of(key(3), fresh.getDisk(key(3))!!)).isEqualTo(Accuracy.QUICK)
+    }
+
+    @Test fun theNinetyFivePercentRuleIsInclusiveAndAnEmptyTileIsTerrain() {
+        val k = key(1).copy(terrainVersion = 5)
+        assertThat(Accuracy.of(k, counted(1, 1000, 50))).isEqualTo(Accuracy.TERRAIN)
+        assertThat(Accuracy.of(k, counted(1, 1000, 51))).isEqualTo(Accuracy.QUICK)
+        assertThat(Accuracy.of(k, counted(1, 0, 0))).isEqualTo(Accuracy.TERRAIN) // nothing covered, nothing the quick model could get wrong
+        assertThat(Accuracy.of(key(1), counted(1, 0, 0))).isEqualTo(Accuracy.QUICK)
+    }
+
+    @Test fun aVersionOneFileWithoutCountsIsAMissAndIsDeleted() {
+        val dir = tmp.newFolder()
+        val cache = TileCache(dir)
+        cache.put(key(1), tile(1)); cache.flush()
+        val file = files(dir).single()
+        // Rewrite as the old layout: version 1, no counts (8 bytes shorter), valid CRC over that.
+        val old = java.nio.ByteBuffer.allocate(TileCache.FILE_BYTES - 8).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        old.put(file.readBytes(), 0, TileCache.FILE_BYTES - 12)
+        old.putInt(4, 1)
+        old.putInt(java.util.zip.CRC32().apply { update(old.array(), 0, TileCache.FILE_BYTES - 12) }.value.toInt())
+        file.writeBytes(old.array())
+        assertThat(TileCache(dir).getDisk(key(1))).isNull()
+        assertThat(file.exists()).isFalse()
+    }
+
+    @Test fun summaryIsTerrainOnlyWhenEveryTileIsAndPartialWhenSomeAre() {
+        assertThat(Accuracy.summary(emptyList())).isEqualTo(Accuracy.QUICK)
+        assertThat(Accuracy.summary(listOf(Accuracy.QUICK, Accuracy.QUICK))).isEqualTo(Accuracy.QUICK)
+        assertThat(Accuracy.summary(listOf(Accuracy.TERRAIN, Accuracy.TERRAIN))).isEqualTo(Accuracy.TERRAIN)
+        assertThat(Accuracy.summary(listOf(Accuracy.TERRAIN, Accuracy.QUICK))).isEqualTo(Accuracy.PARTIAL)
     }
 }

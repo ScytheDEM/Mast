@@ -7,6 +7,8 @@ import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Tech
 import au.signalatlas.engine.AreaClass
 import au.signalatlas.engine.CancelToken
+import au.signalatlas.engine.DemGridHandle
+import au.signalatlas.engine.TerrainTable
 import au.signalatlas.engine.RenderedTile
 import kotlinx.coroutines.flow.MutableStateFlow
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -77,12 +79,54 @@ class FakeRenderer : TileRenderer {
     @Volatile var rsrpCode: Byte = 100
     @Volatile var bestIndex: Short = 1
 
-    override fun prepare(batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean): PreparedRegion {
+    /** Tables handed to each prepared region, as (batch row, table). */
+    val preparedTables = CopyOnWriteArrayList<List<Pair<Int, TerrainTable>>>()
+
+    override fun prepare(
+        batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)?,
+    ): PreparedRegion {
         prepares.incrementAndGet()
         preparedSizes += batch.size
         require(batch.size <= 65535) { "too many carriers" }
+        val tables = if (terrain == null) emptyList() else (0 until batch.size).mapNotNull { r -> terrain(r)?.let { r to it } }
+        if (terrain != null) preparedTables += tables
         // Carrier i of the prepared region = batch row (size - 1 - i): proves batchIndex is used.
-        return object : PreparedRegion { override fun batchIndex(i: Int) = batch.size - 1 - i }
+        return object : FakePrepared {
+            override val tableCount = tables.size
+            override val carriers = batch.size
+            override fun batchIndex(i: Int) = batch.size - 1 - i
+        }
+    }
+
+    interface FakePrepared : PreparedRegion {
+        val tableCount: Int
+        val carriers: Int
+    }
+
+    class Build(
+        val dem: DemGridHandle, val lat: Double, val lon: Double, val hTx: Float, val freq: Float, val cancel: CancelToken,
+        val table: TerrainTable,
+    )
+
+    val builds = CopyOnWriteArrayList<Build>()
+    /** Every call, also cancelled ones: (freq, hTx). */
+    val buildCalls = CopyOnWriteArrayList<Pair<Float, Float>>()
+    /** While true a table build spins until released or cancelled. */
+    @Volatile var holdBuilds = false
+    /** The table returned for (freq, hTx). */
+    val tableFor = java.util.concurrent.ConcurrentHashMap<Pair<Float, Float>, TerrainTable>()
+
+    override fun buildTerrainTable(
+        dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,
+    ): TerrainTable? {
+        require(dem.isComplete) { "incomplete DEM" }
+        buildCalls += freqMhz to hTxAgl
+        while (holdBuilds && !cancel.isCancelled) Thread.sleep(2)
+        if (cancel.isCancelled) return null
+        val t = TerrainTable(java.nio.ByteBuffer.allocateDirect(TerrainTable.CELLS), java.nio.ByteBuffer.allocateDirect(TerrainTable.MASK_BYTES))
+        tableFor[freqMhz to hTxAgl] = t
+        builds += Build(dem, siteLat, siteLon, hTxAgl, freqMhz, cancel, t)
+        return t
     }
 
     override fun render(
@@ -95,8 +139,13 @@ class FakeRenderer : TileRenderer {
             while (hold && !cancel.isCancelled) Thread.sleep(2)
             if (cancel.isCancelled) return null
             val n = RenderedTile.PIXELS
+            // Like the engine: pixels are "incomplete" for the carriers that have no table (carriers share pixels equally here).
+            val p = prepared as? FakePrepared
+            val covered = if (rsrpCode.toInt() == 0) 0 else n
+            val incomplete = if (p == null || p.carriers == 0) covered else covered * (p.carriers - p.tableCount) / p.carriers
             return RenderedTile(
                 z, x, y, ByteArray(n) { rsrpCode }, ByteArray(n) { 80 }, ByteArray(n) { 51 }, ShortArray(n) { bestIndex },
+                covered, incomplete,
             )
         } finally {
             concurrent.decrementAndGet()
@@ -111,10 +160,11 @@ internal class Rig(
     val towers: FakeTowers = FakeTowers(),
     val renderer: FakeRenderer = FakeRenderer(),
     val warnings: MutableList<String> = CopyOnWriteArrayList(),
+    terrain: TerrainSupport? = null,
 ) {
     val cache = TileCache(dir, memoryTiles = memoryTiles)
     val pool = RenderPool({ threads })
-    val service = CoverageTileService(towers, MutableStateFlow(null), renderer, cache, pool, warnings::add)
+    val service = CoverageTileService(towers, MutableStateFlow(null), renderer, cache, pool, warnings::add, terrain)
 
     val selection = CoverageSelection(Network.TELSTRA, setOf(Tech.LTE, Tech.NR), null, false, CoverageSelection.View.RSRP)
 
@@ -123,7 +173,7 @@ internal class Rig(
     }
 
     fun url(z: Int, x: Int, y: Int, view: CoverageSelection.View = selection.view, stamp: String = towers.stampValue!!): String =
-        "https://${CoverageTileService.HOST}/v1/${selection.cacheId()}/${view.segment}/$stamp/none/$z/$x/$y.png"
+        "https://${CoverageTileService.HOST}/v1/${selection.cacheId()}/${view.segment}/$stamp/none/t${service.terrainEpoch.value}/$z/$x/$y.png"
 
     fun tile(z: Int, x: Int, y: Int, view: CoverageSelection.View = selection.view, stamp: String = towers.stampValue!!) =
         TileUrl.parse(url(z, x, y, view, stamp).toHttpUrl())!!.let(service::tileFuture)

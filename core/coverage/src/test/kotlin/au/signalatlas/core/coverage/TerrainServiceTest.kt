@@ -1,0 +1,380 @@
+package au.signalatlas.core.coverage
+
+import au.signalatlas.core.geo.InsufficientStorageException
+import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import org.junit.After
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.TimeUnit
+
+@RunWith(RobolectricTestRunner::class)
+class TerrainServiceTest {
+    @get:Rule val tmp = TemporaryFolder()
+    private var rig: TerrainRig? = null
+
+    private fun rig(
+        chunks: Boolean = true, threads: Int = 2, online: Boolean = true, metered: Boolean = false,
+        towers: FakeTowers = FakeTowers(),
+    ) = TerrainRig(tmp, chunks, threads, online, metered, towers = towers).also { rig = it }
+
+    @After fun tearDown() { rig?.close() }
+
+    private fun accuracyOf(r: TerrainRig, key: TileKey) = Accuracy.of(key, r.cache.getMemory(key)!!)
+
+    /** Renders the tile, waits for the tables to finish and publish, and returns the key then in force. */
+    private fun settled(r: TerrainRig, tables: Int): TileKey {
+        r.render()
+        waitUntil(what = "$tables tables published") { r.service.terrainEpoch.value >= 1 && r.renderer.builds.size >= tables }
+        return r.key()
+    }
+
+    @Test fun withoutChunksTheRegionIsQuickOnlyAndNothingIsBuilt() {
+        val r = rig(chunks = false)
+        r.render()
+        val key = r.key()
+        assertThat(key.terrainVersion).isEqualTo(0L)
+        assertThat(accuracyOf(r, key)).isEqualTo(Accuracy.QUICK)
+        Thread.sleep(100)
+        assertThat(r.renderer.builds).isEmpty()
+        assertThat(r.renderer.buildCalls).isEmpty()
+        assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
+        assertThat(r.rig.warnings).isEmpty()
+    }
+
+    @Test fun serviceWithoutTerrainSupportKeepsVersionZeroAndEpochZero() {
+        val r = Rig(tmp.newFolder())
+        try {
+            r.tile(10, 900, 600).get(5, TimeUnit.SECONDS)
+            assertThat(r.service.currentKey(10, 900, 600)!!.terrainVersion).isEqualTo(0L)
+            assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
+            assertThat(r.service.accuracyFor(setOf(Triple(10, 900, 600))).value).isEqualTo(Accuracy.QUICK)
+            assertThat(runBlocking { r.service.increaseResolution(true).toList() }).containsExactly(FetchProgress.Failed("terrain unavailable"))
+        } finally {
+            r.close()
+        }
+    }
+
+    @Test fun completeChunksGiveAVersionAndTablesChangeItWithTheUrlSoMapLibreRefetches() {
+        val r = rig()
+        val template0 = r.service.tileUrlTemplate()!!
+        val oldUrl = r.rig.url(r.tile.first, r.tile.second, r.tile.third)
+        val key0 = r.key()
+        assertThat(key0.terrainVersion).isNotEqualTo(0L)
+        r.render()
+        assertThat(accuracyOf(r, key0)).isEqualTo(Accuracy.QUICK) // rendered at once, without tables
+
+        val key1 = settled(r, tables = 2)
+        assertThat(key1.terrainVersion).isNotIn(listOf(0L, key0.terrainVersion))
+        assertThat(r.service.tileUrlTemplate()).isNotEqualTo(template0)
+        assertThat(template0).contains("/t0/")
+        assertThat(r.service.tileUrlTemplate()).contains("/t1/")
+
+        // The URL MapLibre had is stale now.
+        val stale = r.service.tileFuture(TileUrl.parse(oldUrl.toHttpUrl())!!)
+        val cause = try { stale.get(5, TimeUnit.SECONDS); null } catch (e: ExecutionException) { e.cause }
+        assertThat(cause).isInstanceOf(StaleTileException::class.java)
+
+        // The new key renders from both tables; the old tile is still there under its own key (never mixed).
+        r.render()
+        assertThat(accuracyOf(r, key1)).isEqualTo(Accuracy.TERRAIN)
+        assertThat(accuracyOf(r, key0)).isEqualTo(Accuracy.QUICK)
+        assertThat(r.cache.getMemory(key0)).isNotSameInstanceAs(r.cache.getMemory(key1))
+        val tables = r.renderer.preparedTables.last()
+        assertThat(tables.map { it.first }).containsExactly(0, 1)
+        assertThat(tables.map { it.second }).containsExactly(r.renderer.tableFor[3500f to 30f], r.renderer.tableFor[700f to 30f])
+    }
+
+    @Test fun theVersionStaysPutWhilstTablesArePendingSoNoTileMixesTableSets() {
+        val r = rig()
+        r.renderer.holdBuilds = true
+        val key0 = r.key()
+        r.render()
+        waitUntil { r.renderer.buildCalls.size == 2 }
+        r.render()
+        assertThat(r.key()).isEqualTo(key0)
+        assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
+        assertThat(r.renderer.preparedTables).isEmpty() // every render so far used the plain quick region
+        r.renderer.holdBuilds = false
+        r.awaitEpochAbove(0)
+        assertThat(r.key()).isNotEqualTo(key0)
+    }
+
+    @Test fun eachTableIsBuiltOnceAcrossTilesAndRepeatRequests() {
+        val r = rig()
+        for (cx in 0..1) for (cy in 0..1) r.render(11, r.at.x * 2 + cx, r.at.y * 2 + cy) // four z11 tiles of the region
+        r.awaitEpochAbove(0)
+        r.service.setVisible(setOf(r.tile))
+        for (cx in 0..1) for (cy in 0..1) r.render(11, r.at.x * 2 + cx, r.at.y * 2 + cy)
+        r.service.setVisible(setOf(r.tile))
+        Thread.sleep(150)
+        assertThat(r.renderer.buildCalls.sortedBy { it.first }).containsExactly(700f to 30f, 3500f to 30f).inOrder()
+        assertThat(r.renderer.builds).hasSize(2)
+    }
+
+    @Test fun theBuildGetsTheCarriersKeyFrequencyAndKeyHeightAndRowsMapToTheirTables() {
+        // 3512.4 MHz -> 3510, 29.6 m -> 30; 2599.9 -> 2600, 2 m -> 3 (the 3 m floor); 3504 shares 3510's key at 30 m.
+        val towers = FakeTowers().apply {
+            batchFor = { sydneyBatch(floatArrayOf(3512.4f, 2599.9f, 3514f), floatArrayOf(29.6f, 2f, 30.4f), sameSite = true) }
+        }
+        val r = rig(towers = towers)
+        val key0 = r.key()
+        r.render()
+        r.awaitEpochAbove(0)
+        assertThat(r.renderer.buildCalls).containsExactly(3510f to 30f, 2600f to 3f)
+        r.render()
+        assertThat(r.key()).isNotEqualTo(key0)
+        val tables = r.renderer.preparedTables.last().toMap()
+        assertThat(tables.keys).containsExactly(0, 1, 2)
+        assertThat(tables.getValue(0)).isSameInstanceAs(r.renderer.tableFor[3510f to 30f])
+        assertThat(tables.getValue(1)).isSameInstanceAs(r.renderer.tableFor[2600f to 3f])
+        assertThat(tables.getValue(2)).isSameInstanceAs(tables.getValue(0)) // same key: one table, shared
+    }
+
+    @Test fun carriersOutsideTheDemAreQuickAndGetNoTable() {
+        // Row 1 is 3 degrees (330 km) east of the tile: its site is outside the 40 km elevation margin.
+        val towers = FakeTowers().apply {
+            batchFor = { sydneyBatch(floatArrayOf(700f, 800f), floatArrayOf(30f, 30f)).let { b -> b.siteLon[1] = 154.5; b } }
+        }
+        val r = rig(towers = towers)
+        r.render()
+        r.awaitEpochAbove(0)
+        assertThat(r.renderer.buildCalls).containsExactly(700f to 30f)
+    }
+
+    @Test fun aChunkThatVanishedBeforeTheMosaicOpenedFallsBackToQuickWithoutBuildsOrErrors() {
+        val r = rig(threads = 1)
+        r.renderer.hold = true // the render occupies the only thread, so the table jobs wait
+        val key0 = r.key()
+        val f = r.rig.tile(r.tile.first, r.tile.second, r.tile.third)
+        waitUntil { r.renderer.renders.size == 1 }
+        r.chunkStore.clear() // the region looked complete when the key was made
+        r.renderer.hold = false
+        f.get(5, TimeUnit.SECONDS)
+        waitUntil(what = "region back to quick") { r.service.terrainEpoch.value == 1L }
+        assertThat(r.key().terrainVersion).isEqualTo(0L)
+        assertThat(r.key()).isNotEqualTo(key0)
+        assertThat(r.renderer.buildCalls).isEmpty()
+        assertThat(r.rig.warnings).isEmpty() // not an exception path
+        r.render()
+        assertThat(accuracyOf(r, r.key())).isEqualTo(Accuracy.QUICK)
+    }
+
+    @Test fun panningAwayCancelsRunningTableBuildsWithoutChangingTheVersionAndPanningBackRebuilds() {
+        val r = rig()
+        r.renderer.holdBuilds = true
+        r.render()
+        waitUntil { r.renderer.buildCalls.size == 2 }
+        val far = Triple(10, r.at.x + 40, r.at.y)
+        r.service.setVisible(setOf(far))
+        waitUntil(what = "builds cancelled") { r.renderer.holdBuilds && r.renderer.buildCalls.size == 2 && r.service.terrainEpoch.value == 0L }
+        Thread.sleep(100)
+        assertThat(r.renderer.builds).isEmpty()
+        assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
+        r.renderer.holdBuilds = false
+        r.service.setVisible(setOf(r.tile))
+        r.awaitEpochAbove(0)
+        assertThat(r.renderer.builds).hasSize(2)
+    }
+
+    @Test fun aTileStillOnScreenReclaimsTheBuildsDroppedWithAPannedAwayTile() {
+        val r = rig()
+        r.renderer.holdBuilds = true
+        val a = Triple(11, r.at.x * 2, r.at.y * 2)
+        val b = Triple(11, r.at.x * 2 + 1, r.at.y * 2) // same terrain region
+        r.service.setVisible(setOf(a, b))
+        r.render(a.first, a.second, a.third)
+        waitUntil { r.renderer.buildCalls.size == 2 }
+        r.service.setVisible(setOf(b)) // the jobs sat under tile a
+        r.renderer.holdBuilds = false
+        waitUntil(what = "b claims both tables again") { r.renderer.builds.size == 2 }
+        r.awaitEpochAbove(0)
+    }
+
+    @Test fun tablesComeFromTheDiskCacheWhenTheServiceIsRebuilt() {
+        val r = rig()
+        r.render()
+        r.awaitEpochAbove(0)
+        assertThat(r.renderer.builds).hasSize(2)
+        val chunkDir = r.chunkDir
+        val tableDir = r.tableDir
+        r.close()
+
+        val again = TerrainRig(tmp, chunksPresent = false, chunkDir = chunkDir, tableDir = tableDir).also { rig = it }
+        again.render()
+        again.awaitEpochAbove(0)
+        assertThat(again.renderer.buildCalls).isEmpty() // both tables loaded from the files
+        again.render()
+        assertThat(accuracyOf(again, again.key())).isEqualTo(Accuracy.TERRAIN)
+    }
+
+    @Test fun autoCacheFetchesTheViewsMissingChunksOnceSettledAtZ10OnAnUnmeteredNetwork() {
+        val r = rig(chunks = false)
+        r.render()
+        val key0 = r.key()
+        val template0 = r.service.tileUrlTemplate()
+        r.service.setVisible(setOf(r.tile))
+        waitUntil(what = "auto fetch") { r.source.fetches.isNotEmpty() }
+        assertThat(r.source.fetches.single()).isEqualTo(r.regionChunks)
+        r.awaitEpochAbove(0)
+        assertThat(r.key().terrainVersion).isNotIn(listOf(0L, key0.terrainVersion))
+        assertThat(r.service.tileUrlTemplate()).isNotEqualTo(template0)
+        r.render() // renders under the new key and asks for the tables
+        waitUntil { r.renderer.builds.size == 2 }
+    }
+
+    @Test fun autoCacheWaitsForTheCameraToSettleAndDoesNotRepeatForTheSameView() {
+        val r = rig(chunks = false)
+        repeat(5) { r.service.setVisible(setOf(r.tile)); Thread.sleep(5) } // identical sets don't restart the wait
+        waitUntil { r.source.fetches.size == 1 }
+        Thread.sleep(100)
+        assertThat(r.source.fetches).hasSize(1)
+        r.service.setVisible(setOf(r.tile)) // nothing missing now
+        Thread.sleep(100)
+        assertThat(r.source.fetches).hasSize(1)
+    }
+
+    @Test fun autoCacheNeverRunsBelowZ10OnMeteredNetworksOrOffline() {
+        val low = rig(chunks = false)
+        low.service.setVisible(setOf(Triple(9, 1, 1)))
+        Thread.sleep(150)
+        assertThat(low.source.fetches).isEmpty()
+        low.close()
+
+        val metered = rig(chunks = false, metered = true)
+        metered.service.setVisible(setOf(metered.tile))
+        Thread.sleep(150)
+        assertThat(metered.source.fetches).isEmpty()
+        metered.network.set(online = true, metered = false) // the unmetered network arrives: the settled view is fetched
+        waitUntil(what = "fetch on unmetered") { metered.source.fetches.size == 1 }
+        metered.close()
+
+        val offline = rig(chunks = false, online = false)
+        offline.service.setVisible(setOf(offline.tile))
+        Thread.sleep(150)
+        assertThat(offline.source.fetches).isEmpty()
+    }
+
+    @Test fun anAutoCacheStorageFailureIsSilentAndNotRetriedForTheSameView() {
+        val r = rig(chunks = false)
+        r.source.failWith = InsufficientStorageException(10, 1)
+        r.service.setVisible(setOf(r.tile))
+        waitUntil { r.source.fetches.size == 1 }
+        r.service.setVisible(setOf(r.tile, Triple(9, 1, 1)))
+        Thread.sleep(150)
+        assertThat(r.source.fetches).hasSize(1)
+        assertThat(r.rig.warnings).isEmpty()
+        assertThat(r.key().terrainVersion).isEqualTo(0L)
+    }
+
+    @Test fun increaseResolutionEstimatesThenFetchesThenDoneAndChangesTheKeys(): Unit = runBlocking {
+        val r = rig(chunks = false, metered = true)
+        r.render()
+        val key0 = r.key()
+        r.service.setVisible(setOf(r.tile))
+        assertThat(r.service.estimateIncreaseBytes()).isEqualTo(r.regionChunks.size * 1000L)
+
+        val events = r.service.increaseResolution(allowMetered = true).toList()
+        assertThat(events.first()).isEqualTo(FetchProgress.Estimating(r.regionChunks.size * 1000L))
+        assertThat(events.last()).isEqualTo(FetchProgress.Done)
+        val fractions = events.filterIsInstance<FetchProgress.Fetching>().map { it.fraction }
+        assertThat(fractions).isNotEmpty()
+        assertThat(fractions).isInOrder()
+        assertThat(fractions.last()).isEqualTo(1f)
+        assertThat(r.key().terrainVersion).isNotIn(listOf(0L, key0.terrainVersion)) // regions rebuilt on arrival
+        assertThat(r.service.terrainEpoch.value).isEqualTo(1L)
+        assertThat(r.service.increaseResolution(true).toList()).containsExactly(FetchProgress.Done) // nothing left
+    }
+
+    @Test fun increaseResolutionRefusesMeteredWithoutConsentButStillTellsTheSize(): Unit = runBlocking {
+        val r = rig(chunks = false, metered = true)
+        r.service.setVisible(setOf(r.tile))
+        val events = r.service.increaseResolution(allowMetered = false).toList()
+        assertThat(events).containsExactly(FetchProgress.Estimating(r.regionChunks.size * 1000L), FetchProgress.Failed("metered")).inOrder()
+        assertThat(r.source.fetches).isEmpty()
+    }
+
+    @Test fun increaseResolutionFailsOfflineBeforeAnyEstimateAndWithoutAViewOrBelowZ10(): Unit = runBlocking {
+        val off = rig(chunks = false, online = false)
+        off.service.setVisible(setOf(off.tile))
+        assertThat(off.service.increaseResolution(true).toList()).containsExactly(FetchProgress.Failed("offline"))
+        assertThat(off.source.estimates).isEmpty()
+        assertThat(off.service.estimateIncreaseBytes()).isNull()
+        off.close()
+
+        val r = rig(chunks = false)
+        assertThat(r.service.increaseResolution(true).toList()).containsExactly(FetchProgress.Failed("no view"))
+        r.service.setVisible(setOf(Triple(9, 1, 1)))
+        assertThat(r.service.increaseResolution(true).toList()).containsExactly(FetchProgress.Failed("zoom in"))
+    }
+
+    @Test fun increaseResolutionReportsStorageAndIoFailures(): Unit = runBlocking {
+        val r = rig(chunks = false)
+        r.service.setVisible(setOf(r.tile))
+        r.source.failWith = InsufficientStorageException(10, 1)
+        assertThat(r.service.increaseResolution(true).toList().last()).isEqualTo(FetchProgress.Failed("storage"))
+        r.source.failWith = java.io.IOException("connection reset")
+        assertThat(r.service.increaseResolution(true).toList().last()).isEqualTo(FetchProgress.Failed("connection reset"))
+        assertThat(r.key().terrainVersion).isEqualTo(0L)
+    }
+
+    @Test fun accuracyForGoesFromQuickToTerrainAsTablesPublishAndIsPartialWhenOnlySomeTilesAre() {
+        val r = rig()
+        val far = Triple(10, r.at.x + 40, r.at.y) // a region without chunks: stays quick
+        val both = setOf(r.tile, far)
+        val only = r.service.accuracyFor(setOf(r.tile))
+        val mixed = r.service.accuracyFor(both)
+        assertThat(only.value).isEqualTo(Accuracy.QUICK) // nothing rendered yet
+        r.render()
+        r.render(far.first, far.second, far.third)
+        assertThat(only.value).isEqualTo(Accuracy.QUICK)
+        r.awaitEpochAbove(0)
+        r.render()
+        waitUntil(what = "terrain accuracy") { only.value == Accuracy.TERRAIN }
+        assertThat(mixed.value).isEqualTo(Accuracy.PARTIAL)
+        assertThat(r.service.accuracyFor(both).value).isEqualTo(Accuracy.PARTIAL)
+    }
+
+    @Test fun accuracyIgnoresParentTilesBelowTheViewportZoom() {
+        val r = rig()
+        r.render()
+        r.awaitEpochAbove(0)
+        r.render()
+        val parent = Triple(8, 1, 1) // never rendered
+        assertThat(r.service.accuracyFor(setOf(r.tile, parent)).value).isEqualTo(Accuracy.TERRAIN)
+    }
+
+    @Test fun anIncompleteTableSetLabelsTheTileQuick() {
+        // 21 sites in a row: the nearest 256 keys are all built, but a batch row whose site is outside the DEM never
+        // gets one, so its pixels stay incomplete: 1 of 2 carriers = 50% > 5%.
+        val towers = FakeTowers().apply {
+            batchFor = { sydneyBatch(floatArrayOf(700f, 800f), floatArrayOf(30f, 30f)).let { b -> b.siteLon[1] = 154.5; b } }
+        }
+        val r = rig(towers = towers)
+        r.render()
+        r.awaitEpochAbove(0)
+        r.render()
+        assertThat(accuracyOf(r, r.key())).isEqualTo(Accuracy.QUICK)
+        assertThat(r.cache.getMemory(r.key())!!.terrainIncompletePixels).isGreaterThan(0)
+    }
+
+    @Test fun onlyTheNearestTablesPerRegionAreBuilt() {
+        val n = TerrainCoordinator.MAX_TABLES_PER_REGION + 40
+        val towers = FakeTowers().apply {
+            batchFor = { sydneyBatch(FloatArray(n) { 700f + 10 * it }, FloatArray(n) { 30f }, sameSite = true) }
+        }
+        val r = rig(towers = towers)
+        r.render()
+        waitUntil(timeoutMs = 20_000, what = "all tables") { r.renderer.builds.size == TerrainCoordinator.MAX_TABLES_PER_REGION }
+        Thread.sleep(100)
+        assertThat(r.renderer.buildCalls).hasSize(TerrainCoordinator.MAX_TABLES_PER_REGION)
+        // Published in batches along the way, once more when the queue drained.
+        assertThat(r.service.terrainEpoch.value).isAtLeast(TerrainCoordinator.MAX_TABLES_PER_REGION / TerrainCoordinator.PUBLISH_BATCH.toLong())
+    }
+}

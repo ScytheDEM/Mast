@@ -18,10 +18,18 @@ import au.signalatlas.core.data.DbValidator
 import au.signalatlas.core.data.PatternInstaller
 import au.signalatlas.core.data.PatternRepository
 import au.signalatlas.core.data.TowerRepository
+import au.signalatlas.core.coverage.ConnectivityNetworkMonitor
 import au.signalatlas.core.coverage.CoverageInterceptor
 import au.signalatlas.core.coverage.CoverageTileService
+import au.signalatlas.core.coverage.DemFetcherSource
 import au.signalatlas.core.coverage.RenderPool
+import au.signalatlas.core.coverage.TerrainSupport
+import au.signalatlas.core.coverage.TerrainTableStore
 import au.signalatlas.core.coverage.TileCache
+import au.signalatlas.core.geo.DemChunkStore
+import au.signalatlas.core.geo.DemFetcher
+import au.signalatlas.core.geo.GeoNetwork
+import au.signalatlas.core.geo.GeoPrefs
 import au.signalatlas.core.map.BasemapLocator
 import au.signalatlas.core.map.MapHttp
 import au.signalatlas.engine.CoverageEngine
@@ -94,10 +102,22 @@ class AppContainer(context: Context) {
         )
     }
 
+    private val geoPrefs = GeoPrefs(app)
+
+    /** The elevation chunk cache (`geo/dem90`), kept under the Settings budget. */
+    val elevationChunks = DemChunkStore(File(app.filesDir, "geo/dem90"), budgetBytes = { geoPrefs.cacheBudgetBytes })
+
+    /** The one elevation fetcher: its downloads are serialised process-wide. */
+    private val demFetcher = DemFetcher(http, elevationChunks, isMetered = { GeoNetwork.isActiveNetworkMetered(app) })
+
     /** Coverage overlay: tiles are rendered on demand for MapLibre's requests (see [CoverageInterceptor]). */
     val coverage = CoverageTileService(
         repo, patterns.patterns, CoverageEngine(), TileCache(File(app.cacheDir, "coverage-tiles").apply { mkdirs() }),
         RenderPool(::renderThreads),
+        TerrainSupport(
+            elevationChunks, DemFetcherSource(demFetcher), TerrainTableStore(File(app.cacheDir, "terrain")),
+            ConnectivityNetworkMonitor(app), appScope,
+        ),
     )
 
     init {

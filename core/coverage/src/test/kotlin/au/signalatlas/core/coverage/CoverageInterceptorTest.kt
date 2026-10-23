@@ -37,7 +37,7 @@ class CoverageInterceptorTest {
 
     @Test fun otherHostsPassThrough() {
         val r = rig()
-        get(client(r), "https://example.com/v1/x/rsrp/s/none/10/1/1.png").use {
+        get(client(r), "https://example.com/v1/x/rsrp/s/none/t0/10/1/1.png").use {
             assertThat(it.code).isEqualTo(299)
         }
         assertThat(r.renderer.renders).isEmpty()
@@ -68,10 +68,10 @@ class CoverageInterceptorTest {
         val id = r.selection.cacheId()
         val base = "https://${CoverageTileService.HOST}"
         for (path in listOf(
-            "/", "/v1/$id/rsrp/stamp1/none/10/900/600", "/v1/$id/rsrp/stamp1/none/10/900/600.jpg",
-            "/v2/$id/rsrp/stamp1/none/10/900/600.png", "/v1/$id/heat/stamp1/none/10/900/600.png",
-            "/v1/$id/rsrp/stamp1/none/ten/900/600.png", "/v1/$id/rsrp/stamp1/none/10/9999/600.png",
-            "/v1/$id/rsrp/stamp1/none/10/-1/600.png", "/v1/$id/rsrp/stamp1/none/10/900/600/extra.png",
+            "/", "/v1/$id/rsrp/stamp1/none/t0/10/900/600", "/v1/$id/rsrp/stamp1/none/t0/10/900/600.jpg",
+            "/v2/$id/rsrp/stamp1/none/t0/10/900/600.png", "/v1/$id/heat/stamp1/none/t0/10/900/600.png",
+            "/v1/$id/rsrp/stamp1/none/t0/ten/900/600.png", "/v1/$id/rsrp/stamp1/none/t0/10/9999/600.png",
+            "/v1/$id/rsrp/stamp1/none/t0/10/-1/600.png", "/v1/$id/rsrp/stamp1/none/t0/10/900/600/extra.png",
         )) {
             get(c, base + path).use { assertThat(it.code).isEqualTo(404) }
         }

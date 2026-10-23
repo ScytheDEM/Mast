@@ -54,6 +54,23 @@ class RenderPoolTest {
         assertThat(order.toList()).containsExactly(501, 500, 510, 901).inOrder()
     }
 
+    @Test fun lowerPriorityNumbersRunFirstAmongVisibleJobsEvenIfFartherAway() {
+        val p = pool({ 1 })
+        val order = CopyOnWriteArrayList<String>()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        p.submit(addr(0), { started.countDown(); release.await() }, {})
+        started.await()
+        // A table job on the tile at the viewport centre, then renders on tiles farther out: renders still go first.
+        p.submit(addr(500), RenderPool.PRIORITY_TABLE, { order += "table500" }, {})
+        p.submit(addr(503), { order += "render503" }, {})
+        p.submit(addr(501), { order += "render501" }, {})
+        p.setVisible(setOf(addr(500), addr(501), addr(503)))
+        release.countDown()
+        waitUntil { order.size == 3 }
+        assertThat(order.toList()).containsExactly("render501", "render503", "table500").inOrder()
+    }
+
     @Test fun setVisibleCancelsQueuedAndRunningJobsOutsideTheSet() {
         val p = pool({ 1 })
         val started = CountDownLatch(1)

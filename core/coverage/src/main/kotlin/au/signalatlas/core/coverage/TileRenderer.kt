@@ -9,8 +9,10 @@ import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.engine.AreaClass
 import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.CoverageEngine
+import au.signalatlas.engine.DemGridHandle
 import au.signalatlas.engine.PreparedCarriers
 import au.signalatlas.engine.RenderedTile
+import au.signalatlas.engine.TerrainTable
 import kotlinx.coroutines.runBlocking
 
 /** Carriers prepared for rendering; maps render-time carrier indices back to rows of the source batch. */
@@ -20,12 +22,25 @@ interface PreparedRegion {
 
 /** The part of the engine the tile service uses; lets tests run without native code. */
 interface TileRenderer {
-    fun prepare(batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean): PreparedRegion
+    /**
+     * [terrain] is asked once per kept carrier, with its row in [batch], for its terrain table (null = quick model).
+     */
+    fun prepare(
+        batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)? = null,
+    ): PreparedRegion
 
     /** Null if [cancel] fired. */
     fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
     ): RenderedTile?
+
+    /**
+     * The polar terrain table of one site (see [CoverageEngine.buildTerrainTable]); [hTxAgl] and [freqMhz] are the
+     * table-key values. Null if [cancel] fired.
+     */
+    fun buildTerrainTable(
+        dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,
+    ): TerrainTable?
 }
 
 /** [TileRenderer] backed by the native [CoverageEngine]. */
@@ -34,8 +49,13 @@ class EngineTileRenderer(private val engine: CoverageEngine) : TileRenderer {
         override fun batchIndex(i: Int) = carriers.batchIndex(i)
     }
 
-    override fun prepare(batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean): PreparedRegion =
-        Prepared(engine.prepare(batch, patterns, indoor))
+    override fun prepare(
+        batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)?,
+    ): PreparedRegion = Prepared(engine.prepare(batch, patterns, indoor, terrain))
+
+    override fun buildTerrainTable(
+        dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,
+    ): TerrainTable? = engine.buildTerrainTable(dem, siteLat, siteLon, hTxAgl, freqMhz, cancel)
 
     override fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,

@@ -57,6 +57,7 @@ dependencies {
     implementation(project(":core:update"))
     implementation(project(":core:map"))
     implementation(project(":core:coverage"))
+    implementation(project(":core:geo"))
     implementation(project(":engine"))
 
     implementation(platform(libs.androidx.compose.bom))
