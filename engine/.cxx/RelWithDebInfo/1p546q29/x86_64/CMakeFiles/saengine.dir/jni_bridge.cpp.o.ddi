@@ -1,9 +1,0 @@
-{
-  "revision": 0,
-  "rules": [
-    {
-      "primary-output": "CMakeFiles/saengine.dir/jni_bridge.cpp.o"
-    }
-  ],
-  "version": 1
-}

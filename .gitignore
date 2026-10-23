@@ -6,3 +6,8 @@ local.properties
 *.iml
 .kotlin/
 dist/
+.cxx/
+**/.cxx/
+.externalNativeBuild/
+**/.externalNativeBuild/
+engine/host/build/
