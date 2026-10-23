@@ -371,10 +371,28 @@ class DemFetcherTest {
         assertThat(store.has(chunkA)).isTrue()
     }
 
-    @Test fun `the store budget applies to fetched chunks`() {
+
+    @Test fun `a row-major 3 x 3 degree request never holds more than two COG grids`() {
+        for (latN in -36..-34) for (lonW in 148..150) bucket.put(nameOf(latN, lonW), SyntheticCog.build(latN, lonW), "\"v1-$latN-$lonW\"")
+        val ids = (212..223).flatMap { la -> (1312..1323).map { lo -> ChunkId(la, lo) } }.toSet()
+        val f = fetcher()
+        fetch(f, *ids.toTypedArray())
+        assertThat(f.peakGrids).isAtLeast(1)
+        assertThat(f.peakGrids).isAtMost(2)
+        assertThat(f.liveGrids).isEqualTo(0)
+        assertThat(ids.all { store.has(it) }).isTrue()
+        val present = (-36..-34).flatMap { la -> (148..150).map { Pair(la, it) } }.toSet()
+        for (id in listOf(ChunkId(212, 1312), ChunkId(217, 1315), ChunkId(223, 1323))) {
+            assertThat(stored(id)).isEqualTo(expected(id, present))
+        }
+    }
+
+    @Test fun `fetched chunks stay in the store until fetch returns even over budget`() {
         serveAll()
-        val small = DemChunkStore(File(tmp.root, "small"), { 1L })
-        fetch(fetcher(into = small), chunkOneTile)
-        assertThat(small.bytesUsed.value).isEqualTo(0L)
+        val tiny = DemChunkStore(File(tmp.root, "tiny"), { 1L })
+        val f = fetcher(into = tiny)
+        fetch(f, chunkOneTile, ChunkId(219, 1312))
+        // Once released they are evictable again and the budget wins.
+        assertThat(tiny.bytesUsed.value).isEqualTo(0L)
     }
 }

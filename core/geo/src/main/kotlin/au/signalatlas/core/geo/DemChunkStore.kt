@@ -15,7 +15,7 @@ import java.nio.file.StandardCopyOption
  * The on-device elevation cache: one `<latIdx>_<lonIdx>.dem` file per [ChunkId] in [dir] (see [DemChunk] for the
  * format), kept under [budgetBytes] by evicting the least recently used chunks.
  *
- * - Writes are atomic: build in memory, write `<name>.tmp`, fsync, rename. Leftover `.tmp` files are removed on open.
+ * - Writes are atomic: build in memory, write a unique `<name>.<n>.tmp`, fsync, rename. Leftover `.tmp` files are removed on open.
  * - A chunk that fails validation (CRC, header, length) when read is deleted and reported as a miss.
  * - Recency is the time of the last [get] / [put], kept in memory and mirrored to the file's mtime (so it survives a
  *   restart without an index file).
@@ -36,6 +36,8 @@ class DemChunkStore(
     private val inUse = HashMap<ChunkId, Int>()
     private val pins = LinkedHashMap<String, Set<ChunkId>>()
     private var lastTick = 0L
+    private val writeLocks = java.util.concurrent.ConcurrentHashMap<ChunkId, Any>()
+    private val tempCounter = java.util.concurrent.atomic.AtomicLong()
     private val _bytesUsed = MutableStateFlow(0L)
 
     /** Total size of the chunk files. */
@@ -68,13 +70,15 @@ class DemChunkStore(
     fun get(id: ChunkId): DemChunk? {
         if (!has(id)) return null
         val file = fileOf(id)
+        val length = file.length()
+        val modified = file.lastModified()
         val chunk = try {
             DemChunk.decode(file.readBytes())?.takeIf { it.id == id }
         } catch (_: IOException) {
-            null
+            return null // evicted or replaced while reading: a miss, nothing to clean up
         }
         if (chunk == null) {
-            drop(id)
+            drop(id, length, modified)
             return null
         }
         synchronized(lock) {
@@ -86,29 +90,35 @@ class DemChunkStore(
         return chunk
     }
 
-    /** Stores [chunk] (replacing any older copy), then evicts down to the budget. */
+    /**
+     * Stores [chunk] (replacing any older copy), then evicts down to the budget. Safe for concurrent writers, also of
+     * the same chunk: each write goes to its own temp file, writers of one chunk take turns, and the rename happens
+     * under the store lock, so a reader or evictor sees the old file or the new one, never a mix.
+     */
     fun put(chunk: DemChunk) {
         val bytes = chunk.encode()
         val file = fileOf(chunk.id)
-        val tmp = File(dir, file.name + ".tmp")
-        try {
-            FileOutputStream(tmp).use { out ->
-                out.write(bytes)
-                out.flush()
-                out.fd.sync()
+        synchronized(writeLocks.computeIfAbsent(chunk.id) { Any() }) {
+            val tmp = File(dir, "${file.name}.${tempCounter.incrementAndGet()}.tmp")
+            try {
+                FileOutputStream(tmp).use { out ->
+                    out.write(bytes)
+                    out.flush()
+                    out.fd.sync()
+                }
+                synchronized(lock) {
+                    Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                    val now = tick()
+                    file.setLastModified(now)
+                    sizes[chunk.id] = bytes.size.toLong()
+                    lastAccess[chunk.id] = now
+                    _bytesUsed.value = sizes.values.sum()
+                    evictLocked()
+                }
+            } catch (e: IOException) {
+                tmp.delete()
+                throw e
             }
-            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE)
-        } catch (e: IOException) {
-            tmp.delete()
-            throw e
-        }
-        synchronized(lock) {
-            val now = tick()
-            file.setLastModified(now)
-            sizes[chunk.id] = bytes.size.toLong()
-            lastAccess[chunk.id] = now
-            _bytesUsed.value = sizes.values.sum()
-            evictLocked()
         }
     }
 
@@ -186,9 +196,13 @@ class DemChunkStore(
         lastAccess.remove(id)
     }
 
-    private fun drop(id: ChunkId) = synchronized(lock) {
-        deleteLocked(id)
-        _bytesUsed.value = sizes.values.sum()
+    /** Deletes [id]'s file if it is still the one that failed validation (same length and time), not a newer write. */
+    private fun drop(id: ChunkId, length: Long, modified: Long) = synchronized(lock) {
+        val file = fileOf(id)
+        if (file.length() == length && file.lastModified() == modified) {
+            deleteLocked(id)
+            _bytesUsed.value = sizes.values.sum()
+        }
     }
 
     /** Strictly increasing wall-clock milliseconds, so two uses in one millisecond keep their order. */

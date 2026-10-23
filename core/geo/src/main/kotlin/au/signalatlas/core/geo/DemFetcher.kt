@@ -49,7 +49,10 @@ private class CogChangedException(message: String) : IOException(message)
  * COG to its east); a chunk touches up to four COGs. Nodes are exactly the COG's samples (1200 per degree both ways),
  * so the "resampling" to the chunk grid is rounding half away from zero, with NaN / no-data as 0.
  *
- * Fetching is serialised per instance. Decoding runs on [Dispatchers.Default], network and disk on [Dispatchers.IO].
+ * Fetching is serialised process-wide (one [Mutex] in the companion, so create one fetcher and share it; the app
+ * provides it as a singleton). Memory is bounded: COGs are swept row-major (south to north, west to east), at most one
+ * COG's samples (1200 x 1200 int16, already rounded to metres) are alive at a time, and each is poured into the chunk
+ * buffers it feeds, which are written and dropped as soon as their last COG has been read. Decoding runs on [Dispatchers.Default], network and disk on [Dispatchers.IO].
  *
  * @param isMetered whether the active network is metered (see [GeoNetwork.isActiveNetworkMetered]).
  * @param freeBytes usable space of the volume holding the cache; [fetch] needs [RESERVE_BYTES] plus the download.
@@ -77,21 +80,25 @@ class DemFetcher(
     private class Region(val cog: CogKey, val rowMin: Int, val rowMax: Int, val colMin: Int, val colMax: Int)
 
     /** One COG's decoded samples (only the tiles read are filled). */
-    private class Grid(val values: FloatArray, val noData: Float?)
+    /** One COG's samples as int16 metres (only the tiles read are filled). */
+    private class Grid(val metres: ShortArray)
 
-    private val lock = Mutex()
-    private val headers = HashMap<CogKey, CogMeta>()
-    private val oceanCogs = HashSet<CogKey>()
+    private val headers = java.util.concurrent.ConcurrentHashMap<CogKey, CogMeta>()
+    private val oceanCogs: MutableSet<CogKey> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /** Grids alive now and the most there have been (test hook for the memory bound). */
+    @Volatile internal var liveGrids = 0
+    @Volatile internal var peakGrids = 0
 
     /**
      * Bytes [fetch] would download for [chunks] that are not stored yet: the compressed size of the internal tiles
      * they need, each counted once. Reads (and caches) the COG headers; 0 for ocean.
      */
-    suspend fun estimateBytes(chunks: Set<ChunkId>): Long = lock.withLock {
+    suspend fun estimateBytes(chunks: Set<ChunkId>): Long {
         val regions = regionsByCog(chunks.filter { !store.has(it) })
         var total = 0L
         for ((cog, list) in regions) total += withCog(cog) { meta -> if (meta == null) 0L else tilesFor(meta, list).sumOf { meta.byteCounts[it] } }
-        total
+        return total
     }
 
     /**
@@ -102,53 +109,73 @@ class DemFetcher(
     suspend fun fetch(chunks: Set<ChunkId>, allowMetered: Boolean, progress: (Float) -> Unit) {
         if (!allowMetered && isMetered()) throw MeteredNetworkException()
         lock.withLock {
-            val todo = chunks.filter { !store.has(it) }
+            // Row-major, the order the COG sweep below completes chunks in.
+            val todo = chunks.filter { !store.has(it) }.sortedWith(compareBy({ it.latIdx }, { it.lonIdx }))
             if (todo.isEmpty()) {
                 progress(1f)
                 return
             }
-            val regions = todo.associateWith { regionsOf(it) }
-            val cogs = regions.values.flatten().map { it.cog }.distinct()
-            val byCog = regionsByCog(todo)
-            val totals = HashMap<CogKey, Long>()
-            val done = HashMap<CogKey, Long>()
-            for (cog in cogs) {
-                totals[cog] = withCog(cog) { meta -> if (meta == null) 0L else tilesFor(meta, byCog.getValue(cog)).sumOf { meta.byteCounts[it] } }
+            store.acquire(todo) // the chunks written here stay until fetch returns, whatever the budget says
+            try {
+                fetchLocked(todo, progress)
+            } finally {
+                store.release(todo)
             }
-            val required = RESERVE_BYTES + totals.values.sum()
-            val free = freeBytes()
-            if (free < required) throw InsufficientStorageException(required, free)
-
-            fun report() {
-                val total = totals.values.sum()
-                progress(if (total == 0L) 0f else (done.values.sum().toFloat() / total).coerceIn(0f, 1f))
-            }
-            report()
-            val grids = HashMap<CogKey, Grid?>()
-            val loaded = HashSet<CogKey>()
-            val pending = LinkedHashMap(regions)
-            for (cog in cogs) {
-                currentCoroutineContext().ensureActive()
-                grids[cog] = withCog(cog) { meta ->
-                    totals[cog] = if (meta == null) 0L else tilesFor(meta, byCog.getValue(cog)).sumOf { meta.byteCounts[it] }
-                    done[cog] = 0L
-                    if (meta == null) null else loadCog(cog, meta, byCog.getValue(cog)) { bytes -> done[cog] = done.getValue(cog) + bytes; report() }
-                }
-                loaded += cog
-                val ready = pending.filter { (_, rs) -> rs.all { it.cog in loaded } }
-                for ((id, _) in ready) {
-                    withContext(Dispatchers.Default) {
-                        val chunk = buildChunk(id, grids)
-                        withContext(Dispatchers.IO) { store.put(chunk) }
-                    }
-                    pending.remove(id)
-                }
-                // Free the samples of COGs no pending chunk still reads.
-                val stillNeeded = pending.values.flatten().map { it.cog }.toSet()
-                for (g in grids.keys.toList()) if (g !in stillNeeded) grids[g] = null
-            }
-            progress(1f)
         }
+    }
+
+    private suspend fun fetchLocked(todo: List<ChunkId>, progress: (Float) -> Unit) {
+        val regions = todo.associateWith { regionsOf(it) }
+        val byCog = regionsByCog(todo)
+        val cogs = byCog.keys.sortedWith(compareBy({ it.latN }, { it.lonW }))
+        val totals = HashMap<CogKey, Long>()
+        val done = HashMap<CogKey, Long>()
+        for (cog in cogs) {
+            totals[cog] = withCog(cog) { meta -> if (meta == null) 0L else tilesFor(meta, byCog.getValue(cog)).sumOf { meta.byteCounts[it] } }
+        }
+        val required = RESERVE_BYTES + totals.values.sum()
+        val free = freeBytes()
+        if (free < required) throw InsufficientStorageException(required, free)
+
+        fun report() {
+            val total = totals.values.sum()
+            progress(if (total == 0L) 0f else (done.values.sum().toFloat() / total).coerceIn(0f, 1f))
+        }
+        report()
+        val remaining = HashMap<ChunkId, Int>()
+        val feeds = HashMap<CogKey, MutableList<ChunkId>>()
+        for ((id, rs) in regions) {
+            remaining[id] = rs.size
+            for (r in rs) feeds.getOrPut(r.cog) { ArrayList() } += id
+        }
+        val buffers = HashMap<ChunkId, ShortArray>()
+        for (cog in cogs) {
+            currentCoroutineContext().ensureActive()
+            val grid = withCog(cog) { meta ->
+                totals[cog] = if (meta == null) 0L else tilesFor(meta, byCog.getValue(cog)).sumOf { meta.byteCounts[it] }
+                done[cog] = 0L
+                if (meta == null) null else loadCog(cog, meta, byCog.getValue(cog)) { bytes -> done[cog] = done.getValue(cog) + bytes; report() }
+            }
+            if (grid != null) {
+                liveGrids++
+                peakGrids = maxOf(peakGrids, liveGrids)
+            }
+            try {
+                for (id in feeds.getValue(cog)) {
+                    val buffer = buffers.getOrPut(id) { ShortArray(ChunkMath.NODES * ChunkMath.NODES) }
+                    if (grid != null) withContext(Dispatchers.Default) { pour(id, cog, grid, buffer) }
+                    val left = remaining.getValue(id) - 1
+                    remaining[id] = left
+                    if (left == 0) {
+                        withContext(Dispatchers.IO) { store.put(DemChunk(id, buffer)) }
+                        buffers.remove(id)
+                    }
+                }
+            } finally {
+                if (grid != null) liveGrids--
+            }
+        }
+        progress(1f)
     }
 
     // ---- planning -------------------------------------------------------------------------------------------
@@ -215,7 +242,7 @@ class DemFetcher(
     /** Fetches the internal tiles [regions] need into a new [Grid]; adjacent ranges go in one request. */
     private suspend fun loadCog(cog: CogKey, meta: CogMeta, regions: List<Region>, onBytes: (Long) -> Unit): Grid {
         val perDeg = CogMeta.SIZE
-        val grid = Grid(FloatArray(perDeg * perDeg), meta.noData)
+        val grid = Grid(ShortArray(perDeg * perDeg))
         val tiles = tilesFor(meta, regions).filter { meta.byteCounts[it] > 0 }.sortedBy { meta.offsets[it] }
         var i = 0
         while (i < tiles.size) {
@@ -238,7 +265,8 @@ class DemFetcher(
                     val from = (meta.offsets[t] - start).toInt()
                     val decoded = CogReader.decodeTile(meta, bytes.copyOfRange(from, from + meta.byteCounts[t].toInt()), rows)
                     for (r in 0 until rows) {
-                        System.arraycopy(decoded, r * meta.tileWidth, grid.values, (ty * meta.tileHeight + r) * perDeg + tx * meta.tileWidth, cols)
+                        val dst = (ty * meta.tileHeight + r) * perDeg + tx * meta.tileWidth
+                        for (c in 0 until cols) grid.metres[dst + c] = toMetres(decoded[r * meta.tileWidth + c], meta.noData)
                     }
                 }
             }
@@ -247,30 +275,24 @@ class DemFetcher(
         return grid
     }
 
-    private fun buildChunk(id: ChunkId, grids: Map<CogKey, Grid?>): DemChunk {
+    /** Copies into [samples] the nodes of chunk [id] that lie in [cog]. */
+    private fun pour(id: ChunkId, cog: CogKey, grid: Grid, samples: ShortArray) {
         val n = ChunkMath.NODES
         val perDeg = ChunkMath.NODES_PER_DEGREE
         val south = id.latIdx * ChunkMath.STEPS - 90 * perDeg
         val west = id.lonIdx * ChunkMath.STEPS - 180 * perDeg
-        val lonWs = IntArray(n) { Math.floorDiv(west + it, perDeg) }
-        val cols = IntArray(n) { west + it - lonWs[it] * perDeg }
-        val samples = ShortArray(n * n)
         for (r in 0 until n) {
             val node = south + r
             val latN = Math.floorDiv(node + perDeg - 1, perDeg)
+            if (latN != cog.latN) continue
             val row = latN * perDeg - node
-            var curLon = Int.MIN_VALUE
-            var grid: Grid? = null
             for (c in 0 until n) {
-                if (lonWs[c] != curLon) {
-                    curLon = lonWs[c]
-                    grid = grids[CogKey(latN, curLon)]
-                }
-                val g = grid ?: continue // ocean: 0
-                samples[r * n + c] = toMetres(g.values[row * perDeg + cols[c]], g.noData)
+                val lonNode = west + c
+                val lonW = Math.floorDiv(lonNode, perDeg)
+                if (lonW != cog.lonW) continue
+                samples[r * n + c] = grid.metres[row * perDeg + (lonNode - lonW * perDeg)]
             }
         }
-        return DemChunk(id, samples)
     }
 
     // ---- headers --------------------------------------------------------------------------------------------
@@ -401,6 +423,9 @@ class DemFetcher(
     }
 
     companion object {
+        /** One fetch at a time per process, whatever the instance. */
+        private val lock = Mutex()
+
         const val DEFAULT_BASE_URL = "https://copernicus-dem-90m.s3.amazonaws.com"
 
         /** Free space kept for the rest of the app on top of the download. */

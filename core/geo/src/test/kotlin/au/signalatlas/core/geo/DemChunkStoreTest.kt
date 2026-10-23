@@ -210,4 +210,47 @@ class DemChunkStoreTest {
         assertThat(store.get(a)).isEqualTo(replacement)
         assertThat(store.bytesUsed.value).isEqualTo(size(a))
     }
+
+    @Test fun `concurrent puts gets and evictions, and two writers of one chunk, stay consistent`() {
+        budget = 3 * size0() // room for about three; constant eviction
+        val store = DemChunkStore(dir, { budget })
+        val ids = (0 until 6).map { ChunkId(5, it) }
+        val shared = ChunkId(9, 9)
+        val variants = listOf(DemChunk(shared, ShortArray(301 * 301) { 1 }), DemChunk(shared, ShortArray(301 * 301) { (it % 7).toShort() }))
+        val errors = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+        val deadline = System.nanoTime() + 2_000_000_000L
+        val tasks = (0 until 8).map { t ->
+            pool.submit {
+                try {
+                    var n = 0
+                    while (System.nanoTime() < deadline) {
+                        val id = ids[(n + t) % ids.size]
+                        when ((n + t) % 4) {
+                            0 -> store.put(chunk(id))
+                            1 -> store.get(id)?.let { check(it == chunk(id)) { "wrong content for $id" } }
+                            2 -> store.put(variants[t % 2])
+                            else -> store.get(shared)?.let { check(it == variants[0] || it == variants[1]) { "torn shared chunk" } }
+                        }
+                        n++
+                    }
+                } catch (e: Throwable) {
+                    errors += e
+                }
+            }
+        }
+        tasks.forEach { it.get() }
+        pool.shutdown()
+        assertThat(errors.toList()).isEmpty()
+        store.put(variants[0])
+        store.put(variants[1])
+        assertThat(store.get(shared)).isEqualTo(variants[1])
+        assertThat(dir.listFiles()!!.filter { it.name.endsWith(".tmp") }).isEmpty()
+        // The index agrees with the disk.
+        val onDisk = dir.listFiles()!!.filter { it.name.endsWith(".dem") }.sumOf { it.length() }
+        assertThat(store.bytesUsed.value).isEqualTo(onDisk)
+        assertThat(newStore().bytesUsed.value).isEqualTo(onDisk)
+    }
+
+    private fun size0() = chunk(a).encode().size.toLong()
 }
