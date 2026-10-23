@@ -115,8 +115,8 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
    - **SINR code:** `uint8 = clamp(round((SINR + 20)·4), 0, 255)`.
    - **Probability code:** `uint8 = round(P·255)`.
    - **Culling:** a carrier is evaluated for a tile only if its `R_max` (the distance where peak-direction RSRP falls to
-     −140 dBm, computed once per carrier with the RURAL area class (the longest-range class, so culling never drops a
-     carrier that some other class would reach), outdoor, capped at 80 km) reaches the tile's bounding box.
+     −140 dBm, computed once per carrier as the maximum over all four area classes, so culling never drops a carrier that the
+     tile's class would reach; outdoor, capped at 80 km) reaches the tile's bounding box.
 10. **Terrarium encoding** (map display): `elev = RSRP_dBm`, with no coverage → −200. Probability view: `elev = P·100`.
     The bytes are `R = floor((elev+32768)/256)`, `G = floor(elev+32768) mod 256`, `B = floor(frac(elev+32768)·256)`.
 11. **Legend.** `color-relief` stops at alpha 0.45. Probability view: 0 → transparent, 50 → `#F4A261`, 90 → `#2A9D8F`,
