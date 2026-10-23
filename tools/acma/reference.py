@@ -140,6 +140,19 @@ def positive_or_none(s):
 
 
 def run(zip_path):
+    """The ImportReport counts for an RRL zip."""
+    return load(zip_path)["report"]
+
+
+def load(zip_path):
+    """Apply the import rules; return {"report", "carriers", "sites", "antennas"}.
+
+    "carriers" lists the kept carriers in export order as dicts (sdd_id, site_id, sector_id,
+    network, tech, band, freq_hz, bw_hz, eirp_dbm, tilt_deg, height_m, azimuth_deg,
+    antenna_id), de-duplicated on SDD_ID with the first device winning (as the Kotlin
+    importer's INSERT OR IGNORE). "sites" maps kept site id -> (lat, lon); "antennas" maps
+    antenna id -> {"gain", "f2b", "hbw"} (None = not supplied).
+    """
     zf = zipfile.ZipFile(zip_path)
 
     network_by_client = {}
@@ -179,6 +192,7 @@ def run(zip_path):
     sector_site = {}         # id -> site id
     sector_antenna = {}      # id -> antenna id or None
     carrier_count = {}       # network -> count
+    carriers = {}            # sdd id -> kept carrier (first device wins)
     for dev in read_csv(zf, "device_details.csv"):
         if dev["DEVICE_TYPE"].strip() != "T":
             continue
@@ -192,7 +206,8 @@ def run(zip_path):
         if band_for(None if freq is None else freq / 1e6, network) is None:
             skipped_band += 1
             continue
-        if eirp_dbm(dev, antennas) is None:
+        eirp = eirp_dbm(dev, antennas)
+        if eirp is None:
             skipped_power += 1
             continue
         site_id = parse_id(dev["SITE_ID"], INT32_MAX)
@@ -211,9 +226,21 @@ def run(zip_path):
             sector_site[sid] = site_id
             sector_antenna[sid] = ant_id
         carrier_count[network] = carrier_count.get(network, 0) + 1
+        sdd = parse_id(dev["SDD_ID"], INT64_MAX)
+        if sdd not in carriers:
+            band, tech = band_for(freq / 1e6, network)
+            bw = num(dev["BANDWIDTH"])
+            carriers[sdd] = {
+                "sdd_id": sdd, "site_id": site_id, "sector_id": sector_ids[key],
+                "network": network, "tech": tech, "band": band,
+                "freq_hz": math.floor(freq + 0.5),
+                "bw_hz": 0 if bw is None else math.floor(bw + 0.5),
+                "eirp_dbm": eirp, "tilt_deg": num(dev["TILT"]) or 0.0,
+                "height_m": h, "azimuth_deg": az, "antenna_id": ant_id,
+            }
 
     kept_antennas = {a for a in sector_antenna.values() if a is not None and a in antennas}
-    return {
+    report = {
         "sites": len(set(sector_site.values())),
         "sectors": len(sector_ids),
         "carriers": sum(carrier_count.values()),
@@ -223,6 +250,13 @@ def run(zip_path):
         "skippedBadSite": skipped_site,
         "skippedMalformed": skipped_malformed,
         "carriersByNetwork": {k: v for k, v in carrier_count.items() if v > 0},
+    }
+    kept_sites = set(sector_site.values())
+    return {
+        "report": report,
+        "carriers": list(carriers.values()),
+        "sites": {s: sites[s] for s in sorted(kept_sites)},
+        "antennas": antennas,
     }
 
 

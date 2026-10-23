@@ -68,3 +68,69 @@ sites 25359, sectors 537540, carriers 852634, antennas 1803,
 skippedUnknownBand 304, skippedNoPower 10, skippedBadSite 0, skippedMalformed 0
 carriersByNetwork: NBN 204154, OPTUS 190082, OPTUS_TPG_JV 23815, TELSTRA 231490, TPG 203093
 ```
+
+`reference.py` also exposes `load(zip)`. It returns the report plus the kept carriers (de-duplicated on
+SDD_ID, first wins), the kept sites and the antennas. `tools/engine/make_vectors.py` and the HRP tools use
+it. The CLI and its output are unchanged: `expected.json` and the full-export counts above re-verified.
+
+# HRP reference (horizontal radiation patterns)
+
+Python reference for the "HRP import rules" 1-6. The Kotlin `HrpImporter` must reproduce
+`hrp_expected.json` exactly when it imports `hrp_fixture.zip` against the `towers.db` built from `fixture.zip`.
+
+- `hrp_reference.py <hrp.zip> <rrl.zip> <expected.json> [SDD ...]`
+  - The known SDDs are the carriers `reference.py` keeps from `<rrl.zip>`.
+  - It writes the HrpReport and, for each SDD given, `sdd, patternId, peakBearing, peakDbw, att0_10`
+    (the first 11 quantised values) and `att` (all 360).
+- `make_hrp_fixture.py <hrp.zip URL or file> <rrl_fixture.zip> <out.zip> [<prefix.bin>]`
+  - Reads the real zip from offset 0 with HTTP Range requests (256 KiB each) and inflates the single
+    entry from its local header. It stops after the first 40 complete devices.
+  - The 2026-10-23 build read 262 144 bytes (one request) of `https://cdn.acma.gov.au/rrl/spectra_licence_hrp.zip`,
+    entry timestamp 2026-10-21 00:00.
+  - `<prefix.bin>` keeps those bytes (in the scratchpad, never the repo). Rebuilding from it is byte-identical.
+- `test_hrp_reference.py`: unit checks of the rules on synthetic zips.
+
+## Regenerate
+
+```
+python3 -I tools/acma/test_hrp_reference.py
+python3 -I tools/acma/make_hrp_fixture.py https://cdn.acma.gov.au/rrl/spectra_licence_hrp.zip \
+    core/acma/src/test/resources/acma/fixture.zip core/acma/src/test/resources/acma/hrp_fixture.zip <scratch>/hrp/prefix.bin
+python3 -I tools/acma/hrp_reference.py core/acma/src/test/resources/acma/hrp_fixture.zip \
+    core/acma/src/test/resources/acma/fixture.zip core/acma/src/test/resources/acma/hrp_expected.json \
+    2908964477 2909790812 2908989497 2909001795 2909790836
+```
+
+**Caution.** The CDN has served two different zips under the same ETag `0x8DF2EDC716D83D0`. They have
+entry timestamps 2026-10-23 and 2026-10-21, and a different device order from the fourth device on. Use
+the saved prefix to reproduce the committed fixture.
+
+## Fixture contents (`hrp_fixture.zip`, entry `LICENCE_.csv`, CRLF, 16 199 rows)
+
+| Devices | SDD_ID | Exercises |
+|---|---|---|
+| 40 real complete devices, in file order | 30 keep their real SDD_IDs | `skippedUnknown` (30) |
+| ... of which devices 0, 4, ..., 36 | 2908964477, 2909790812, 2908970467, 2909790822, 2908975948, 2909790823, 2908976001, 2909790824, 2908989497, 2909790832 (fixture TELSTRA/OPTUS carriers, interleaved) | kept devices; the real shapes de-duplicate to 4 patterns (pattern 3 is shared by 6 devices with different peak bearings) |
+| copy of real device 1, angle 359 dropped | 2908994717 | incomplete (359 rows) -> `skippedIncomplete` |
+| copy of real device 2, rows for angles 10 and 11 swapped | 2909790833 | out of order -> `skippedIncomplete` |
+| copy of real device 3 | 999999999 | SDD not in the tower fixture -> `skippedUnknown` |
+| one real shape rotated by +90° / +200° | 2909001795 / 2909790836 | identical `q`, different peak bearings (211 / 321) -> one pattern, shared with 2909790812 |
+
+`hrp_expected.json`: devices 12, patterns 4, skippedIncomplete 2, skippedUnknown 31, rows 16 199.
+
+## Interpretation notes (the Kotlin importer must match)
+
+- **Runs.** A device is a maximal run of consecutive rows with the same parsed SDD_ID. An unparseable
+  SDD_ID is its own unknown run.
+- **Order of checks.** A run whose SDD is not a carrier counts once in `skippedUnknown`, before any
+  completeness check.
+- **Complete run.** Exactly 360 rows, where row i has `START_ANGLE == i`, and every `POWER` parses as a
+  finite number. Anything else counts once in `skippedIncomplete`. `STOP_ANGLE` is not checked.
+- **Repeats.** A later complete run for an SDD that is already stored is ignored (the first wins). It is
+  not counted.
+- **`rows`** is every data row read (the header excluded).
+- **Quantisation.** `q = clamp(floor((peak − P)·4 + 0.5), 0, 255)` in double. Real POWER values have at
+  most one decimal, so `(peak − P)·4` is never within rounding error of a .5 tie, and float32 parsing gives
+  the same codes.
+- **Pattern ids** are assigned 1..N in first-seen order of the kept devices. `peakDbw` is the parsed
+  maximum POWER.
