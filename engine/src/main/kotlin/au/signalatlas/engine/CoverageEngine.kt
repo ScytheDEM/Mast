@@ -26,13 +26,37 @@ class CoverageEngine {
      * means that carrier has none. Carriers may share a [TerrainTable] (same object), which is then uploaded once.
      * The tables are held by the result, so they stay alive for as long as it can render.
      *
+     * [calibration] (null = uncalibrated) is asked likewise for each kept carrier's [SectorTerms] (null = none).
+     *
      * @throws IllegalArgumentException if the batch has more than [PreparedCarriers.MAX_CARRIERS] carriers (callers
      * prepare per region) or the store's pattern bytes are not `patternCount * 360` long.
      */
     fun prepare(
         batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean,
         terrain: ((batchRow: Int) -> TerrainTable?)? = null,
-    ): PreparedCarriers = PreparedCarriers.build(batch, patterns?.let(::upload), indoor, NATIVE_DERIVE, terrain)
+        calibration: ((batchRow: Int) -> SectorTerms?)? = null,
+    ): PreparedCarriers = PreparedCarriers.build(batch, patterns?.let(::upload), indoor, NATIVE_DERIVE, terrain, calibration)
+
+    /**
+     * Every carrier's RSRP (dBm) at ([lat], [lon]) for [area] (indoor adds the O2I loss): the same model as [render],
+     * including terrain tables and calibration terms, but no culling (carriers beyond R_max are predicted too) and no
+     * residual raster. Index i is carrier i of [prepared] ([PreparedCarriers.batchIndex]). A few microseconds per
+     * carrier on the calling thread.
+     *
+     * @throws IllegalArgumentException for a non-finite point. @throws IllegalStateException if [prepared] is closed.
+     */
+    fun predictPoint(prepared: PreparedCarriers, lat: Double, lon: Double, area: AreaClass, indoor: Boolean): FloatArray {
+        check(!prepared.isClosed) { "PreparedCarriers is closed" }
+        require(lat.isFinite() && lon.isFinite()) { "point ($lat, $lon) is not finite" }
+        val out = direct(maxOf(prepared.size, 1) * 4)
+        val patterns = prepared.patterns
+        val r = NativeEngine.nativePredictPoint(
+            prepared.fields, prepared.size, prepared.terrainTables, prepared.terrainMasks, patterns?.buffer,
+            patterns?.count ?: 0, lat, lon, area.ordinal, indoor, out,
+        )
+        require(r == prepared.size) { "invalid point arguments ($r)" }
+        return FloatArray(prepared.size).also { out.asFloatBuffer().get(it) }
+    }
 
     /**
      * Builds the polar terrain table of one site (Terrain rule 6) from [dem]: 360 radials x 256 range bins of
@@ -78,7 +102,8 @@ class CoverageEngine {
 
     /**
      * Renders tile (z, x, y) of [prepared] for [area], with coverage threshold [thrDbm] (rule 8). The grid is 128
-     * for z <= 13 and 256 above (rule 9). Returns null when [cancel] fired.
+     * for z <= 13 and 256 above (rule 9). [residuals] are the tile's residual rasters (Calibration rule 5). Returns null
+     * when [cancel] fired.
      *
      * Output goes through per-thread direct scratch buffers (320 KiB, reused by every render on that thread) and
      * is then copied into fresh arrays: no JNI critical section is held while rendering, so a long render never
@@ -89,14 +114,17 @@ class CoverageEngine {
      */
     fun render(
         prepared: PreparedCarriers, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
+        residuals: List<ResidualRaster> = emptyList(),
     ): RenderedTile? {
         check(!prepared.isClosed) { "PreparedCarriers is closed" }
+        require(residuals.size <= ResidualRaster.MAX_PER_TILE) { "${residuals.size} residual rasters (max ${ResidualRaster.MAX_PER_TILE})" }
         val s = scratch.get()!!
         val patterns = prepared.patterns
         val grid = if (z <= 13) 128 else 256
         val r = NativeEngine.nativeRender(
             prepared.fields, prepared.size, prepared.terrainTables, prepared.terrainMasks, patterns?.buffer,
-            patterns?.count ?: 0, z, x, y, grid, area.ordinal, prepared.indoor, thrDbm, cancel.buffer,
+            patterns?.count ?: 0, z, x, y, grid, area.ordinal, prepared.indoor, thrDbm,
+            Array(residuals.size) { residuals[it].buffer }, IntArray(residuals.size) { residuals[it].networkMask }, cancel.buffer,
             s.rsrp, s.sinr, s.prob, s.best, s.stats,
         )
         if (r == CANCELLED) return null

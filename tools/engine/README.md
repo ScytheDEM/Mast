@@ -278,3 +278,33 @@ predictor 3, no GDAL_NODATA, PixelIsPoint, scale 1/1200°, tiepoint (0, 0) → (
 COG nodes are therefore exactly the chunk-grid nodes and the crop needs no interpolation; the node on a
 whole-degree latitude is row 0 of the COG to its south. Values are rounded half away from zero; NaN/no-data and
 missing (404) COGs give 0.
+
+# Calibration terms and point query (M4)
+
+`reference.py` also holds the M4 engine terms (Calibration rules 4-6 of the M4 plan) and the point query:
+
+- `calibration_db(offset, slope, d_median_km, d2_m)` = `mu + b * log10(clamp(d / d_median, 0.1, 10))`. The ratio
+  clamp is an engine interpretation: a slope never extrapolates more than one decade from the sector's median sample
+  distance. NaN / None offset = 0; NaN slope or `d_median <= 0` = no slope term. d is the horizontal distance.
+- `calibrated_sigma(sigma, scale)` = `max(4, sigma * scale)` for `scale < 1`, else sigma (rule 6; Kotlin passes
+  `scale = sqrt(10 / (10 + n))`).
+- Residual rasters (rule 5): `render_tile(..., residuals=[(codes, mask), ...])`, 65536 int8 codes of 0.25 dB each,
+  added to every carrier whose `network` column bit is set in `mask`. Grid index i of an N grid samples pixel
+  `floor((i + 0.5) * 256 / N)` (`residual_pixel`). The raster changes the best server like any other RSRP term.
+- `predict_point(carriers, patterns, lat, lon, area, indoor)`: every carrier's RSRP at one point, the renderer's
+  per-carrier model without culling (carriers beyond R_max are predicted too; the matcher scores them) and without
+  residual rasters.
+- Branch and bound: a block's bound adds the calibration term's maximum over the block's distance range (it is
+  monotonic in d, so the endpoints suffice) and each applicable raster's maximum over the block's samples, so it
+  stays a true upper bound (checked against `debugNoBounds` with random terms and rasters).
+
+Regenerate (13 s; deterministic):
+
+```
+python3 -I tools/engine/make_calibration_vectors.py engine/host/test/vectors
+```
+
+| File (`engine/host/test/vectors/calibration`) | Content |
+|---|---|
+| `point_canberra.json` | The Canberra tile carriers plus synthetic `calOffsetDb, calSlope, calDmedKm, calSigmaScale` (every third carrier full terms, the next offset only, the next null) and `network` (i % 2); `points`: 8 points (tile centre to ~170 km away, all four areas, some indoor), each with every carrier's `rsrp`. |
+| `tile_canberra_z13_calibrated.json` | The z13 tile rendered with those columns and two `residuals` (base64 int8 codes and `mask`): a smooth +-3 dB raster for network 0 and +10 dB squares for networks 0 and 1. |

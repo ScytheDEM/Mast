@@ -13,6 +13,7 @@
 #include "engine.h"
 #include "model/eirp.h"
 #include "model/pathloss.h"
+#include "render/point.h"
 #include "render/tile.h"
 #include "terrain/dem_grid.h"
 #include "terrain/polar_table.h"
@@ -23,9 +24,10 @@ constexpr jint kOk = 0;
 constexpr jint kInvalid = -2;  // same code as sa::kRenderInvalid
 
 // Order and element sizes of the carrier buffers passed to nativeRender: CarrierFields in EngineTypes.kt.
-constexpr int kFieldCount = 17;
-constexpr size_t kFieldSize[kFieldCount] = {8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 2, 4};
+constexpr int kFieldCount = 22;
+constexpr size_t kFieldSize[kFieldCount] = {8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 1};
 constexpr int kTerrainSlotField = 16;  // int32 per carrier: 0 = no terrain table, k = pool entry k - 1
+constexpr int kCalOffsetField = 17;    // then slope, d_median (km), sigma scale (floats) and network (uint8)
 
 // Returns the buffer's address when it is a direct buffer with at least `count * elem` bytes aligned to `elem`.
 // A zero-length request is always satisfied (`*ok` stays true and nullptr is returned).
@@ -90,24 +92,29 @@ JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeDerive(
     return kOk;
 }
 
-// Renders one tile. Returns the number of carriers evaluated (>= 0), -1 when cancelled, -2 for bad arguments
-// (including a buffer that is too small or misaligned). The output buffers are 256*256 elements each.
-//
+}  // extern "C"
+
+namespace {
+
+// The prepared carriers of nativeRender / nativePredictPoint resolved to engine arrays. Holds the per-carrier terrain
+// pointers; `ok` is false for any bad argument.
+struct Carriers {
+    sa::CarrierArrays c{};
+    std::unique_ptr<const uint8_t*[]> poolTable, poolMask, carTable, carMask;  // NOLINT: new[] below is nothrow
+    bool ok = false;
+};
+
 // Terrain: `tables` / `masks` are the distinct polar tables (kPolarTableCells bytes) and coverage masks
 // (kPolarMaskBytes) of the prepared carriers, same length; the carrier field kTerrainSlotField holds per carrier 0
 // (no terrain) or k (pool entry k - 1). The pool is resolved to pointers here on every call (a handful of JNI
 // lookups); the Kotlin side keeps the buffers strongly reachable for the life of the prepared carriers.
-// `outStats` (nullable) receives two int32: pixels covered (RSRP code != 0) and, among them, terrain-incomplete.
-JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeRender(
-    JNIEnv* env, jclass /*clazz*/, jobjectArray fields, jint n, jobjectArray tables, jobjectArray masks,
-    jobject patterns, jint patternCount, jint z, jint x, jint y, jint grid, jint area, jboolean indoor, jfloat thrDbm,
-    jobject cancel, jobject outRsrp, jobject outSinr, jobject outProb, jobject outBest, jobject outStats) {
-    if (n < 0 || n > 65535 || patternCount < 0 || area < 0 || area > 3 || fields == nullptr ||
-        env->GetArrayLength(fields) != kFieldCount || tables == nullptr || masks == nullptr) {
-        return kInvalid;
+void resolveCarriers(JNIEnv* env, jobjectArray fields, jint n, jobjectArray tables, jobjectArray masks, Carriers& out) {
+    if (n < 0 || n > 65535 || fields == nullptr || env->GetArrayLength(fields) != kFieldCount || tables == nullptr ||
+        masks == nullptr) {
+        return;
     }
     const jsize poolSize = env->GetArrayLength(tables);
-    if (poolSize < 0 || poolSize != env->GetArrayLength(masks)) return kInvalid;
+    if (poolSize < 0 || poolSize != env->GetArrayLength(masks)) return;
     const void* ptr[kFieldCount] = {};
     bool ok = true;
     for (int k = 0; k < kFieldCount; ++k) {
@@ -122,47 +129,38 @@ JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeRender(
         }
         env->DeleteLocalRef(buf);
     }
-    const uint8_t* att = inPtr<uint8_t>(env, patterns, static_cast<int64_t>(patternCount) * 360, &ok);
-    const int32_t* cancelFlag = inPtr<int32_t>(env, cancel, cancel == nullptr ? 0 : 1, &ok);
-    int32_t* stats = outPtr<int32_t>(env, outStats, outStats == nullptr ? 0 : 2, &ok);
-    constexpr int64_t px = sa::kTilePixels;
-    uint8_t* rsrp = outPtr<uint8_t>(env, outRsrp, px, &ok);
-    uint8_t* sinr = outPtr<uint8_t>(env, outSinr, px, &ok);
-    uint8_t* prob = outPtr<uint8_t>(env, outProb, px, &ok);
-    uint16_t* best = outPtr<uint16_t>(env, outBest, px, &ok);
-    if (!ok) return kInvalid;
+    if (!ok) return;
 
     // Terrain pool -> per-carrier pointers (only when some carrier has a slot).
-    std::unique_ptr<const uint8_t*[]> poolTable, poolMask, carTable, carMask;  // NOLINT: new[] below is nothrow
     const int32_t* slot = static_cast<const int32_t*>(ptr[kTerrainSlotField]);
     bool anySlot = false;
     for (jint i = 0; i < n && slot != nullptr; ++i) {
-        if (slot[i] < 0 || slot[i] > poolSize) return kInvalid;
+        if (slot[i] < 0 || slot[i] > poolSize) return;
         anySlot = anySlot || slot[i] != 0;
     }
     if (anySlot) {
-        poolTable.reset(new (std::nothrow) const uint8_t*[static_cast<size_t>(poolSize)]);
-        poolMask.reset(new (std::nothrow) const uint8_t*[static_cast<size_t>(poolSize)]);
-        carTable.reset(new (std::nothrow) const uint8_t*[static_cast<size_t>(n)]);
-        carMask.reset(new (std::nothrow) const uint8_t*[static_cast<size_t>(n)]);
-        if (!poolTable || !poolMask || !carTable || !carMask) return kInvalid;
+        out.poolTable.reset(new (std::nothrow) const uint8_t*[static_cast<size_t>(poolSize)]);
+        out.poolMask.reset(new (std::nothrow) const uint8_t*[static_cast<size_t>(poolSize)]);
+        out.carTable.reset(new (std::nothrow) const uint8_t*[static_cast<size_t>(n)]);
+        out.carMask.reset(new (std::nothrow) const uint8_t*[static_cast<size_t>(n)]);
+        if (!out.poolTable || !out.poolMask || !out.carTable || !out.carMask) return;
         for (jsize k = 0; k < poolSize; ++k) {
             jobject tb = env->GetObjectArrayElement(tables, k);
             jobject mb = env->GetObjectArrayElement(masks, k);
             bool tok = true;
-            poolTable[k] = inPtr<uint8_t>(env, tb, sa::kPolarTableCells, &tok);
-            poolMask[k] = inPtr<uint8_t>(env, mb, sa::kPolarMaskBytes, &tok);
+            out.poolTable[k] = inPtr<uint8_t>(env, tb, sa::kPolarTableCells, &tok);
+            out.poolMask[k] = inPtr<uint8_t>(env, mb, sa::kPolarMaskBytes, &tok);
             env->DeleteLocalRef(tb);
             env->DeleteLocalRef(mb);
-            if (!tok) return kInvalid;
+            if (!tok) return;
         }
         for (jint i = 0; i < n; ++i) {
-            carTable[i] = slot[i] == 0 ? nullptr : poolTable[slot[i] - 1];
-            carMask[i] = slot[i] == 0 ? nullptr : poolMask[slot[i] - 1];
+            out.carTable[i] = slot[i] == 0 ? nullptr : out.poolTable[slot[i] - 1];
+            out.carMask[i] = slot[i] == 0 ? nullptr : out.poolMask[slot[i] - 1];
         }
     }
 
-    sa::CarrierArrays c{};
+    sa::CarrierArrays& c = out.c;
     c.n = n;
     c.lat = static_cast<const double*>(ptr[0]);
     c.lon = static_cast<const double*>(ptr[1]);
@@ -180,8 +178,55 @@ JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeRender(
     c.freqKey = static_cast<const int32_t*>(ptr[13]);
     c.hrpId = static_cast<const int32_t*>(ptr[14]);
     c.hrpPeak = static_cast<const int16_t*>(ptr[15]);
-    c.terrainTable = carTable.get();
-    c.terrainMask = carMask.get();
+    c.terrainTable = out.carTable.get();
+    c.terrainMask = out.carMask.get();
+    c.calOffsetDb = static_cast<const float*>(ptr[kCalOffsetField]);
+    c.calSlope = static_cast<const float*>(ptr[kCalOffsetField + 1]);
+    c.calDmedKm = static_cast<const float*>(ptr[kCalOffsetField + 2]);
+    c.calSigmaScale = static_cast<const float*>(ptr[kCalOffsetField + 3]);
+    c.network = static_cast<const uint8_t*>(ptr[kCalOffsetField + 4]);
+    out.ok = true;
+}
+
+}  // namespace
+
+extern "C" {
+
+// Renders one tile. Returns the number of carriers evaluated (>= 0), -1 when cancelled, -2 for bad arguments
+// (including a buffer that is too small or misaligned). The output buffers are 256*256 elements each.
+// `residuals` (<= 32 direct buffers of 65536 int8) and `residualMasks` (same length) are the residual rasters
+// (Calibration rule 5). `outStats` (nullable) receives two int32: pixels covered (RSRP code != 0) and, among them,
+// terrain-incomplete.
+JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeRender(
+    JNIEnv* env, jclass /*clazz*/, jobjectArray fields, jint n, jobjectArray tables, jobjectArray masks,
+    jobject patterns, jint patternCount, jint z, jint x, jint y, jint grid, jint area, jboolean indoor, jfloat thrDbm,
+    jobjectArray residuals, jintArray residualMasks, jobject cancel, jobject outRsrp, jobject outSinr, jobject outProb,
+    jobject outBest, jobject outStats) {
+    if (patternCount < 0 || area < 0 || area > 3 || residuals == nullptr || residualMasks == nullptr) return kInvalid;
+    const jsize residualCount = env->GetArrayLength(residuals);
+    if (residualCount > sa::kMaxResidualRasters || residualCount != env->GetArrayLength(residualMasks)) return kInvalid;
+    Carriers cs;
+    resolveCarriers(env, fields, n, tables, masks, cs);
+    if (!cs.ok) return kInvalid;
+    bool ok = true;
+    const uint8_t* att = inPtr<uint8_t>(env, patterns, static_cast<int64_t>(patternCount) * 360, &ok);
+    const int32_t* cancelFlag = inPtr<int32_t>(env, cancel, cancel == nullptr ? 0 : 1, &ok);
+    int32_t* stats = outPtr<int32_t>(env, outStats, outStats == nullptr ? 0 : 2, &ok);
+    constexpr int64_t px = sa::kTilePixels;
+    uint8_t* rsrp = outPtr<uint8_t>(env, outRsrp, px, &ok);
+    uint8_t* sinr = outPtr<uint8_t>(env, outSinr, px, &ok);
+    uint8_t* prob = outPtr<uint8_t>(env, outProb, px, &ok);
+    uint16_t* best = outPtr<uint16_t>(env, outBest, px, &ok);
+    sa::ResidualRaster rasters[sa::kMaxResidualRasters];
+    jint maskValues[sa::kMaxResidualRasters];
+    if (residualCount > 0) env->GetIntArrayRegion(residualMasks, 0, residualCount, maskValues);
+    for (jsize r = 0; r < residualCount; ++r) {
+        jobject rb = env->GetObjectArrayElement(residuals, r);
+        rasters[r] = {inPtr<int8_t>(env, rb, px, &ok), static_cast<uint32_t>(maskValues[r])};
+        env->DeleteLocalRef(rb);
+    }
+    if (!ok) return kInvalid;
+
     const sa::PatternTable table{patternCount, att};
     sa::RenderParams p{};
     p.z = z;
@@ -191,12 +236,30 @@ JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeRender(
     p.area = static_cast<sa::Area>(area);
     p.indoor = indoor != JNI_FALSE;
     p.thrDbm = thrDbm;
+    p.residuals = residualCount > 0 ? rasters : nullptr;
+    p.residualCount = residualCount;
     sa::TileOut out{rsrp, sinr, prob, best};
     if (stats != nullptr) {
         out.terrainCoveredPx = &stats[0];
         out.terrainIncompletePx = &stats[1];
     }
-    return static_cast<jint>(sa::renderTile(c, table, p, out, cancelFlag));
+    return static_cast<jint>(sa::renderTile(cs.c, table, p, out, cancelFlag));
+}
+
+// Point prediction (render/point.h): `outRsrp` receives n floats (NaN = unusable carrier). Returns n or -2.
+JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativePredictPoint(
+    JNIEnv* env, jclass /*clazz*/, jobjectArray fields, jint n, jobjectArray tables, jobjectArray masks,
+    jobject patterns, jint patternCount, jdouble lat, jdouble lon, jint area, jboolean indoor, jobject outRsrp) {
+    if (patternCount < 0 || area < 0 || area > 3) return kInvalid;
+    Carriers cs;
+    resolveCarriers(env, fields, n, tables, masks, cs);
+    if (!cs.ok) return kInvalid;
+    bool ok = true;
+    const uint8_t* att = inPtr<uint8_t>(env, patterns, static_cast<int64_t>(patternCount) * 360, &ok);
+    float* out = outPtr<float>(env, outRsrp, n, &ok);
+    if (!ok) return kInvalid;
+    const sa::PatternTable table{patternCount, att};
+    return static_cast<jint>(sa::predictPoint(cs.c, table, lat, lon, static_cast<sa::Area>(area), indoor != JNI_FALSE, out));
 }
 
 // Builds one polar terrain table (terrain/polar_table.h) from a DEM mosaic. `dem` holds rows * cols int16 (native

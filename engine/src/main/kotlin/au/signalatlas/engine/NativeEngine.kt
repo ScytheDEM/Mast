@@ -34,14 +34,27 @@ object NativeEngine {
      * [cancel] is null or a 4-byte buffer the engine polls. The outputs are direct buffers of 65536 bytes (rsrp,
      * sinr, prob) and 131072 bytes (best, uint16); [outStats] (null or 8 bytes) receives two int32: pixels covered
      * (RSRP code != 0) and, among them, pixels whose best server had no complete terrain lookup. Returns the
-     * number of carriers evaluated (>= 0), -1 when cancelled, or -2 for bad arguments.
+     * number of carriers evaluated (>= 0), -1 when cancelled, or -2 for bad arguments. [residuals] (at most 32
+     * direct buffers of 65536 int8 codes) and [residualMasks] (same length) are the tile's residual rasters.
      */
     @JvmStatic
     external fun nativeRender(
         fields: Array<ByteBuffer>, n: Int, tables: Array<ByteBuffer>, masks: Array<ByteBuffer>,
         patterns: ByteBuffer?, patternCount: Int, z: Int, x: Int, y: Int,
-        grid: Int, area: Int, indoor: Boolean, thrDbm: Float, cancel: ByteBuffer?,
+        grid: Int, area: Int, indoor: Boolean, thrDbm: Float, residuals: Array<ByteBuffer>, residualMasks: IntArray,
+        cancel: ByteBuffer?,
         outRsrp: ByteBuffer, outSinr: ByteBuffer, outProb: ByteBuffer, outBest: ByteBuffer, outStats: ByteBuffer?,
+    ): Int
+
+    /**
+     * Predicts every prepared carrier's RSRP at (lat, lon) (same model as [nativeRender], no culling, no residual
+     * raster) into [outRsrp] (n floats; NaN = unusable carrier). Returns n, or -2 for bad arguments.
+     */
+    @JvmStatic
+    external fun nativePredictPoint(
+        fields: Array<ByteBuffer>, n: Int, tables: Array<ByteBuffer>, masks: Array<ByteBuffer>,
+        patterns: ByteBuffer?, patternCount: Int, lat: Double, lon: Double, area: Int, indoor: Boolean,
+        outRsrp: ByteBuffer,
     ): Int
 
     /**

@@ -372,30 +372,90 @@ def reaches_tile(lat, lon, r_max_km, bounds):
     return haversine_m(lat, lon, clamp(lat, s, n), clamp(lon, w, e)) <= r_max_km * 1000.0
 
 
+# ---------------------------------------------------------------- calibration (M4 Calibration rules 4-6)
+
+CAL_RATIO_MIN = 0.1        # the slope term's d / d_median is clamped to [0.1, 10] (no extrapolation past a decade)
+CAL_RATIO_MAX = 10.0
+CAL_SIGMA_FLOOR_DB = 4.0   # rule 6
+
+
+def _finite(v):
+    return v is not None and math.isfinite(v)
+
+
+def calibration_db(offset_db, slope, d_med_km, d2_m):
+    """Rules 4: mu + b * log10(clamp(d / d_median, 0.1, 10)) at horizontal distance d2_m (m). None / NaN offset is
+    0; a None / NaN slope or a d_median that is not > 0 drops the slope term."""
+    o = offset_db if _finite(offset_db) else 0.0
+    if not (_finite(slope) and _finite(d_med_km) and d_med_km > 0.0) or slope == 0.0:
+        return o
+    ratio = clamp(d2_m / (d_med_km * 1000.0), CAL_RATIO_MIN, CAL_RATIO_MAX)
+    return o + slope * math.log10(ratio)
+
+
+def calibrated_sigma(sigma_db, scale):
+    """Rule 6 as applied per carrier: max(4, sigma * scale) when scale < 1 (negative counts as 0), else sigma."""
+    if not (_finite(scale) and scale < 1.0):
+        return sigma_db
+    return max(CAL_SIGMA_FLOOR_DB, sigma_db * max(scale, 0.0))
+
+
+def _cal(carriers, key, i):
+    col = carriers.get(key)
+    return None if col is None else col[i]
+
+
+def carrier_usable(carriers, i):
+    lat, lon, e = carriers["lat"][i], carriers["lon"][i], carriers["eirpRe"][i]
+    return all(_finite(v) for v in (lat, lon, e)) and abs(lat) <= 90.0 and abs(lon) <= 540.0
+
+
+def carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain=None):
+    """One carrier at one point: (RSRP dBm, sigma dB, terrain complete). Rules 3-8, Terrain rule 5, Calibration rules
+    4 and 6 (the optional `calOffsetDb`, `calSlope`, `calDmedKm`, `calSigmaScale` columns; no residual raster)."""
+    h = h_tx_clamped(carriers["hTx"][i])
+    d2 = haversine_m(carriers["lat"][i], carriers["lon"][i], lat, lon)
+    d3 = math.sqrt(d2 * d2 + (h - H_RX) ** 2)
+    brg = bearing_deg(carriers["lat"][i], carriers["lon"][i], lat, lon)
+    pid = carriers["hrpId"][i]
+    att = patterns[pid - 1] if pid > 0 else None
+    a = antenna_attenuation(brg, d2, carriers["az"][i], carriers["hBw"][i], carriers["fb"][i],
+                            carriers["gain"][i], carriers["tilt"][i], carriers["hTx"][i],
+                            carriers["freqMhz"][i], att, carriers["hrpPeak"][i])
+    pl, sg, _ = path_loss(carriers["freqMhz"][i], d3 / 1000.0, carriers["hTx"][i], area)
+    if indoor:
+        pl += o2i_low_loss_db(carriers["freqMhz"][i])
+        sg = indoor_sigma(sg)
+    l_terr, full = terrain(i, brg, d2) if terrain is not None else (0.0, False)
+    cal = calibration_db(_cal(carriers, "calOffsetDb", i), _cal(carriers, "calSlope", i),
+                         _cal(carriers, "calDmedKm", i), d2)
+    rsrp = carriers["eirpRe"][i] - a - pl - l_terr + cal    # Terrain rule 5, Calibration rule 4
+    return rsrp, calibrated_sigma(sg, _cal(carriers, "calSigmaScale", i)), full
+
+
+def predict_point(carriers, patterns, lat, lon, area, indoor=False, terrain=None):
+    """M4 point query: every carrier's RSRP at (lat, lon), no culling; None for an unusable carrier."""
+    return [carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain)[0]
+            if carrier_usable(carriers, i) else None for i in range(carriers["n"])]
+
+
+def residual_pixel(index, grid):
+    """Calibration rule 5: the raster pixel (0..255) that grid index `index` of a `grid` x `grid` render samples."""
+    return int(math.floor((index + 0.5) * 256.0 / grid))
+
+
 # ---------------------------------------------------------------- tile renderer
 
-def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None):
+def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None, residual=None):
     """Best-server RSRP, SINR, probability, carrier index and whether the best server's terrain loss
-    came from a complete profile, at one point. `terrain(i, bearing, d2D)` -> (L_terr dB, complete)."""
+    came from a complete profile, at one point. `terrain(i, bearing, d2D)` -> (L_terr dB, complete);
+    `residual(i)` -> the residual rasters' sum (dB) for carrier i at this point."""
     rsrp = []
     sigma = []
     complete = []
     for i in idx:
-        h = h_tx_clamped(carriers["hTx"][i])
-        d2 = haversine_m(carriers["lat"][i], carriers["lon"][i], lat, lon)
-        d3 = math.sqrt(d2 * d2 + (h - H_RX) ** 2)
-        brg = bearing_deg(carriers["lat"][i], carriers["lon"][i], lat, lon)
-        pid = carriers["hrpId"][i]
-        att = patterns[pid - 1] if pid > 0 else None
-        a = antenna_attenuation(brg, d2, carriers["az"][i], carriers["hBw"][i], carriers["fb"][i],
-                                carriers["gain"][i], carriers["tilt"][i], carriers["hTx"][i],
-                                carriers["freqMhz"][i], att, carriers["hrpPeak"][i])
-        pl, sg, _ = path_loss(carriers["freqMhz"][i], d3 / 1000.0, carriers["hTx"][i], area)
-        if indoor:
-            pl += o2i_low_loss_db(carriers["freqMhz"][i])
-            sg = indoor_sigma(sg)
-        l_terr, full = terrain(i, brg, d2) if terrain is not None else (0.0, False)
-        rsrp.append(carriers["eirpRe"][i] - a - pl - l_terr)    # Terrain rule 5
+        r, sg, full = carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain)
+        rsrp.append(r + (residual(i) if residual is not None else 0.0))    # Calibration rule 5
         sigma.append(sg)
         complete.append(full)
     if not idx:
@@ -416,25 +476,37 @@ def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None):
     return rsrp[b], sinr, prob, best, complete[b]
 
 
-def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-118.0, terrain=None):
+def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-118.0, terrain=None, residuals=None):
     """Rules 8-9: render one 256x256 tile from structure-of-arrays `carriers` (the tile JSON fields).
 
     `patterns[id - 1]` is the 360-entry quantised attenuation of pattern `id`. Returns a dict with
     rsrpCodes / sinrCodes / probCodes / best (row-major, 65536 each) and `evaluated` (carriers that
     passed culling). With `terrain(i, bearing, d2D)` -> (L_terr dB, complete) (Terrain rules 5-6) each
     carrier's RSRP loses L_terr, and `terrainComplete` (65536 bools) says whether the pixel's best server
-    (nearest grid sample, as for `best`) had a complete profile."""
+    (nearest grid sample, as for `best`) had a complete profile. `residuals` (Calibration rule 5) is a list of
+    (codes, network_mask): 65536 int8 codes (0.25 dB, row-major) added to every carrier whose `network` column bit
+    is set in the mask, sampled at `residual_pixel` of each grid index."""
     bounds = tile_bounds(z, x, y)
     idx = [i for i in range(carriers["n"])
-           if all(math.isfinite(v) for v in (carriers["lat"][i], carriers["lon"][i]))
+           if carrier_usable(carriers, i)
            and reaches_tile(carriers["lat"][i], carriers["lon"][i], carriers["rMaxKm"][i], bounds)]
+    residuals = residuals or []
+    nets = carriers.get("network")
     vals = []
     for j in range(grid):
         lat = tile_lat(y + (j + 0.5) / grid, z)
         row = []
         for i in range(grid):
             lon = tile_lon(x + (i + 0.5) / grid, z)
-            row.append(_sample(carriers, idx, patterns, lat, lon, area, indoor, thr_dbm, terrain))
+            pixel = residual_pixel(j, grid) * 256 + residual_pixel(i, grid)
+            here = [(codes[pixel] * 0.25, mask) for codes, mask in residuals]
+
+            def residual(k, here=here):
+                if nets is None or not 0 <= nets[k] < 32:
+                    return 0.0
+                return sum(v for v, mask in here if (mask >> nets[k]) & 1)
+            row.append(_sample(carriers, idx, patterns, lat, lon, area, indoor, thr_dbm, terrain,
+                               residual if residuals else None))
         vals.append(row)
 
     out = {"rsrpCodes": [], "sinrCodes": [], "probCodes": [], "best": [], "evaluated": len(idx),

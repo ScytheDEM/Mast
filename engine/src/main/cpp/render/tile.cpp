@@ -8,12 +8,10 @@
 #include <vector>
 
 #include "model/antenna.h"
-#include "model/eirp.h"
-#include "model/limits.h"
 #include "model/pathloss.h"
 #include "model/stats.h"
+#include "render/carrier.h"
 #include "render/mercator.h"
-#include "terrain/polar_table.h"
 
 namespace sa {
 namespace {
@@ -27,18 +25,6 @@ constexpr int32_t kBlocks = 16;            // the grid is split into kBlocks x k
 constexpr double kBoundSlackDb = 0.01;     // keeps the RSRP upper bound safe against rounding
 constexpr double kInterferenceTol = 1e-5;  // relative error allowed when truncating the interference sum
 constexpr int32_t kMaxZ = 30;
-
-struct Carrier {
-    PreparedAntenna ant;
-    PreparedPathLoss pl;
-    double eirpRe;
-    double hd2;      // (h_tx - h_rx)^2, m^2
-    double noiseMw;  // thermal noise for this carrier's sub-carrier spacing, mW
-    double hrpMinDb; // smallest attenuation of the HRP (dB), 0 without one
-    const uint8_t* terrainTable;  // polar table / mask (terrain/polar_table.h), null = quick model only
-    const uint8_t* terrainMask;
-    int32_t freqKey, sectorKey, orig, group;
-};
 
 // One distinct (lat, lon): the carriers of a site are contiguous in the carrier array.
 struct Site {
@@ -82,6 +68,12 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     !c.gain || !c.rMaxKm || !c.tech || !c.sectorKey || !c.freqKey)) {
         return kRenderInvalid;
     }
+    if (p.residualCount < 0 || p.residualCount > kMaxResidualRasters || (p.residualCount > 0 && !p.residuals)) {
+        return kRenderInvalid;
+    }
+    for (int32_t r = 0; r < p.residualCount; ++r) {
+        if (p.residuals[r].q == nullptr) return kRenderInvalid;
+    }
     const int64_t tiles = int64_t{1} << p.z;
     if (p.x < 0 || p.y < 0 || p.x >= tiles || p.y >= tiles) return kRenderInvalid;
 
@@ -91,9 +83,8 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
     std::vector<int32_t> alive;
     alive.reserve(static_cast<size_t>(c.n));
     for (int32_t i = 0; i < c.n; ++i) {
+        if (!carrierUsable(c, i)) continue;
         const double lat = c.lat[i], lon = c.lon[i];
-        if (!std::isfinite(lat) || !std::isfinite(lon) || std::fabs(lat) > 90.0 || std::fabs(lon) > 540.0) continue;
-        if (!std::isfinite(c.eirpRe[i])) continue;
         const double rM = static_cast<double>(c.rMaxKm[i]) * 1000.0;
         if (!(merc::haversineM(lat, lon, clampd(lat, south, north), clampd(lon, west, east)) <= rM)) continue;
         alive.push_back(i);
@@ -122,33 +113,12 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
     for (int32_t k = 0; k < K; ++k) {
         const int32_t i = alive[static_cast<size_t>(k)];
         Carrier& cr = car[static_cast<size_t>(k)];
-        const uint8_t* hrp = nullptr;
-        int16_t peak = 0;
-        if (c.hrpId && patterns.att && c.hrpId[i] >= 1 && c.hrpId[i] <= patterns.count) {
-            hrp = patterns.att + static_cast<size_t>(c.hrpId[i] - 1) * 360;
-            peak = c.hrpPeak ? c.hrpPeak[i] : int16_t{0};
+        cr = prepareCarrier(c, patterns, i, p.area);
+        if (c.network != nullptr && c.network[i] < 32) {
+            for (int32_t r = 0; r < p.residualCount; ++r) {
+                if ((p.residuals[r].networkMask >> c.network[i]) & 1u) cr.rasterBits |= 1u << r;
+            }
         }
-        const AntennaParams ap{c.az[i], c.hBw[i], c.fb[i], c.gain[i], c.tilt[i], c.hTx[i], c.freqMhz[i], hrp, peak};
-        cr.ant = prepareAntenna(ap);
-        cr.pl = preparePathLoss(c.freqMhz[i], c.hTx[i], p.area);
-        cr.eirpRe = c.eirpRe[i];
-        const double dh = sanitizeHeight(c.hTx[i]) - kHRx;
-        cr.hd2 = dh * dh;
-        cr.hrpMinDb = 0.0;
-        if (hrp != nullptr) {
-            uint8_t lo = 255;
-            for (int32_t q = 0; q < 360; ++q) lo = std::min(lo, hrp[q]);
-            cr.hrpMinDb = lo * 0.25;
-        }
-        const Tech tech = c.tech[i] == 1 ? Tech::NR : Tech::LTE;
-        const double scsHz = scsKhz(tech, c.freqMhz[i]) * 1000.0;
-        cr.noiseMw = std::pow(10.0, (-174.0 + 10.0 * std::log10(scsHz) + 7.0) / 10.0);
-        cr.terrainTable = c.terrainTable ? c.terrainTable[i] : nullptr;
-        cr.terrainMask = c.terrainMask ? c.terrainMask[i] : nullptr;
-        cr.freqKey = c.freqKey[i];
-        cr.sectorKey = c.sectorKey[i];
-        cr.orig = i;
-        cr.group = 0;
         if (sites.empty() || siteLat.back() != c.lat[i] || siteLon.back() != c.lon[i]) {
             const double pr = c.lat[i] * kDegToRad, lr = c.lon[i] * kDegToRad;
             sites.push_back({std::sin(pr), std::cos(pr), std::sin(pr / 2.0), std::cos(pr / 2.0), std::sin(lr / 2.0),
@@ -185,7 +155,8 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
     // with distance). Carriers are visited in decreasing bound; once a bound falls below the best RSRP found at the point,
     // no remaining carrier can be the best server, so the exact (expensive) antenna + path loss runs only for the
     // few contenders. The bound ignores the terrain loss (L_terr >= 0 only lowers a carrier's RSRP, so the bound
-    // stays valid, merely looser where terrain matters). The best server and its RSRP are therefore exactly the reference's. The interference sum over
+    // stays valid, merely looser where terrain matters). Calibration terms enter the bound exactly: the offset plus the
+    // slope term's maximum over the block's distance range, plus each applicable residual raster's block maximum. The best server and its RSRP are therefore exactly the reference's. The interference sum over
     // the best server's frequency group is visited in the same order and stops once the rest (bounded by the group
     // size times the next bound) is under 1e-5 of noise + interference, i.e. under 5e-5 dB of SINR.
     const int32_t N = p.grid;
@@ -204,6 +175,19 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         colCh[static_cast<size_t>(i)] = std::cos(lr / 2.0);
     }
     for (int32_t j = 0; j < N; ++j) rowLatDeg[static_cast<size_t>(j)] = merc::tileLatDeg(p.y + (j + 0.5) / N, p.z);
+    // Residual rasters: the pixel a grid index samples, and per raster the value (dB) at the current point.
+    const int32_t R = p.residualCount;
+    std::vector<int32_t> rasterPx(static_cast<size_t>(N));
+    for (int32_t i = 0; i < N; ++i) rasterPx[static_cast<size_t>(i)] = static_cast<int32_t>(std::floor((i + 0.5) * 256.0 / N));
+    std::vector<double> resAt(static_cast<size_t>(R)), resMax(static_cast<size_t>(R));
+    // Sum of the rasters selected by `bits`, from per-raster values `v`.
+    auto rasterSum = [R](uint32_t bits, const double* v) {
+        double sum = 0.0;
+        for (int32_t r = 0; r < R && bits != 0; ++r, bits >>= 1) {
+            if (bits & 1u) sum += v[r];
+        }
+        return sum;
+    };
 
     // Per block of the current block row: bound (dBm), bound as 0.5 * mW, and the visiting order.
     std::vector<double> ub(static_cast<size_t>(kBlocks) * KK), ubLin(static_cast<size_t>(kBlocks) * KK);
@@ -233,6 +217,16 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 }
             }
             radius = radius * 1.05 + 2.0;  // every point of the block lies within `radius` of the centre sample
+            // The largest value each residual raster takes at the block's samples.
+            for (int32_t r = 0; r < R; ++r) {
+                int32_t hi = -128;
+                const int8_t* q = p.residuals[r].q;
+                for (int32_t j = bj * B; j < (bj + 1) * B; ++j) {
+                    const int8_t* row = q + static_cast<size_t>(rasterPx[static_cast<size_t>(j)]) * 256;
+                    for (int32_t i = bi * B; i < (bi + 1) * B; ++i) hi = std::max<int32_t>(hi, row[rasterPx[static_cast<size_t>(i)]]);
+                }
+                resMax[static_cast<size_t>(r)] = hi * 0.25;
+            }
             double* bub = &ub[static_cast<size_t>(bi) * KK];
             double* blin = &ubLin[static_cast<size_t>(bi) * KK];
             int32_t* bord = &ord[static_cast<size_t>(bi) * KK];
@@ -285,7 +279,10 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     const double vGap = std::fmax(0.0, std::fmax(thLo - an.tilt, an.tilt - thHi));
                     const double aV = std::fmin(12.0 * (vGap / an.theta3) * (vGap / an.theta3), 30.0);
                     const double aBound = std::fmin(aH + aV, an.maxA);
-                    bub[k] = cr.eirpRe - aBound - pl.plDb + kBoundSlackDb;
+                    // Calibration: the offset + slope term at its largest over [dlo, dhi], and each applicable
+                    // raster's block maximum (L_terr >= 0 is still left out).
+                    bub[k] = cr.eirpRe - aBound - pl.plDb + cr.cal.upperBound(dlo, dhi) +
+                             rasterSum(cr.rasterBits, resMax.data()) + kBoundSlackDb;
                     if (p.debugNoBounds) bub[k] = std::numeric_limits<double>::infinity();
                     blin[k] = kLoad * std::pow(10.0, bub[k] / 10.0);
                     bord[k] = k;
@@ -311,7 +308,12 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 rowXb[static_cast<size_t>(s)] = st.sinP * cosP2;
             }
 
+            const int8_t* rasterRow[kMaxResidualRasters];
+            for (int32_t r = 0; r < R; ++r) {
+                rasterRow[r] = p.residuals[r].q + static_cast<size_t>(rasterPx[static_cast<size_t>(j)]) * 256;
+            }
             for (int32_t i = 0; i < N; ++i) {
+                for (int32_t r = 0; r < R; ++r) resAt[static_cast<size_t>(r)] = rasterRow[r][rasterPx[static_cast<size_t>(i)]] * 0.25;
                 const size_t bi = static_cast<size_t>(i / B);
                 const double* bub = &ub[bi * KK];
                 const double* blin = &ubLin[bi * KK];
@@ -340,27 +342,18 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                         if (brg < 0.0) brg += 360.0;
                         sbrg[s] = brg;
                     }
-                    const double d2 = sd2[s];
-                    const float aDb = cr.ant.evaluate(static_cast<float>(sbrg[s]), static_cast<float>(d2));
-                    const float d3Km = static_cast<float>(std::sqrt(d2 * d2 + cr.hd2) / 1000.0);
-                    const PathLoss pl = indoor ? cr.pl.evaluateIndoor(d3Km) : cr.pl.evaluate(d3Km);
-                    // Terrain rule 5: RSRP = eirpRe - A - PL_quick - L_terr. A carrier without a table keeps the quick
-                    // model and counts as incomplete.
-                    bool inc = true;
-                    float lTerr = 0.0f;
-                    if (cr.terrainTable != nullptr) {
-                        lTerr = terrainLookup(cr.terrainTable, cr.terrainMask, static_cast<float>(sbrg[s]),
-                                              static_cast<float>(d2), &inc);
-                    }
-                    const double r = cr.eirpRe - aDb - pl.plDb - lTerr;
+                    // Terrain rule 5 and Calibration rules 4-6: RSRP = eirpRe - A - PL_quick - L_terr + calibration
+                    // + residual. A carrier without a table keeps the quick model and counts as incomplete.
+                    const CarrierEval ev = evaluateCarrier(cr, sbrg[s], sd2[s], indoor);
+                    const double r = cr.rasterBits == 0 ? ev.rsrp : ev.rsrp + rasterSum(cr.rasterBits, resAt.data());
                     evalStamp[static_cast<size_t>(k)] = stamp;
                     rs[static_cast<size_t>(k)] = r;
                     evk[static_cast<size_t>(nEval++)] = k;
                     if (bestK < 0 || r > bestR || (r == bestR && cr.orig < car[static_cast<size_t>(bestK)].orig)) {
                         bestR = r;
                         bestK = k;
-                        bestSigma = pl.sigmaDb;
-                        bestInc = inc;
+                        bestSigma = ev.sigmaDb;
+                        bestInc = ev.incomplete;
                     }
                 };
 

@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(SA_MODEL_SOURCES model/eirp.cpp model/antenna.cpp model/pathloss.cpp render/tile.cpp
+set(SA_MODEL_SOURCES model/eirp.cpp model/antenna.cpp model/pathloss.cpp render/tile.cpp render/carrier.cpp render/point.cpp
     terrain/bullington.cpp terrain/polar_table.cpp)
 add_library(saengine SHARED engine.cpp jni_bridge.cpp ${SA_MODEL_SOURCES})
 target_include_directories(saengine PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

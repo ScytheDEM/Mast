@@ -191,5 +191,32 @@ class Geometry(unittest.TestCase):
         self.assertEqual(ref.area_class(2), "RURAL")
 
 
+class Calibration(unittest.TestCase):
+    def test_terms(self):
+        self.assertEqual(ref.calibration_db(None, None, None, 500.0), 0.0)
+        self.assertAlmostEqual(ref.calibration_db(-3.0, 10.0, 2.0, 20000.0), 7.0)
+        self.assertAlmostEqual(ref.calibration_db(-3.0, 10.0, 2.0, 2.0e6), 7.0)     # clamped at 10x
+        self.assertAlmostEqual(ref.calibration_db(-3.0, 10.0, 2.0, 0.0), -13.0)     # clamped at 0.1x
+        self.assertEqual(ref.calibration_db(2.0, 5.0, 0.0, 500.0), 2.0)             # no usable median
+        self.assertEqual(ref.calibrated_sigma(8.0, None), 8.0)
+        self.assertEqual(ref.calibrated_sigma(8.0, 0.5), 4.0)
+        self.assertEqual(ref.calibrated_sigma(6.0, 0.5), 4.0)                       # 4 dB floor
+        self.assertEqual(ref.calibrated_sigma(6.0, 1.5), 6.0)
+
+    def test_point_equals_tile_sample(self):
+        carriers = {"n": 2, "lat": [-35.0, -35.01], "lon": [149.0, 149.02], "hTx": [30.0, 20.0], "az": [None, 90.0],
+                    "tilt": [0.0, 0.0], "eirpRe": [20.0, 18.0], "freqMhz": [758.0, 1830.0], "hBw": [None, 65.0],
+                    "fb": [None, 25.0], "gain": [None, 16.0], "rMaxKm": [40.0, 30.0], "tech": [0, 0],
+                    "sectorKey": [1, 2], "freqKey": [1, 2], "hrpId": [0, 0], "hrpPeak": [0, 0],
+                    "calOffsetDb": [3.0, None], "calSlope": [-4.0, None], "calDmedKm": [1.5, None],
+                    "calSigmaScale": [0.5, None]}
+        pts = ref.predict_point(carriers, [], -35.005, 149.01, "SUBURBAN")
+        s = ref._sample(carriers, [0, 1], [], -35.005, 149.01, "SUBURBAN", False, -118.0)
+        self.assertAlmostEqual(max(pts), s[0])
+        self.assertEqual(ref.residual_pixel(0, 128), 1)
+        self.assertEqual(ref.residual_pixel(127, 128), 255)
+        self.assertEqual(ref.residual_pixel(5, 256), 5)
+
+
 if __name__ == "__main__":
     unittest.main()

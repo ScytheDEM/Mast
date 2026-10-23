@@ -28,6 +28,8 @@ android {
     sourceSets {
         // The terrain vectors (a DEM crop and the Canberra terrain tile) are shared with the host GoogleTest suite.
         getByName("androidTest").assets.srcDir("host/test/vectors/terrain")
+        // M4: the point-query and calibrated-tile vectors.
+        getByName("androidTest").assets.srcDir("host/test/vectors/calibration")
     }
 
     compileOptions {

@@ -6,14 +6,15 @@ import com.google.common.truth.Truth.assertThat
 import kotlin.math.abs
 import org.json.JSONObject
 
-/** A tile vector (Python reference output) and the carriers it was rendered from. */
+/** A tile vector (Python reference output) and the carriers it was rendered from (tile fields read on first use, so
+ *  a carriers-only vector such as the point query's loads too). */
 internal class TileVector(val json: JSONObject, val batch: CarrierBatch) {
-    val z = json.getInt("z")
-    val x = json.getInt("x")
-    val y = json.getInt("y")
-    val area = AreaClass.valueOf(json.getString("area"))
-    val indoor = json.getBoolean("indoor")
-    val thr = json.getDouble("thrDbm").toFloat()
+    val z by lazy { json.getInt("z") }
+    val x by lazy { json.getInt("x") }
+    val y by lazy { json.getInt("y") }
+    val area by lazy { AreaClass.valueOf(json.getString("area")) }
+    val indoor by lazy { json.optBoolean("indoor", false) }
+    val thr by lazy { json.getDouble("thrDbm").toFloat() }
     val carriers: JSONObject = json.getJSONObject("carriers")
     fun codes(key: String): IntArray = json.getJSONArray(key).let { a -> IntArray(a.length()) { a.getInt(it) } }
 }

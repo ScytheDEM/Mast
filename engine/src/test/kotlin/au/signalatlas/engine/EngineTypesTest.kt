@@ -215,10 +215,10 @@ class EngineTypesTest {
         val b = table()
         val asked = mutableListOf<Int>()
         // Kept rows are 0, 2, 5 (see dropsUnusableCarriersAndMapsIndicesBack). Row 0 and 5 share a; row 2 has none.
-        val p = PreparedCarriers.build(batch(), null, false, FakeDerive()) { row ->
+        val p = PreparedCarriers.build(batch(), null, false, FakeDerive(), terrain = { row ->
             asked += row
             when (row) { 0 -> a; 5 -> a; else -> null }
-        }
+        })
         assertThat(asked).containsExactly(0, 2, 5).inOrder()
         assertThat(p.terrainPool).hasSize(1)
         assertThat(p.terrainTableAt(0)).isSameInstanceAs(a)
@@ -228,7 +228,7 @@ class EngineTypesTest {
         assertThat(p.terrainMasks[0]).isSameInstanceAs(a.mask)
         assertThrows(IllegalArgumentException::class.java) { p.terrainTableAt(3) }
 
-        val two = PreparedCarriers.build(batch(), null, false, FakeDerive()) { row -> if (row == 2) b else a }
+        val two = PreparedCarriers.build(batch(), null, false, FakeDerive(), terrain = { row -> if (row == 2) b else a })
         assertThat(two.terrainPool).containsExactly(a, b).inOrder()
         assertThat(two.fields[CarrierField.TERRAIN_SLOT.ordinal].getInt(4)).isEqualTo(2)
     }
@@ -286,5 +286,47 @@ class EngineTypesTest {
         assertThat(tile(1000, 1000).isTerrainAccurate).isFalse()
         assertThat(tile(0, 0).isTerrainAccurate).isFalse()       // nothing covered: no label to earn
         assertThat(RenderedTile(1, 0, 0, ByteArray(0), ByteArray(0), ByteArray(0), ShortArray(0)).isTerrainAccurate).isFalse()
+    }
+
+    // ---- calibration marshalling (M4)
+
+    @Test fun calibrationProviderGetsBatchRowsAndDefaultsAreNeutral() {
+        val asked = mutableListOf<Int>()
+        val p = PreparedCarriers.build(batch(), null, false, FakeDerive(), calibration = { row ->
+            asked += row
+            if (row == 2) SectorTerms(-6.5f, 3f, 1.25f, 0.6f) else null
+        })
+        assertThat(asked).containsExactly(0, 2, 5).inOrder()
+        // Row 2 is kept carrier 1.
+        assertThat(p.calOffsetAt(1)).isEqualTo(-6.5f)
+        assertThat(p.calSlopeAt(1)).isEqualTo(3f)
+        assertThat(p.calDmedAt(1)).isEqualTo(1.25f)
+        assertThat(p.calSigmaScaleAt(1)).isEqualTo(0.6f)
+        for (k in listOf(0, 2)) {
+            assertThat(p.calOffsetAt(k)).isEqualTo(0f)
+            assertThat(p.calSlopeAt(k)).isEqualTo(0f)
+            assertThat(p.calSigmaScaleAt(k)).isEqualTo(1f)
+        }
+        // The network column carries the batch's network ordinals (rows 0, 2, 5 -> 0, 2, 2).
+        assertThat((0 until p.size).map(p::networkAt)).containsExactly(0, 2, 2).inOrder()
+        val plain = PreparedCarriers.build(batch(), null, false, FakeDerive())
+        assertThat((0 until plain.size).map(plain::calOffsetAt)).containsExactly(0f, 0f, 0f)
+        assertThat(plain.rMaxKm(2)).isEqualTo(plain.rMaxKmAt(2))
+        assertThrows(IllegalArgumentException::class.java) { plain.rMaxKm(3) }
+    }
+
+    @Test fun residualRasterCopiesItsCodesAndRoundsDecibels() {
+        val codes = ByteArray(RenderedTile.PIXELS) { (it % 7 - 3).toByte() }
+        val r = ResidualRaster(0b101, codes)
+        codes[0] = 99  // the raster holds its own copy
+        assertThat(r.buffer.isDirect).isTrue()
+        assertThat(r.buffer.get(0)).isEqualTo((-3).toByte())
+        assertThat(r.buffer.get(6)).isEqualTo(3.toByte())
+        assertThat(r.networkMask).isEqualTo(5)
+        assertThrows(IllegalArgumentException::class.java) { ResidualRaster(1, ByteArray(10)) }
+        assertThat(ResidualRaster.code(1.1)).isEqualTo(4.toByte())
+        assertThat(ResidualRaster.code(-0.13)).isEqualTo((-1).toByte())
+        assertThat(ResidualRaster.code(100.0)).isEqualTo(127.toByte())
+        assertThat(ResidualRaster.code(-100.0)).isEqualTo((-128).toByte())
     }
 }

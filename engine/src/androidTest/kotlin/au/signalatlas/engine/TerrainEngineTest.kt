@@ -137,7 +137,7 @@ class TerrainEngineTest {
         val refs = refTables(v.json)
         val tables = refs.map(::toTable)
         val carrierTable = v.json.getJSONObject("terrain").getJSONArray("carrierTable")
-        val prepared = engine.prepare(v.batch, null, v.indoor) { row -> tables[carrierTable.getInt(row)] }
+        val prepared = engine.prepare(v.batch, null, v.indoor, terrain = { row -> tables[carrierTable.getInt(row)] })
         assertThat(prepared.size).isEqualTo(v.batch.size)
         for (k in 0 until prepared.size) assertThat(prepared.terrainTableAt(k)).isSameInstanceAs(tables[carrierTable.getInt(k)])
         val tile = engine.render(prepared, v.z, v.x, v.y, v.area, v.thr, CancelToken())!!
@@ -173,7 +173,7 @@ class TerrainEngineTest {
         val refs = refTables(v.json)
         val carrierTable = v.json.getJSONObject("terrain").getJSONArray("carrierTable")
         var tables: List<TerrainTable>? = refs.map(::toTable)
-        val prepared = engine.prepare(v.batch, null, v.indoor) { row -> tables!![carrierTable.getInt(row)] }
+        val prepared = engine.prepare(v.batch, null, v.indoor, terrain = { row -> tables!![carrierTable.getInt(row)] })
         val before = engine.render(prepared, v.z, v.x, v.y, v.area, v.thr, CancelToken())!!
         tables = null
         repeat(3) { System.gc(); System.runFinalization() }

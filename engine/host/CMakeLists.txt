@@ -25,6 +25,8 @@ add_library(saengine_core STATIC
     "${ENGINE_DIR}/model/antenna.cpp"
     "${ENGINE_DIR}/model/pathloss.cpp"
     "${ENGINE_DIR}/render/tile.cpp"
+    "${ENGINE_DIR}/render/carrier.cpp"
+    "${ENGINE_DIR}/render/point.cpp"
     "${ENGINE_DIR}/terrain/bullington.cpp"
     "${ENGINE_DIR}/terrain/polar_table.cpp")
 target_include_directories(saengine_core PUBLIC "${ENGINE_DIR}")
@@ -39,7 +41,8 @@ add_executable(saengine_tests
     test/pathloss_test.cpp
     test/tile_test.cpp
     test/robustness_test.cpp
-    test/terrain_test.cpp)
+    test/terrain_test.cpp
+    test/calibration_test.cpp)
 target_compile_definitions(saengine_tests PRIVATE
     SA_VECTOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/vectors")
 target_link_libraries(saengine_tests PRIVATE saengine_core GTest::gtest_main)
@@ -63,6 +66,8 @@ add_executable(saengine_tile_bench
     "${ENGINE_DIR}/model/antenna.cpp"
     "${ENGINE_DIR}/model/pathloss.cpp"
     "${ENGINE_DIR}/render/tile.cpp"
+    "${ENGINE_DIR}/render/carrier.cpp"
+    "${ENGINE_DIR}/render/point.cpp"
     "${ENGINE_DIR}/terrain/bullington.cpp"
     "${ENGINE_DIR}/terrain/polar_table.cpp")
 target_include_directories(saengine_tile_bench PRIVATE "${ENGINE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/test")

@@ -69,6 +69,9 @@ internal enum class CarrierField(val elemBytes: Int) {
 
     /** 0 = no terrain table; k = entry k - 1 of the prepared carriers' table pool. */
     TERRAIN_SLOT(4),
+
+    /** [SectorTerms] fields (Calibration rules 4 and 6) and the network ordinal (selects residual rasters). */
+    CAL_OFFSET(4), CAL_SLOPE(4), CAL_DMED_KM(4), CAL_SIGMA_SCALE(4), NETWORK(1),
 }
 
 /** The pattern table uploaded for a [PatternStore][au.signalatlas.core.data.PatternStore]: see [CoverageEngine]. */
@@ -129,6 +132,17 @@ class PreparedCarriers internal constructor(
     internal fun sectorKeyAt(i: Int): Int = fields[CarrierField.SECTOR_KEY.ordinal].getInt(i * 4)
     internal fun hrpIdAt(i: Int): Int = fields[CarrierField.HRP_ID.ordinal].getInt(i * 4)
     internal fun hrpPeakAt(i: Int): Short = fields[CarrierField.HRP_PEAK.ordinal].getShort(i * 2)
+    internal fun calOffsetAt(i: Int): Float = fields[CarrierField.CAL_OFFSET.ordinal].getFloat(i * 4)
+    internal fun calSlopeAt(i: Int): Float = fields[CarrierField.CAL_SLOPE.ordinal].getFloat(i * 4)
+    internal fun calDmedAt(i: Int): Float = fields[CarrierField.CAL_DMED_KM.ordinal].getFloat(i * 4)
+    internal fun calSigmaScaleAt(i: Int): Float = fields[CarrierField.CAL_SIGMA_SCALE.ordinal].getFloat(i * 4)
+    internal fun networkAt(i: Int): Int = fields[CarrierField.NETWORK.ordinal].get(i).toInt()
+
+    /** Rule 9 culling range of carrier [i] (km): the matcher's R_max. */
+    fun rMaxKm(i: Int): Float {
+        require(i in 0 until size) { "carrier index $i out of 0 until $size" }
+        return rMaxKmAt(i)
+    }
 
     /** The terrain table of carrier [i], or null. */
     fun terrainTableAt(i: Int): TerrainTable? {
@@ -167,6 +181,7 @@ class PreparedCarriers internal constructor(
         internal fun build(
             batch: CarrierBatch, patterns: PatternUpload?, indoor: Boolean, derive: Derive,
             terrain: ((batchRow: Int) -> TerrainTable?)? = null,
+            calibration: ((batchRow: Int) -> SectorTerms?)? = null,
         ): PreparedCarriers {
             val total = batch.size
             require(total <= MAX_CARRIERS) {
@@ -194,6 +209,11 @@ class PreparedCarriers internal constructor(
             val hrpIdBuf = buf(CarrierField.HRP_ID).asIntBuffer()
             val hrpPeakBuf = buf(CarrierField.HRP_PEAK).asShortBuffer()
             val slotBuf = buf(CarrierField.TERRAIN_SLOT).asIntBuffer()
+            val calOffset = buf(CarrierField.CAL_OFFSET).asFloatBuffer()
+            val calSlope = buf(CarrierField.CAL_SLOPE).asFloatBuffer()
+            val calDmed = buf(CarrierField.CAL_DMED_KM).asFloatBuffer()
+            val calSigma = buf(CarrierField.CAL_SIGMA_SCALE).asFloatBuffer()
+            val network = buf(CarrierField.NETWORK)
             val pool = ArrayList<TerrainTable>()
             val slotOf = java.util.IdentityHashMap<TerrainTable, Int>()
 
@@ -218,6 +238,12 @@ class PreparedCarriers internal constructor(
                 bwHz[k] = batch.bandwidthHz[r]
                 sdd[k] = batch.sddId[r]
                 terrain?.invoke(r)?.let { t -> slotBuf.put(k, slotOf.getOrPut(t) { pool.add(t); pool.size }) }
+                val cal = calibration?.invoke(r) ?: SectorTerms.NONE
+                calOffset.put(k, cal.offsetDb)
+                calSlope.put(k, cal.slopeDbPerDecade)
+                calDmed.put(k, cal.dMedianKm)
+                calSigma.put(k, cal.sigmaScale)
+                network.put(k, batch.network[r])
             }
             if (patterns != null && m > 0) {
                 val ids = IntArray(m)
