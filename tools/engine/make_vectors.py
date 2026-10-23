@@ -2,8 +2,8 @@
 
 Usage: python3 -I tools/engine/make_vectors.py <rrl_fixture.zip> <out_dir>
 
-Writes pathloss.csv, antenna.csv, patterns.csv, eirp_re.csv, tile_canberra_z13.json and
-tile_edge_z12.json (the first fringe tile found outward from Canberra) into
+Writes pathloss.csv, antenna.csv, patterns.csv, eirp_re.csv, tile_canberra_z13.json,
+tile_canberra_z13_urban_indoor.json and tile_edge_z12.json (the first fringe tile found outward from Canberra) into
 <out_dir> (normally engine/host/test/vectors). Floats are written with 6 decimals, "nan" (CSV) or
 null (JSON) means "not supplied". Output is deterministic.
 """
@@ -111,10 +111,10 @@ def eirp_rows():
             yield (tech, f, bw, eirp, ref.eirp_per_re(eirp, tech, f, bw))
 
 
-def tile_carriers(model, area):
+def tile_carriers(model, networks):
     sites = model["sites"]
     antennas = model["antennas"]
-    kept = sorted((c for c in model["carriers"] if c["network"] == "TELSTRA"),
+    kept = sorted((c for c in model["carriers"] if c["network"] in networks),
                   key=lambda c: (c["site_id"], c["sdd_id"]))
     cols = {k: [] for k in ("sddId", "band", "lat", "lon", "hTx", "az", "tilt", "eirpDbm", "bwHz", "eirpRe",
                             "freqMhz", "hBw", "fb", "gain", "rMaxKm", "tech", "sectorKey", "freqKey",
@@ -139,7 +139,7 @@ def tile_carriers(model, area):
         cols["hBw"].append(r6(ant["hbw"]))
         cols["fb"].append(r6(ant["f2b"]))
         cols["gain"].append(r6(ant["gain"]))
-        cols["rMaxKm"].append(r6(ref.max_range_km(e_re, f_mhz, h, area)))
+        cols["rMaxKm"].append(r6(ref.max_range_km(e_re, f_mhz, h, "RURAL")))  # Ruling FF
         cols["tech"].append(TECH_ORDINAL[c["tech"]])
         cols["sectorKey"].append(c["sector_id"])
         cols["freqKey"].append(NETWORK_ORDINAL[c["network"]] * 1_000_000 + (c["freq_hz"] + 50_000) // 100_000)
@@ -167,15 +167,19 @@ def json_value(v):
     raise TypeError(type(v))
 
 
-def render(model, z, x, y, grid=None):
-    area, n_sites = ref.tile_area(model["sites"].values(), z, x, y)
+def render(model, z, x, y, grid=None, networks=("TELSTRA",), area=None, indoor=False):
+    """Render a tile; `area` overrides the rule-5 class (the renderer takes area as an input)."""
+    derived, n_sites = ref.tile_area(model["sites"].values(), z, x, y)
+    area = area or derived
     grid = grid or (128 if z <= 13 else 256)
-    carriers = tile_carriers(model, area)
-    return area, n_sites, grid, carriers, ref.render_tile(carriers, [], z, x, y, grid, area, False, -118.0)
+    carriers = tile_carriers(model, networks)
+    out = ref.render_tile(carriers, [], z, x, y, grid, area, indoor, -118.0)
+    return {"area": area, "derivedArea": derived, "sites": n_sites, "grid": grid, "networks": list(networks),
+            "indoor": indoor, "carriers": carriers, "out": out}
 
 
 def uncovered_share(out):
-    return sum(1 for c in out["rsrpCodes"] if c == 0) / 65536.0
+    return sum(1 for c in out["out"]["rsrpCodes"] if c == 0) / 65536.0
 
 
 def find_fringe_tile(model, z, max_ring=40):
@@ -186,20 +190,25 @@ def find_fringe_tile(model, z, max_ring=40):
         ring = sorted((dy, dx) for dy in range(-r, r + 1) for dx in range(-r, r + 1) if max(abs(dx), abs(dy)) == r)
         for dy, dx in ring:
             x, y = cx + dx, cy + dy
-            if not 0.25 <= uncovered_share(render(model, z, x, y, 16)[4]) <= 0.75:
+            if not 0.25 <= uncovered_share(render(model, z, x, y, 16)) <= 0.75:
                 continue
             result = render(model, z, x, y)
-            if 0.2 <= uncovered_share(result[4]) <= 0.8:
+            if 0.2 <= uncovered_share(result) <= 0.8:
                 return x, y, result
     raise ValueError("no fringe tile within %d rings" % max_ring)
 
 
 def write_tile(path, z, x, y, rendered):
-    area, n_sites, grid, carriers, out = rendered
+    area, n_sites, grid, carriers, out = (rendered[k] for k in ("area", "sites", "grid", "carriers", "out"))
+    selection = {"networks": rendered["networks"], "hrp": False,
+                 "source": "core/acma/src/test/resources/acma/fixture.zip"}
+    if area != rendered["derivedArea"]:
+        selection["areaForced"] = True
+        selection["derivedArea"] = rendered["derivedArea"]
     doc = [
         ("z", z), ("x", x), ("y", y), ("grid", grid), ("area", area), ("sitesWithin3km", n_sites),
-        ("indoor", False), ("thrDbm", -118.0),
-        ("selection", {"networks": ["TELSTRA"], "hrp": False, "source": "core/acma/src/test/resources/acma/fixture.zip"}),
+        ("indoor", rendered["indoor"]), ("thrDbm", -118.0),
+        ("selection", selection),
         ("patterns", []), ("carriers", carriers), ("evaluated", out["evaluated"]),
         ("rsrpCodes", out["rsrpCodes"]), ("sinrCodes", out["sinrCodes"]),
         ("probCodes", out["probCodes"]), ("best", out["best"]),
@@ -209,8 +218,10 @@ def write_tile(path, z, x, y, rendered):
         f.write(",\n".join(json_value(k) + ": " + json_value(v) for k, v in doc))
         f.write("\n}\n")
     covered = sum(1 for c in out["rsrpCodes"] if c)
-    print("%s: z%d/%d/%d area %s (%d sites within 3 km), %d carriers, %d evaluated, %d/65536 pixels covered"
-          % (os.path.basename(path), z, x, y, area, n_sites, carriers["n"], out["evaluated"], covered),
+    print("%s: z%d/%d/%d area %s (%d sites within 3 km), indoor %s, %s: %d carriers, %d evaluated, "
+          "%d/65536 pixels covered, RSRP codes %d..%d"
+          % (os.path.basename(path), z, x, y, area, n_sites, rendered["indoor"], "+".join(rendered["networks"]),
+             carriers["n"], out["evaluated"], covered, min(out["rsrpCodes"]), max(out["rsrpCodes"])),
           file=sys.stderr)
 
 
@@ -231,6 +242,11 @@ def main():
     model = acma.load(fixture)
     x, y = ref.tile_for(TILE_POINT[0], TILE_POINT[1], TILE_Z)
     write_tile(os.path.join(out_dir, "tile_canberra_z13.json"), TILE_Z, x, y, render(model, TILE_Z, x, y))
+    urban = render(model, TILE_Z, x, y, networks=("TELSTRA", "OPTUS"), area="URBAN", indoor=True)
+    families = {("<1500" if f < 1500 else "1500-2200" if f <= 2200 else ">2200") for f in urban["carriers"]["freqMhz"]}
+    if len(families) != 3:
+        raise ValueError("urban+indoor selection lacks a model family: %s" % sorted(families))
+    write_tile(os.path.join(out_dir, "tile_canberra_z13_urban_indoor.json"), TILE_Z, x, y, urban)
     x, y, rendered = find_fringe_tile(model, FRINGE_Z)
     write_tile(os.path.join(out_dir, "tile_edge_z12.json"), FRINGE_Z, x, y, rendered)
 

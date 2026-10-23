@@ -5,7 +5,7 @@ must reproduce its numbers. Stdlib only (`math`); run with `python3 -I`.
 
 - `reference.py`: the rules as pure functions (`eirp_per_re`, `antenna_attenuation`, `path_loss`,
   `o2i_low_loss_db`, `coverage_probability`, `max_range_km`, codes, geometry) and `render_tile`.
-- `make_vectors.py <rrl_fixture.zip> <out_dir>`: writes the vectors below. Takes about 50 s (most of it the
+- `make_vectors.py <rrl_fixture.zip> <out_dir>`: writes the vectors below. Takes about 70 s (most of it the
   fringe-tile search).
 - `test_reference.py`: unit checks, including the sanity values.
 
@@ -29,6 +29,7 @@ Floats have 6 decimals. In CSVs, `nan` means "not supplied" (NaN in `AntennaPara
 | `patterns.csv` | `id,att`: two synthetic relative patterns, 360 space-separated quantised values (0.25 dB). |
 | `eirp_re.csv` | `tech,f_mhz,bw_hz,eirp_dbm,eirp_re_dbm`: every table bandwidth, non-table bandwidths (fallback formula, minimum 6), bandwidth 0, and the SCS frequency edges. |
 | `tile_canberra_z13.json` | One rendered tile (below). |
+| `tile_canberra_z13_urban_indoor.json` | The Canberra tile, URBAN, indoor, TELSTRA + OPTUS (below). |
 | `tile_edge_z12.json` | A fringe tile, same format (below). |
 
 ### `tile_canberra_z13.json`
@@ -38,13 +39,16 @@ every TELSTRA carrier of the M1 fixture (`core/acma/src/test/resources/acma/fixt
 `tools/acma/reference.py`), ordered by site id then SDD id, with HRP absent. Fields:
 
 - `z, x, y, grid, area, sitesWithin3km, indoor, thrDbm, selection, patterns` (empty), `evaluated` (carriers that pass culling).
+  `area` is an **input to the renderer** (`RenderParams.area`); the C++ engine never derives it. Kotlin
+  computes it with rule 5, and a vector may force it (`selection.areaForced`, with `selection.derivedArea`).
 - `carriers`: structure of arrays, `n` entries each. The `CarrierArrays` fields `lat, lon, hTx, az, tilt, eirpRe,
   freqMhz, hBw, fb, gain, rMaxKm, tech, sectorKey, freqKey, hrpId, hrpPeak`, plus `eirpDbm, bwHz` (so `eirpRe`
   is reproducible) and `sddId, band` (for tracing). `null` = NaN.
   - `hTx` is the stored height. The model clamps it to ≥ 3 m where it is used.
   - `tech`: 0 LTE, 1 NR. `sectorKey`: the sector id from the reference importer (first-seen order in the export).
   - `freqKey` = `networkOrdinal·1 000 000 + round(freq_hz / 100 000)`, i.e. network plus frequency in 0.1 MHz.
-  - `rMaxKm` = `max_range_km(eirpRe, freqMhz, hTx, area)` for the tile's area.
+  - `rMaxKm` = `max_range_km(eirpRe, freqMhz, hTx, RURAL)`. Per Ruling FF it is computed once per carrier with
+    the RURAL class, independent of the tile's area.
 - `rsrpCodes, sinrCodes, probCodes, best`: 65536 values each, row-major (row 0 is the north edge). `best` is
   the carrier index, or 65535.
 
@@ -52,6 +56,21 @@ Every float in `carriers` is rounded to 6 decimals *before* rendering, so the JS
 the reference used. Area: no fixture site lies within 3 km of the tile centre (the nearest is 3.69 km away),
 so the tile is **RURAL** (Okumura-Hata/COST-231 rural and RMa). All 109 carriers pass culling; every pixel
 is covered (RSRP codes 69..113).
+
+### `tile_canberra_z13_urban_indoor.json`
+
+The same tile, rendered with `area` forced to **URBAN** (its derived class is RURAL) and `indoor = true`
+(O2I low loss, σ in quadrature).
+
+- The selection is every TELSTRA and OPTUS carrier of the fixture: 176 carriers, all evaluated. It covers
+  all three model families:
+  - < 1500 MHz, Hata: B28, B8, n5, n26, B26.
+  - 1500–2200 MHz, COST-231: B1, B3.
+  - > 2200 MHz, UMa: n78, B7, B40. B40 is OPTUS, hence the second network.
+- `make_vectors.py` fails if a family is missing.
+- Every pixel is covered: RSRP codes 22..63, SINR codes 60..119, probability codes 28..216.
+- Caveat: the best server is B28 at every pixel. The UMa and COST-231 carriers are evaluated but do not
+  reach the outputs, because SINR only counts the best server's `freqKey`.
 
 ### `tile_edge_z12.json`
 
@@ -108,8 +127,9 @@ NR 100 MHz at 3.5 GHz = eirp − 35.153439.
   148.9 dB.
 - c = 3.0·10⁸ m/s, and f_c is in GHz (in Hz inside d_BP).
 
-**TR 38.901 forms used** (Table 7.4.1-1, from the published equations; h_UT = 1.5, h_E = 1 m for
-`h' = h − h_E`; this is a deterministic simplification of the standard's stochastic h_E):
+**TR 38.901 forms used** (Table 7.4.1-1, from the published equations; h_UT = 1.5 and h_E = 1 m for
+`h' = h − h_E`, which is exact here: note 1 gives h_E = 1 m with probability 1/(1 + C), and C(d2D, h_UT) = 0 for
+h_UT < 13 m):
 
 - **UMa.**
   - d'BP = 4·h'BS·h'UT·fc/c.
@@ -135,7 +155,7 @@ NR 100 MHz at 3.5 GHz = eirp − 35.153439.
   - UMa (h_UT ≤ 13 m, so C' = 0): 1 for d2D ≤ 18 m, else `18/d + exp(−d/63)(1 − 18/d)`.
   - RMa and UMi: as in rule 6.
 
-**Indoor (rule 7).** PL += `o2i_low_loss_db(f)`, and σ += 4.4 dB (linear add).
+**Indoor (rule 7).** PL += `o2i_low_loss_db(f)`, and σ = `sqrt(σ² + 4.4²)` (Ruling EE, in quadrature).
 
 **Tile (rules 8–9).**
 - Sample point (i, j) of an N grid has its centre at tile coordinates (x + (i+0.5)/N, y + (j+0.5)/N) in
@@ -154,6 +174,6 @@ NR 100 MHz at 3.5 GHz = eirp − 35.153439.
 - **Culling.** A carrier is evaluated when the haversine distance from the site to the nearest point of
   the tile's lat/lon box (the site clamped into the box) is ≤ `rMaxKm`.
 - **`max_range_km`.**
-  - The search runs on the 3D distance, with A = 0, outdoors, in the tile's area class.
+  - The search runs on the 3D distance, with A = 0, outdoors, in the RURAL class (Ruling FF).
   - It returns 80 when `eirpRe − PL(80 km) ≥ −140`, and 0 when the margin is negative at 0.02 km.
   - Otherwise it runs 60 bisection steps on [0.02, 80] and returns the last distance with a margin ≥ 0.

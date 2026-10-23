@@ -12,7 +12,7 @@ import math
 AREAS = ("DENSE_URBAN", "URBAN", "SUBURBAN", "RURAL")
 H_RX = 1.5                 # UE height (m)
 C_LIGHT = 3.0e8            # TR 38.901 Table 7.4.1-1 note: c = 3.0e8 m/s
-H_E = 1.0                  # effective environment height for d'BP (deterministic simplification)
+H_E = 1.0                  # h_E for d'BP: exact for h_UT < 13 m, where C(d2D, h_UT) = 0 (Table 7.4.1-1 note 1)
 EARTH_R = 6371008.8        # mean Earth radius (m) for haversine
 NO_COVERAGE_DBM = -200.0   # grid value where no carrier was evaluated (quantises to code 0)
 NO_BEST = 65535
@@ -180,7 +180,7 @@ def _blend(p_los, pl_los, pl_nlos, s_los, s_nlos):
 
 def uma(fc, d2, d3, h_bs):
     """TR 38.901 Table 7.4.1-1 UMa; LOS probability Table 7.4.2-1 (h_UT <= 13 m form)."""
-    dbp = 4.0 * (h_bs - H_E) * (H_RX - H_E) * fc * 1e9 / C_LIGHT        # d'BP, note 1 (h' = h - hE)
+    dbp = 4.0 * (h_bs - H_E) * (H_RX - H_E) * fc * 1e9 / C_LIGHT        # d'BP, note 1 (h' = h - hE, hE = 1)
     if d2 <= dbp:
         pl_los = 28.0 + 22.0 * math.log10(d3) + 20.0 * math.log10(fc)    # PL1
     else:                                                                # PL2
@@ -262,6 +262,11 @@ def o2i_low_loss_db(f_mhz):
 O2I_SIGMA_DB = 4.4
 
 
+def indoor_sigma(sigma_db):
+    """Rule 7 (Ruling EE): outdoor and O2I shadowing combined in quadrature."""
+    return math.sqrt(sigma_db * sigma_db + O2I_SIGMA_DB * O2I_SIGMA_DB)
+
+
 def noise_dbm(scs_hz):
     return -174.0 + 10.0 * math.log10(scs_hz) + 7.0
 
@@ -270,9 +275,10 @@ def coverage_probability(rsrp_dbm, thr_dbm, sigma_db):
     return 0.5 * math.erfc((thr_dbm - rsrp_dbm) / (sigma_db * math.sqrt(2.0)))
 
 
-def max_range_km(eirp_re_dbm, f_mhz, h_tx, area):
+def max_range_km(eirp_re_dbm, f_mhz, h_tx, area="RURAL"):
     """Rule 9 culling radius: the 3D distance where eirpRe - PL (A = 0, outdoor) falls to -140 dBm,
-    by 60 bisection steps on [0.02, 80] km; 80 when still above at 80 km, 0 when below at 0.02 km."""
+    by 60 bisection steps on [0.02, 80] km; 80 when still above at 80 km, 0 when below at 0.02 km.
+    Per Ruling FF the engine always uses the RURAL class (independent of the tile's area)."""
     def margin(d):
         return eirp_re_dbm - path_loss(f_mhz, d, h_tx, area)[0] - RSRP_FLOOR_DBM
     lo, hi = 0.02, R_MAX_CAP_KM
@@ -379,7 +385,7 @@ def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr):
         pl, sg, _ = path_loss(carriers["freqMhz"][i], d3 / 1000.0, carriers["hTx"][i], area)
         if indoor:
             pl += o2i_low_loss_db(carriers["freqMhz"][i])
-            sg += O2I_SIGMA_DB
+            sg = indoor_sigma(sg)
         rsrp.append(carriers["eirpRe"][i] - a - pl)
         sigma.append(sg)
     if not idx:

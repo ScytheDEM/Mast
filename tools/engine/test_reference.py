@@ -65,6 +65,42 @@ class PathLoss(unittest.TestCase):
         self.assertAlmostEqual(pl, want, places=9)
         self.assertAlmostEqual(sigma, p * 4 + (1 - p) * 6, places=12)
 
+    def test_rma_hand_computed(self):
+        # RMa, fc 3.5 GHz, d3D 500 m, h_BS 30, h 5, W 20, h_UT 1.5:
+        #   d2D = sqrt(500^2 - 28.5^2) = 499.1871; d_BP = 2*pi*30*1.5*3.5e9/3e8 = 3298.67 -> PL1
+        #   5^1.72 = 15.9305; PL1 = 20log10(40*pi*500*3.5/3) + 0.47791*log10(500) - 0.70094
+        #        + 0.002*log10(5)*500 = 98.5904
+        #   PL'NLOS = 161.04 - 7.1log10(20) + 7.5log10(5) - (24.37 - 3.7*(5/30)^2)log10(30)
+        #        + (43.42 - 3.1log10(30))(log10(500) - 3) + 20log10(3.5) - (3.2(log10(17.625))^2 - 4.97) = 120.3893
+        #   P = exp(-(499.1871 - 10)/1000) = 0.613125
+        #   PL = 0.613125*98.5904 + 0.386875*120.3893 = 107.0239; sigma = 0.613125*4 + 0.386875*8 = 5.5475
+        pl, sigma, model = ref.path_loss(3500.0, 0.5, 30.0, "RURAL")
+        self.assertEqual(model, "RMA")
+        self.assertAlmostEqual(pl, 107.0239, places=3)
+        self.assertAlmostEqual(sigma, 5.5475, places=3)
+
+    def test_umi_hand_computed(self):
+        # UMi-Street Canyon, fc 26 GHz, d3D 200 m, h_BS 10, h_UT 1.5:
+        #   d2D = sqrt(200^2 - 8.5^2) = 199.8193; d'BP = 4*9*0.5*26e9/3e8 = 1560 -> PL1
+        #   PL1 = 32.4 + 21log10(200) + 20log10(26) = 109.0211
+        #   PL'NLOS = 35.3log10(200) + 22.4 + 21.3log10(26) = 133.7653
+        #   P = 18/199.8193 + exp(-199.8193/36)(1 - 18/199.8193) = 0.093617
+        #   PL = 0.093617*109.0211 + 0.906383*133.7653 = 131.4488; sigma = 0.374467 + 7.087917 = 7.4624
+        pl, sigma, model = ref.path_loss(26000.0, 0.2, 10.0, "RURAL")
+        self.assertEqual(model, "UMI")
+        self.assertAlmostEqual(pl, 131.4488, places=3)
+        self.assertAlmostEqual(sigma, 7.4624, places=3)
+
+    def test_hata_suburban_and_rural_corrections(self):
+        # 900 MHz, 1 km, h 30: urban 126.4033 (log d = 0).
+        #   SUBURBAN: -2(log10(900/28))^2 - 5.4 = -2*(1.50710)^2 - 5.4 = -9.9426 -> 116.4607
+        #   RURAL: -4.78(2.95424)^2 + 18.33*2.95424 - 35.94 = -23.5064 -> 102.8969
+        self.assertAlmostEqual(ref.path_loss(900.0, 1.0, 30.0, "SUBURBAN")[0], 116.4607, places=3)
+        self.assertAlmostEqual(ref.path_loss(900.0, 1.0, 30.0, "RURAL")[0], 102.8969, places=3)
+
+    def test_indoor_sigma_in_quadrature(self):
+        self.assertAlmostEqual(ref.indoor_sigma(8.0), math.sqrt(64.0 + 4.4 ** 2), places=12)
+
     def test_monotonic_in_distance(self):
         for area in ref.AREAS:
             for f in (700.0, 2100.0, 3500.0, 26000.0):
