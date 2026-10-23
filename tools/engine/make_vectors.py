@@ -2,7 +2,8 @@
 
 Usage: python3 -I tools/engine/make_vectors.py <rrl_fixture.zip> <out_dir>
 
-Writes pathloss.csv, antenna.csv, patterns.csv, eirp_re.csv and tile_canberra_z13.json into
+Writes pathloss.csv, antenna.csv, patterns.csv, eirp_re.csv, tile_canberra_z13.json and
+tile_edge_z12.json (the first fringe tile found outward from Canberra) into
 <out_dir> (normally engine/host/test/vectors). Floats are written with 6 decimals, "nan" (CSV) or
 null (JSON) means "not supplied". Output is deterministic.
 """
@@ -27,6 +28,7 @@ NETWORK_ORDINAL = {"TELSTRA": 0, "OPTUS": 1, "TPG": 2, "OPTUS_TPG_JV": 3, "NBN":
 TECH_ORDINAL = {"LTE": 0, "NR": 1}                                                  # core.model.Tech
 TILE_POINT = (-35.2809, 149.1300)
 TILE_Z = 13
+FRINGE_Z = 12
 
 
 def fmt(v):
@@ -165,15 +167,37 @@ def json_value(v):
     raise TypeError(type(v))
 
 
-def write_tile(path, fixture_zip):
-    model = acma.load(fixture_zip)
-    x, y = ref.tile_for(TILE_POINT[0], TILE_POINT[1], TILE_Z)
-    area, n_sites = ref.tile_area(model["sites"].values(), TILE_Z, x, y)
-    grid = 128 if TILE_Z <= 13 else 256
+def render(model, z, x, y, grid=None):
+    area, n_sites = ref.tile_area(model["sites"].values(), z, x, y)
+    grid = grid or (128 if z <= 13 else 256)
     carriers = tile_carriers(model, area)
-    out = ref.render_tile(carriers, [], TILE_Z, x, y, grid, area, False, -118.0)
+    return area, n_sites, grid, carriers, ref.render_tile(carriers, [], z, x, y, grid, area, False, -118.0)
+
+
+def uncovered_share(out):
+    return sum(1 for c in out["rsrpCodes"] if c == 0) / 65536.0
+
+
+def find_fringe_tile(model, z, max_ring=40):
+    """The first z tile, in rings outward from the tile containing TILE_POINT (ring by ring, then
+    row-major), with 20-80% of pixels at RSRP code 0. A 16-point grid screens candidates first."""
+    cx, cy = ref.tile_for(TILE_POINT[0], TILE_POINT[1], z)
+    for r in range(max_ring + 1):
+        ring = sorted((dy, dx) for dy in range(-r, r + 1) for dx in range(-r, r + 1) if max(abs(dx), abs(dy)) == r)
+        for dy, dx in ring:
+            x, y = cx + dx, cy + dy
+            if not 0.25 <= uncovered_share(render(model, z, x, y, 16)[4]) <= 0.75:
+                continue
+            result = render(model, z, x, y)
+            if 0.2 <= uncovered_share(result[4]) <= 0.8:
+                return x, y, result
+    raise ValueError("no fringe tile within %d rings" % max_ring)
+
+
+def write_tile(path, z, x, y, rendered):
+    area, n_sites, grid, carriers, out = rendered
     doc = [
-        ("z", TILE_Z), ("x", x), ("y", y), ("grid", grid), ("area", area), ("sitesWithin3km", n_sites),
+        ("z", z), ("x", x), ("y", y), ("grid", grid), ("area", area), ("sitesWithin3km", n_sites),
         ("indoor", False), ("thrDbm", -118.0),
         ("selection", {"networks": ["TELSTRA"], "hrp": False, "source": "core/acma/src/test/resources/acma/fixture.zip"}),
         ("patterns", []), ("carriers", carriers), ("evaluated", out["evaluated"]),
@@ -184,7 +208,10 @@ def write_tile(path, fixture_zip):
         f.write("{\n")
         f.write(",\n".join(json_value(k) + ": " + json_value(v) for k, v in doc))
         f.write("\n}\n")
-    return x, y, area, n_sites, carriers["n"], out
+    covered = sum(1 for c in out["rsrpCodes"] if c)
+    print("%s: z%d/%d/%d area %s (%d sites within 3 km), %d carriers, %d evaluated, %d/65536 pixels covered"
+          % (os.path.basename(path), z, x, y, area, n_sites, carriers["n"], out["evaluated"], covered),
+          file=sys.stderr)
 
 
 def main():
@@ -201,10 +228,11 @@ def main():
                "f_mhz", "hrp_id", "hrp_peak"], antenna_rows(pats))
     write_csv(os.path.join(out_dir, "eirp_re.csv"),
               ["tech", "f_mhz", "bw_hz", "eirp_dbm", "eirp_re_dbm"], eirp_rows())
-    x, y, area, n_sites, n, out = write_tile(os.path.join(out_dir, "tile_canberra_z13.json"), fixture)
-    covered = sum(1 for c in out["rsrpCodes"] if c)
-    print("tile z%d/%d/%d area %s (%d sites within 3 km): %d carriers, %d evaluated, %d/65536 pixels covered"
-          % (TILE_Z, x, y, area, n_sites, n, out["evaluated"], covered), file=sys.stderr)
+    model = acma.load(fixture)
+    x, y = ref.tile_for(TILE_POINT[0], TILE_POINT[1], TILE_Z)
+    write_tile(os.path.join(out_dir, "tile_canberra_z13.json"), TILE_Z, x, y, render(model, TILE_Z, x, y))
+    x, y, rendered = find_fringe_tile(model, FRINGE_Z)
+    write_tile(os.path.join(out_dir, "tile_edge_z12.json"), FRINGE_Z, x, y, rendered)
 
 
 if __name__ == "__main__":

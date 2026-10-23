@@ -53,7 +53,7 @@ class PathLoss(unittest.TestCase):
         a_large = 3.2 * math.log10(11.75 * 1.5) ** 2 - 4.97
         self.assertAlmostEqual(du - u, 3.0 - a_large + a_small, places=9)
 
-    def test_uma_blend_is_power_domain(self):
+    def test_uma_blend_is_db_domain(self):
         pl, sigma, _ = ref.path_loss(3500.0, 3.0, 30.0, "URBAN")
         d3, dh = 3000.0, 28.5
         d2 = math.sqrt(d3 ** 2 - dh ** 2)
@@ -61,7 +61,7 @@ class PathLoss(unittest.TestCase):
         los = 28.0 + 40 * math.log10(d3) + 20 * math.log10(3.5) - 9 * math.log10(dbp ** 2 + dh ** 2)
         nlos = max(los, 13.54 + 39.08 * math.log10(d3) + 20 * math.log10(3.5))
         p = 18 / d2 + math.exp(-d2 / 63) * (1 - 18 / d2)
-        want = -10 * math.log10(p * 10 ** (-los / 10) + (1 - p) * 10 ** (-nlos / 10))
+        want = p * los + (1 - p) * nlos   # Ruling DD: dB-domain blend
         self.assertAlmostEqual(pl, want, places=9)
         self.assertAlmostEqual(sigma, p * 4 + (1 - p) * 6, places=12)
 
@@ -91,6 +91,13 @@ class Antenna(unittest.TestCase):
         a1 = ref.antenna_attenuation(10.0, 500.0, None, None, None, None, 0.0, 20.0, 900.0)
         a2 = ref.antenna_attenuation(200.0, 500.0, None, None, None, None, 0.0, 20.0, 900.0)
         self.assertEqual(a1, a2)
+
+    def test_downtilt_is_magnitude_capped_at_15(self):
+        self.assertEqual(ref.effective_tilt(-6.0, 30.0, 900.0), 6.0)
+        self.assertEqual(ref.effective_tilt(4.0, 30.0, 900.0), 4.0)
+        self.assertEqual(ref.effective_tilt(-20.0, 30.0, 900.0), 15.0)
+        self.assertEqual(ref.effective_tilt(-6.0, 30.0, 26000.0), 6.0)   # +2 only for the default
+        self.assertEqual(ref.effective_tilt(0.0, 30.0, 26000.0), 5.0)
 
     def test_hrp_lookup(self):
         att = [0] * 360

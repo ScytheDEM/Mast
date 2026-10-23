@@ -94,9 +94,10 @@ def vertical_beamwidth(az, hbw, gain):
 
 
 def effective_tilt(tilt, h_tx, f_mhz):
-    """Rule 4 tilt: the ACMA tilt when non-zero, else by height (+2 deg at >= 24.25 GHz)."""
+    """Rule 4 downtilt (positive down): min(|ACMA tilt|, 15) when non-zero (Ruling CC; ACMA uses
+    both signs for downtilt), else by height (+2 deg at >= 24.25 GHz)."""
     if tilt != 0.0:
-        return tilt
+        return min(abs(tilt), 15.0)
     h = h_tx_clamped(h_tx)
     if h < 15.0:
         t = 6.0
@@ -173,8 +174,8 @@ def cost231(f_mhz, d_km, h_tx, area):
 
 
 def _blend(p_los, pl_los, pl_nlos, s_los, s_nlos):
-    pl = -10.0 * math.log10(p_los * 10.0 ** (-pl_los / 10.0) + (1.0 - p_los) * 10.0 ** (-pl_nlos / 10.0))
-    return pl, p_los * s_los + (1.0 - p_los) * s_nlos
+    """Rule 6 (Ruling DD): LOS/NLOS blended in the dB domain, as is sigma."""
+    return p_los * pl_los + (1.0 - p_los) * pl_nlos, p_los * s_los + (1.0 - p_los) * s_nlos
 
 
 def uma(fc, d2, d3, h_bs):

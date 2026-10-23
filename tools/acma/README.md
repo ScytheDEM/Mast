@@ -105,6 +105,10 @@ python3 -I tools/acma/hrp_reference.py core/acma/src/test/resources/acma/hrp_fix
 entry timestamps 2026-10-23 and 2026-10-21, and a different device order from the fourth device on. Use
 the saved prefix to reproduce the committed fixture.
 
+Ruling BB (for Task 4): the on-device HRP download must verify the entry CRC-32 (from the central
+directory or data descriptor) against the inflated bytes, because an ETag match does not guarantee the same
+bytes. A mismatch fails the import and keeps the existing `patterns.db`.
+
 ## Fixture contents (`hrp_fixture.zip`, entry `LICENCE_.csv`, CRLF, 16 199 rows)
 
 | Devices | SDD_ID | Exercises |

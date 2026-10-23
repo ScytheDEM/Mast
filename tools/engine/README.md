@@ -5,7 +5,8 @@ must reproduce its numbers. Stdlib only (`math`); run with `python3 -I`.
 
 - `reference.py`: the rules as pure functions (`eirp_per_re`, `antenna_attenuation`, `path_loss`,
   `o2i_low_loss_db`, `coverage_probability`, `max_range_km`, codes, geometry) and `render_tile`.
-- `make_vectors.py <rrl_fixture.zip> <out_dir>`: writes the vectors below. Takes about 10 s.
+- `make_vectors.py <rrl_fixture.zip> <out_dir>`: writes the vectors below. Takes about 50 s (most of it the
+  fringe-tile search).
 - `test_reference.py`: unit checks, including the sanity values.
 
 ## Regenerate
@@ -28,6 +29,7 @@ Floats have 6 decimals. In CSVs, `nan` means "not supplied" (NaN in `AntennaPara
 | `patterns.csv` | `id,att`: two synthetic relative patterns, 360 space-separated quantised values (0.25 dB). |
 | `eirp_re.csv` | `tech,f_mhz,bw_hz,eirp_dbm,eirp_re_dbm`: every table bandwidth, non-table bandwidths (fallback formula, minimum 6), bandwidth 0, and the SCS frequency edges. |
 | `tile_canberra_z13.json` | One rendered tile (below). |
+| `tile_edge_z12.json` | A fringe tile, same format (below). |
 
 ### `tile_canberra_z13.json`
 
@@ -51,6 +53,23 @@ the reference used. Area: no fixture site lies within 3 km of the tile centre (t
 so the tile is **RURAL** (Okumura-Hata/COST-231 rural and RMa). All 109 carriers pass culling; every pixel
 is covered (RSRP codes 69..113).
 
+### `tile_edge_z12.json`
+
+The same format, the same TELSTRA fixture carriers, and the same area rule. `make_vectors.py` picks the tile
+by searching outward from the z12 tile containing (−35.2809, 149.1300), which is z12/3744/2477:
+
+- It goes ring by ring (Chebyshev distance), then by (dy, dx) within each ring.
+- A tile is screened first on a 16-point grid, accepted if 25–75% of pixels are at code 0.
+- It must then show 20–80% code 0 on the full render.
+
+**Picked: z12/3738/2470** (ring 7, centre −34.7777, 148.5791, about 76.7 km north-west of the Canberra sites).
+
+- The area is RURAL, grid 128, and 15 of the 109 carriers pass culling.
+- 44 880 of 65 536 pixels (68.5%) have RSRP code 0 and `best` 65535. These are exactly the same pixels.
+- The other 20 656 pixels are covered at codes 1–2, all served by carrier 74 (B28 778 MHz, azimuth 320°,
+  `rMaxKm` 80). The edge is the natural −140 dBm contour, not the culling cap.
+- This tile exercises the code 0/1 boundary, the no-coverage `best`, and partial culling.
+
 Sanity values: Hata 900 MHz / 1 km / h 30 / URBAN = 126.403286 dB. LTE 20 MHz `eirpRe` = eirp − 30.791812.
 NR 100 MHz at 3.5 GHz = eirp − 35.153439.
 
@@ -72,8 +91,8 @@ NR 100 MHz at 3.5 GHz = eirp − 35.153439.
 - With an HRP the index is `(floor(bearing + 0.5) − peakBearing) mod 360`, and A_H = `att·0.25`. The HRP is
   used even when the sector is omni.
 - The default-tilt height bands are: h < 15 → 6°, 15 ≤ h < 30 → 4°, 30 ≤ h ≤ 50 → 3°, h > 50 → 2°.
-- The +2° for f ≥ 24.25 GHz applies only to the default tilt. A non-zero ACMA tilt is used as is.
-- The ACMA tilt sign is taken as positive = down, matching θ.
+- Downtilt (Ruling CC): a non-zero ACMA tilt gives `min(|tilt|, 15)`, because ACMA uses both signs for
+  downtilt. The +2° for f ≥ 24.25 GHz applies only to the default (height-table) tilt.
 - θ = `atan2(h − 1.5, d2D)`, using the horizontal distance.
 
 **Path loss (rule 6).**
@@ -83,8 +102,10 @@ NR 100 MHz at 3.5 GHz = eirp − 35.153439.
   to ≥ 10 m (the validity lower bound), and then `d3D` is recomputed from the clamped `d2D`.
 - Beyond the upper validity bounds (UMa 5 km, UMi 5 km, RMa 10 km), the outermost formula is
   extrapolated (no clamp). PL1 is used when `d2D ≤ d_BP`, otherwise PL2.
-- The LOS probability uses `d2D`. The blend is in the power domain as in rule 6. At long range this keeps
-  the PL well below the NLOS value: UMa 3.5 GHz at 3 km gives 148.9 dB against an NLOS of 160.3 dB.
+- The LOS probability uses `d2D`. The blend is in the dB domain (Ruling DD):
+  `PL = P·PL_LOS + (1 − P)·PL_NLOS` and `σ = P·σ_LOS + (1 − P)·σ_NLOS`. For example, UMa 3.5 GHz at 3 km
+  and h 30 gives P = 0.006, PL 160.107 dB (PL'NLOS 160.307 dB) and σ 5.988 dB. The power-domain blend gave
+  148.9 dB.
 - c = 3.0·10⁸ m/s, and f_c is in GHz (in Hz inside d_BP).
 
 **TR 38.901 forms used** (Table 7.4.1-1, from the published equations; h_UT = 1.5, h_E = 1 m for
