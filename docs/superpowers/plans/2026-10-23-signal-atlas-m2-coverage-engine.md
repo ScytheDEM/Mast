@@ -104,7 +104,7 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
    - **Shadowing σ (dB):** Hata family 8; UMa 6 (NLOS) / 4 (LOS); RMa 8 / 4; UMi 7.82 / 4. Blended σ =
      `P·σ_LOS + (1−P)·σ_NLOS`.
 7. **Indoor (optional):** add the 3GPP O2I low-loss model:
-   `5 − 10·log10(0.3·10^(−(2+0.2f)/10) + 0.7·10^(−(5+4f)/10)) + 2.5` (f in GHz). Add 4.4 dB to σ.
+   `5 − 10·log10(0.3·10^(−(2+0.2f)/10) + 0.7·10^(−(5+4f)/10)) + 2.5` (f in GHz). Combine σ in quadrature: `σ = √(σ² + 4.4²)` (TR 38.901 §7.4.3: independent Gaussian O2I variation).
 8. **RSRP** = `eirpRe − A − PL`. Best-server RSRP = max over the selected carriers at the pixel.
    - **SINR:** `S / (Σ_{same freq, other sectors} 0.5·10^(RSRP_i/10) + N)`, where `N = −174 + 10·log10(SCS_Hz) + 7` dBm.
    - **Coverage probability:** `P = 0.5·erfc((thr − RSRP)/(σ·√2))`, with default `thr = −118` dBm.
@@ -115,7 +115,8 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
    - **SINR code:** `uint8 = clamp(round((SINR + 20)·4), 0, 255)`.
    - **Probability code:** `uint8 = round(P·255)`.
    - **Culling:** a carrier is evaluated for a tile only if its `R_max` (the distance where peak-direction RSRP falls to
-     −140 dBm in its model, computed once per carrier, capped at 80 km) reaches the tile's bounding box.
+     −140 dBm, computed once per carrier with the RURAL area class (the longest-range class, so culling never drops a
+     carrier that some other class would reach), outdoor, capped at 80 km) reaches the tile's bounding box.
 10. **Terrarium encoding** (map display): `elev = RSRP_dBm`, with no coverage → −200. Probability view: `elev = P·100`.
     The bytes are `R = floor((elev+32768)/256)`, `G = floor(elev+32768) mod 256`, `B = floor(frac(elev+32768)·256)`.
 11. **Legend.** `color-relief` stops at alpha 0.45. Probability view: 0 → transparent, 50 → `#F4A261`, 90 → `#2A9D8F`,
