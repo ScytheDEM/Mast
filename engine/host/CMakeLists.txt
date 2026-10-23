@@ -40,3 +40,13 @@ target_compile_definitions(saengine_tests PRIVATE
 target_link_libraries(saengine_tests PRIVATE saengine_core GTest::gtest_main)
 target_compile_options(saengine_tests PRIVATE -Wall -Wextra -Werror)
 gtest_discover_tests(saengine_tests)
+
+# Micro-benchmark (Release, no sanitizers; engine sources compiled directly so they are not instrumented).
+# Run: engine/host/build/saengine_bench
+add_executable(saengine_bench
+    bench/bench.cpp
+    "${ENGINE_DIR}/model/antenna.cpp"
+    "${ENGINE_DIR}/model/pathloss.cpp")
+target_include_directories(saengine_bench PRIVATE "${ENGINE_DIR}")
+target_compile_options(saengine_bench PRIVATE -O3 -fno-exceptions -fno-sanitize=address,undefined)
+target_link_options(saengine_bench PRIVATE -fno-sanitize=address,undefined)

@@ -52,6 +52,12 @@ TEST(Robustness, PathLossAndRanges) {
                 EXPECT_TRUE(std::isfinite(c) && c >= 0.0f && c <= 80.0f);
             }
     for (float f : kBad) EXPECT_TRUE(std::isfinite(sa::o2iLowLossDb(f)));
+    for (float s : kBad) EXPECT_TRUE(std::isfinite(sa::indoorSigmaDb(s)));
+    for (float f : kBad)
+        for (float d : kBad) {
+            const sa::PathLoss r = sa::pathLossIndoor(f, d, 30.0f, sa::Area::Urban);
+            EXPECT_TRUE(std::isfinite(r.plDb) && std::isfinite(r.sigmaDb));
+        }
 }
 
 TEST(Robustness, FrequencyOutsideEveryRangeClampsToNearestRange) {

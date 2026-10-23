@@ -14,6 +14,14 @@ inline double sane(double x, double lo, double hi, double fallback) {
     return x < lo ? lo : (x > hi ? hi : x);
 }
 
+// Rule 7 (Ruling EE): outdoor and O2I shadowing combine in quadrature.
+constexpr double kO2iSigmaDb = 4.4;
+
+inline float indoorSigmaDb(float sigmaDb) {
+    const double s = sane(sigmaDb, 0.0, 100.0, 8.0);
+    return static_cast<float>(std::sqrt(s * s + kO2iSigmaDb * kO2iSigmaDb));
+}
+
 // Rule 8: P(RSRP + shadowing >= thr) for shadowing ~ N(0, sigma). Result in [0, 1].
 inline float coverageProbability(float rsrpDbm, float thrDbm, float sigmaDb) {
     const double rsrp = sane(rsrpDbm, -1000.0, 1000.0, -200.0);

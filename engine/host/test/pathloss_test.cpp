@@ -29,13 +29,42 @@ TEST(PathLoss, MatchesReferenceVectors) {
     }
 }
 
+// Literal values from tools/engine/reference.py (python3 -I): o2i_low_loss_db, indoor_sigma, and
+// path_loss + o2i_low_loss_db.
 TEST(PathLoss, O2iLowLoss) {
-    // Rule 7 closed form at 3.5 GHz, checked independently of the implementation's code path.
-    const double f = 3.5;
-    const double expected = 5.0 - 10.0 * std::log10(0.3 * std::pow(10.0, -(2.0 + 0.2 * f) / 10.0) +
-                                                    0.7 * std::pow(10.0, -(5.0 + 4.0 * f) / 10.0)) + 2.5;
-    EXPECT_NEAR(sa::o2iLowLossDb(3500.0f), expected, 1e-4);
-    EXPECT_GT(sa::o2iLowLossDb(900.0f), 5.0f);
+    EXPECT_NEAR(sa::o2iLowLossDb(700.0f), 12.736703295401664, 1e-4);
+    EXPECT_NEAR(sa::o2iLowLossDb(2100.0f), 14.407212794424003, 1e-4);
+    EXPECT_NEAR(sa::o2iLowLossDb(3500.0f), 15.19750345954387, 1e-4);
+}
+
+TEST(PathLoss, IndoorSigmaQuadrature) {
+    EXPECT_EQ(sa::kO2iSigmaDb, 4.4);
+    EXPECT_NEAR(sa::indoorSigmaDb(8.0f), 9.130169768410662, 1e-5);
+    EXPECT_NEAR(sa::indoorSigmaDb(6.0f), 7.4404300950953095, 1e-5);
+    EXPECT_NEAR(sa::indoorSigmaDb(4.0f), 5.946427498927402, 1e-5);
+    EXPECT_NEAR(sa::indoorSigmaDb(7.82f), 8.972870220837924, 1e-5);
+}
+
+TEST(PathLoss, IndoorMatchesReference) {
+    struct Case { float f, d, h; sa::Area a; double pl, sigma; };
+    const Case cases[] = {
+        {900.0f, 1.0f, 30.0f, sa::Area::Urban, 139.45926002029756, 9.130169768410662},
+        {3500.0f, 3.0f, 30.0f, sa::Area::Urban, 175.30498563305068, 7.43075618726367},
+        {2100.0f, 0.5f, 10.0f, sa::Area::Suburban, 135.48523733272, 9.130169768410662},
+    };
+    for (const Case& c : cases) {
+        const sa::PathLoss r = sa::pathLossIndoor(c.f, c.d, c.h, c.a);
+        EXPECT_NEAR(r.plDb, c.pl, 0.01) << c.f;
+        EXPECT_NEAR(r.sigmaDb, c.sigma, 0.01) << c.f;
+    }
+}
+
+TEST(PathLoss, PreparedMatchesWrappers) {
+    const sa::PreparedPathLoss pp = sa::preparePathLoss(3500.0f, 30.0f, sa::Area::Rural);
+    for (float d : {0.01f, 0.3f, 3.0f, 30.0f}) {
+        EXPECT_EQ(pp.evaluate(d).plDb, sa::pathLoss(3500.0f, d, 30.0f, sa::Area::Rural).plDb);
+        EXPECT_EQ(pp.evaluateIndoor(d).sigmaDb, sa::pathLossIndoor(3500.0f, d, 30.0f, sa::Area::Rural).sigmaDb);
+    }
 }
 
 TEST(CoverageProbability, Basics) {

@@ -1,8 +1,9 @@
 #include "model/eirp.h"
 
 #include <cmath>
+#include <cstddef>
 
-#include "model/stats.h"
+#include "model/limits.h"
 
 namespace sa {
 namespace {
@@ -27,8 +28,6 @@ int32_t lookup(const RbEntry (&table)[N], int32_t bwHz) {
     }
     return 0;
 }
-
-double sanitizeFreq(float f) { return sane(f, 30.0, 100000.0, 1800.0); }
 
 }  // namespace
 
