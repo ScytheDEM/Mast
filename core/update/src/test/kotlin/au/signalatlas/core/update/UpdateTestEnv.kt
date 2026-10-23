@@ -4,8 +4,11 @@ import android.content.Context
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import au.signalatlas.core.acma.AcmaImporter
+import au.signalatlas.core.acma.hrp.HrpImporter
 import au.signalatlas.core.data.DbInstaller
 import au.signalatlas.core.data.DbValidator
+import au.signalatlas.core.data.PatternInstaller
+import au.signalatlas.core.data.PatternRepository
 import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.data.Validation
 import kotlinx.coroutines.CoroutineScope
@@ -29,7 +32,10 @@ import java.time.ZoneOffset
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 
-/** A fake ACMA (stamp + zip over mockwebserver3) plus a real installer/repository in [root]. */
+/**
+ * A fake ACMA (stamp + RRL zip + HRP zip over mockwebserver3) plus real installers/repositories in
+ * [root]: towers.db and patterns.db side by side in [workDir], as in the app.
+ */
 class UpdateTestEnv(
     root: File,
     minSites: Int = 1,
@@ -63,11 +69,34 @@ class UpdateTestEnv(
     val notifications = UpdateNotifications(context)
     val zip = File(workDir, "download/spectra_rrl.zip")
 
+    // --- HRP (patterns) ---
+    val hrpFixture: ByteArray = checkNotNull(javaClass.getResourceAsStream("/acma/hrp_fixture.zip")).use { it.readBytes() }
+    @Volatile var hrpBytes: ByteArray = hrpFixture
+    /** Null: derived from [hrpBytes]. */
+    @Volatile var hrpEtagOverride: String? = null
+    val hrpEtag get() = hrpEtagOverride ?: "\"hrp-${hrpBytes.contentHashCode()}\""
+    @Volatile var hrpLastModified = "Tue, 20 Oct 2026 19:00:44 GMT"
+    /** Free bytes the HRP worker sees (fake StatFs). */
+    @Volatile var freeBytes: Long = 64L shl 30
+    /** Called with every HRP importer timing line, on the importing thread. */
+    @Volatile var onHrpLog: (String) -> Unit = {}
+    val patternInstaller = PatternInstaller(workDir)
+    val patterns = PatternRepository(patternInstaller)
+    val hrpZip = File(workDir, "download/spectra_licence_hrp.zip")
+
     init {
         workDir.mkdirs()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 requests += request
+                if (request.url.encodedPath == "/hrp") {
+                    val r = MockResponse.Builder().addHeader("ETag", hrpEtag).addHeader("Last-Modified", hrpLastModified)
+                    return if (request.method == "HEAD") {
+                        r.addHeader("Content-Length", hrpBytes.size.toString()).build()
+                    } else {
+                        r.body(Buffer().write(hrpBytes)).build()
+                    }
+                }
                 return when {
                     request.url.encodedPath == "/stamp" -> MockResponse.Builder().body(stamp + "\n").build()
                     request.method == "HEAD" -> MockResponse.Builder()
@@ -89,6 +118,22 @@ class UpdateTestEnv(
         override val workDir get() = this@UpdateTestEnv.workDir
         override val notifications get() = this@UpdateTestEnv.notifications
     }
+
+    val hrpRemote = HrpRemote(OkHttpClient(), server.url("/hrp").toString())
+
+    val hrpDeps = object : HrpDeps {
+        override val remote get() = this@UpdateTestEnv.hrpRemote
+        override val importer = HrpImporter(log = { onHrpLog(it) })
+        override val installer get() = this@UpdateTestEnv.patternInstaller
+        override val patterns get() = this@UpdateTestEnv.patterns
+        override val towersDb get() = this@UpdateTestEnv.installer.live
+        override val workDir get() = this@UpdateTestEnv.workDir
+        override val notifications get() = this@UpdateTestEnv.notifications
+        override val freeBytes: (File) -> Long = { this@UpdateTestEnv.freeBytes }
+    }
+
+    fun hrpRequests() = requests.count { it.url.encodedPath == "/hrp" }
+    fun hrpGets() = requests.count { it.url.encodedPath == "/hrp" && it.method == "GET" }
 
     /** Installs the fixture as the live DB with [stamp] (whatever [installer]'s minimum) and opens it through [repo]. */
     fun seed(stamp: String) {
@@ -122,6 +167,7 @@ class UpdateTestEnv(
 
     override fun close() {
         repo.close()
+        patterns.close()
         server.close()
     }
 }

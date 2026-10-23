@@ -48,7 +48,7 @@ class AcmaImporter(
         progress: (phase: String, fraction: Float) -> Unit = { _, _ -> },
         cancel: () -> Boolean = { false },
     ): ImportReport {
-        deleteDb(out)
+        deleteDbFiles(out)
         try {
             return ZipFile(zip).use { zf ->
                 val conn = driver.open(out.path)
@@ -59,13 +59,9 @@ class AcmaImporter(
                 }
             }
         } catch (t: Throwable) {
-            deleteDb(out)
+            deleteDbFiles(out)
             throw t
         }
-    }
-
-    private fun deleteDb(out: File) {
-        for (suffix in listOf("", "-journal", "-wal", "-shm")) File(out.path + suffix).delete()
     }
 
     companion object {
@@ -529,6 +525,11 @@ private class ImportRun(
         const val NO_ANTENNA = -1
         val LICENCE_TYPES = setOf("Spectrum", "PTS")
     }
+}
+
+/** Deletes a (half-built) SQLite DB and its journal files. */
+internal fun deleteDbFiles(db: File) {
+    for (suffix in listOf("", "-journal", "-wal", "-shm")) File(db.path + suffix).delete()
 }
 
 /**

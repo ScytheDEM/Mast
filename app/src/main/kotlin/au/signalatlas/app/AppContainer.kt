@@ -9,11 +9,16 @@ import au.signalatlas.app.data.RepositoryTowerData
 import au.signalatlas.app.location.DeviceLocationSource
 import au.signalatlas.app.ui.map.MapViewModel
 import au.signalatlas.core.acma.AcmaImporter
+import au.signalatlas.core.acma.hrp.HrpImporter
 import au.signalatlas.core.data.DbInstaller
 import au.signalatlas.core.data.DbValidator
+import au.signalatlas.core.data.PatternInstaller
+import au.signalatlas.core.data.PatternRepository
 import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.map.BasemapLocator
 import au.signalatlas.core.update.AcmaRemote
+import au.signalatlas.core.update.HrpDeps
+import au.signalatlas.core.update.HrpRemote
 import au.signalatlas.core.update.UpdateDeps
 import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateNotifications
@@ -47,18 +52,36 @@ class AppContainer(context: Context) {
     val repo = TowerRepository(installer, appScope)
     private val repoStarted = MutableStateFlow(false)
 
+    /** Antenna patterns (`patterns.db`, beside towers.db); null until imported: standard patterns. */
+    private val patternInstaller = PatternInstaller(towersDir)
+    val patterns = PatternRepository(patternInstaller, onLoadError = { Log.e(TAG, "Could not load patterns.db", it) })
+    private val notifications = UpdateNotifications(app)
+
     val updateDeps: UpdateDeps = object : UpdateDeps {
         override val remote = this@AppContainer.remote
         override val repo = this@AppContainer.repo
         override val importer = AcmaImporter(log = { Log.i(IMPORT_LOG_TAG, it) })
         override val installer = this@AppContainer.installer
         override val workDir = towersDir
-        override val notifications = UpdateNotifications(app)
+        override val notifications = this@AppContainer.notifications
+    }
+
+    val hrpDeps: HrpDeps = object : HrpDeps {
+        override val remote = HrpRemote(http)
+        override val importer = HrpImporter(log = { Log.i(HRP_LOG_TAG, it) })
+        override val installer = patternInstaller
+        override val patterns = this@AppContainer.patterns
+        override val towersDb = this@AppContainer.installer.live
+        override val workDir = towersDir
+        override val notifications = this@AppContainer.notifications
     }
 
     /** Lazy: WorkManager initialises on first use, through SignalAtlasApp's configuration. */
     val updateManager: UpdateManager by lazy {
-        UpdateManager(app, remote, repo, UpdatePrefs.create(File(app.filesDir, "datastore/update.preferences_pb"), appScope), appScope)
+        UpdateManager(
+            app, remote, repo, patterns,
+            UpdatePrefs.create(File(app.filesDir, "datastore/update.preferences_pb"), appScope), appScope,
+        )
     }
 
     private val basemap = BasemapLocator(
@@ -82,6 +105,7 @@ class AppContainer(context: Context) {
         } finally {
             repoStarted.value = true
         }
+        patterns.start() // never throws for a bad file: it is ignored (standard patterns)
     }
 
     fun startRepository() {
@@ -93,6 +117,7 @@ class AppContainer(context: Context) {
         startJob.start()
         startJob.join()
         updateManager.schedulePeriodic()
+        updateManager.scheduleHrp()
         updateManager.checkOnAppOpen()
     }
 
@@ -102,5 +127,7 @@ class AppContainer(context: Context) {
         const val TAG = "SignalAtlas"
         /** Per-phase import timings: `phase=<name> ms=<elapsed>`, then `phase=total`. */
         const val IMPORT_LOG_TAG = "AcmaImporter"
+        /** HRP import timings: `phase=towers|stream|total ms=<elapsed>`. */
+        const val HRP_LOG_TAG = "HrpImporter"
     }
 }

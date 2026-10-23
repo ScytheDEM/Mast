@@ -16,8 +16,8 @@ sealed interface Validation {
 class DbValidator(
     private val minSites: Int = 10_000,
     private val driver: SQLiteDriver = BundledSQLiteDriver(),
-) {
-    fun validate(db: File): Validation {
+) : CandidateValidator {
+    override fun validate(db: File): Validation {
         if (!db.isFile) return Validation.Invalid("missing file")
         return try {
             open(db).use { conn -> check(conn) }

@@ -18,6 +18,7 @@ import au.signalatlas.core.data.TowerRepository
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -35,12 +36,19 @@ interface UpdateDeps {
     val notifications: UpdateNotifications
 }
 
-/** Builds [AcmaDownloadWorker] and [AcmaImportWorker] with their dependencies; null for other workers. */
-class TowerUpdateWorkerFactory(private val deps: UpdateDeps) : WorkerFactory() {
+/**
+ * Builds [AcmaDownloadWorker], [AcmaImportWorker] and (given [hrpDeps]) [HrpWorker] with their
+ * dependencies; null for other workers.
+ */
+class TowerUpdateWorkerFactory(
+    private val deps: UpdateDeps,
+    private val hrpDeps: HrpDeps? = null,
+) : WorkerFactory() {
     override fun createWorker(appContext: Context, workerClassName: String, workerParameters: WorkerParameters): ListenableWorker? =
         when (workerClassName) {
             AcmaDownloadWorker::class.java.name -> AcmaDownloadWorker(appContext, workerParameters, deps)
             AcmaImportWorker::class.java.name -> AcmaImportWorker(appContext, workerParameters, deps)
+            HrpWorker::class.java.name -> hrpDeps?.let { HrpWorker(appContext, workerParameters, it) }
             else -> null
         }
 }
@@ -79,6 +87,10 @@ object UpdateWork {
 
     const val TAG_DOWNLOAD = "acma-download"
     const val TAG_IMPORT = "acma-import"
+    /** The monthly (and manual) antenna-pattern job, [HrpWorker]. */
+    const val TAG_HRP = "acma-hrp"
+    /** At most 4 progress updates per second. */
+    const val PROGRESS_INTERVAL_MS = 250L
     const val MAX_ATTEMPTS = 5
 
     /** Logcat tag of the download timing line (`phase=download ms=<elapsed> bytes=<size>`). */
@@ -113,8 +125,6 @@ abstract class UpdateWorker(
 ) : CoroutineWorker(appContext, params) {
 
     private companion object {
-        const val PROGRESS_INTERVAL_MS = 250L // at most 4 updates per second
-
         /** Process-wide: only one update worker may touch the work directory at a time. */
         val running = Mutex()
     }
@@ -178,12 +188,22 @@ abstract class UpdateWorker(
         }
     }
 
-    /** Publishes the latest progress at most every [PROGRESS_INTERVAL_MS] (conflating in between). */
-    private suspend fun reportProgress() {
-        progress.collect { (phase, fraction) ->
-            setProgress(workDataOf(UpdateWork.KEY_PHASE to phase, UpdateWork.KEY_FRACTION to fraction))
-            if (inForeground) deps.notifications.update(phase, fraction)
-            delay(PROGRESS_INTERVAL_MS)
-        }
+    private suspend fun reportProgress() =
+        publishProgress(progress) { phase, fraction -> if (inForeground) deps.notifications.update(phase, fraction) }
+}
+
+/**
+ * Publishes the latest of [progress] as WorkManager progress ([UpdateWork.KEY_PHASE],
+ * [UpdateWork.KEY_FRACTION]) and to [notify], at most every [UpdateWork.PROGRESS_INTERVAL_MS]
+ * (conflating in between). Runs until cancelled.
+ */
+internal suspend fun CoroutineWorker.publishProgress(
+    progress: StateFlow<Pair<String, Float>>,
+    notify: (phase: String, fraction: Float) -> Unit,
+) {
+    progress.collect { (phase, fraction) ->
+        setProgress(workDataOf(UpdateWork.KEY_PHASE to phase, UpdateWork.KEY_FRACTION to fraction))
+        notify(phase, fraction)
+        delay(UpdateWork.PROGRESS_INTERVAL_MS)
     }
 }

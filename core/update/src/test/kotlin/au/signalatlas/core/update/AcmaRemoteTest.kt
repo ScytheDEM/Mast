@@ -56,9 +56,10 @@ class AcmaRemoteTest {
 
     private val sidecar get() = File(dest.path + ".etag")
 
+    /** Sidecar lines: ETag, size, Last-Modified (not tracked for the RRL zip). */
     private fun prefill(content: ByteArray, tag: String? = etag) {
         dest.writeBytes(content)
-        if (tag != null) sidecar.writeText(tag)
+        if (tag != null) sidecar.writeText("$tag\n${body.size}\n")
     }
 
     private fun bytes(b: ByteArray) = Buffer().write(b)
@@ -172,7 +173,7 @@ class AcmaRemoteTest {
         remote.download(info, dest) { _, _ -> }
         assertThat(dest.readBytes()).isEqualTo(body)
         assertThat(requests.none { it.headers["Range"] != null }).isTrue()
-        assertThat(sidecar.readText()).isEqualTo(etag)
+        assertThat(sidecar.readText()).isEqualTo("$etag\n${body.size}\n")
     }
 
     @Test fun partialWithoutSidecarIsRestarted() = runTest {
@@ -194,6 +195,15 @@ class AcmaRemoteTest {
             assertThat(dest.readBytes()).isEqualTo(body)
             assertThat(requests).hasSize(1)
         }
+    }
+
+    @Test fun oneLineSidecarFromAnOlderVersionIsNotTrustedForResume() = runTest {
+        dest.writeBytes(body.copyOf(1000))
+        sidecar.writeText(etag)
+        rangeServer()
+        remote.download(info, dest) { _, _ -> }
+        assertThat(dest.readBytes()).isEqualTo(body)
+        assertThat(requests.none { it.headers["Range"] != null }).isTrue()
     }
 
     @Test fun discardDeletesFileAndSidecar() {
@@ -224,7 +234,7 @@ class AcmaRemoteTest {
         job.cancelAndJoin()
         assertThat(outcome.await()).isInstanceOf(CancellationException::class.java)
         assertThat(dest.length()).isLessThan(body.size.toLong())
-        assertThat(sidecar.readText()).isEqualTo(etag)
+        assertThat(sidecar.readText()).isEqualTo("$etag\n${body.size}\n")
     }
 
     @Test fun contentRangeStartMismatchRestartsFromZero() = runTest {

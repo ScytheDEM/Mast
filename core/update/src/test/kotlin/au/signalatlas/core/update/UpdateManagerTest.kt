@@ -38,13 +38,13 @@ class UpdateManagerTest {
         WorkManagerTestInitHelper.initializeTestWorkManager(
             env.context,
             Configuration.Builder()
-                .setWorkerFactory(TowerUpdateWorkerFactory(env.deps))
+                .setWorkerFactory(TowerUpdateWorkerFactory(env.deps, env.hrpDeps))
                 .setExecutor(SynchronousExecutor())
                 .build(),
         )
         workManager = WorkManager.getInstance(env.context)
         val prefs = UpdatePrefs.create(File(tmp.root, "update.preferences_pb"), scope)
-        manager = UpdateManager(env.context, env.remote, env.repo, prefs, scope, clock)
+        manager = UpdateManager(env.context, env.remote, env.repo, env.patterns, prefs, scope, clock)
     }
 
     @After fun tearDown() {
@@ -110,7 +110,7 @@ class UpdateManagerTest {
             val prefs2 = UpdatePrefs.create(File(tmp.root, "update.preferences_pb"), scope2)
             // DataStore allows one instance per file per process; the first must be gone first.
             scope.cancel()
-            val m2 = UpdateManager(env.context, env.remote, env.repo, prefs2, scope2, clock)
+            val m2 = UpdateManager(env.context, env.remote, env.repo, env.patterns, prefs2, scope2, clock)
             runBlocking { m2.checkOnAppOpen() }
             assertThat(env.requests.size).isEqualTo(made)
             assertThat(env.await({ m2.status.value }) { it is UpdateStatus.Available }).isInstanceOf(UpdateStatus.Available::class.java)
@@ -151,6 +151,41 @@ class UpdateManagerTest {
         manager.schedulePeriodic()
         assertThat(workManager.getWorkInfosForUniqueWork(UpdateManager.PERIODIC_WORK).get().single().id)
             .isEqualTo(periodic.id)
+    }
+
+    @Test fun scheduleHrpEnqueuesMonthlyWorkOnWifiAndChargingAndKeepsIt() {
+        manager.scheduleHrp()
+        val monthly = works(UpdateManager.HRP_WORK).single()
+        assertThat(monthly.constraints).isEqualTo(UpdatePolicy.hrpConstraints())
+        assertThat(monthly.periodicityInfo!!.repeatIntervalMillis).isEqualTo(Duration.ofDays(30).toMillis())
+        assertThat(monthly.tags).contains(UpdateWork.TAG_HRP)
+        manager.scheduleHrp()
+        assertThat(works(UpdateManager.HRP_WORK).single().id).isEqualTo(monthly.id)
+        // Independent of the weekly tower update.
+        assertThat(works(UpdateManager.PERIODIC_WORK)).isEmpty()
+    }
+
+    @Test fun downloadPatternsNowRunsOnWifiOnlyAndReplaces() {
+        manager.downloadPatternsNow()
+        val first = works(UpdateManager.HRP_MANUAL_WORK).single()
+        assertThat(first.constraints.requiredNetworkType).isEqualTo(NetworkType.UNMETERED)
+        assertThat(first.constraints.requiresCharging()).isFalse()
+        manager.downloadPatternsNow()
+        val all = works(UpdateManager.HRP_MANUAL_WORK)
+        assertThat(all.single { !it.state.isFinished }.id).isNotEqualTo(first.id)
+    }
+
+    @Test fun hrpStatusFollowsTheInstalledPatternsAndTheRunningJob() {
+        assertThat(env.await({ manager.hrpStatus.value }) { true }).isEqualTo(HrpStatus(null, 0, null))
+        env.seed("202610221934")
+        manager.downloadPatternsNow()
+        val id = works(UpdateManager.HRP_MANUAL_WORK).single().id
+        WorkManagerTestInitHelper.getTestDriver(env.context)!!.setAllConstraintsMet(id)
+        env.await({ works(UpdateManager.HRP_MANUAL_WORK).single().state }) { it.isFinished }
+        // The patterns and the work state reach the status separately: wait for both.
+        val s = env.await({ manager.hrpStatus.value }) { it.devices > 0 && it.running == null }
+        assertThat(s.devices).isEqualTo(12)
+        assertThat(s.lastImportedAt).isEqualTo(env.patterns.patterns.value!!.importedAt)
     }
 
     @Test fun schedulePeriodicSkipsStaleWorkForFreshData() {

@@ -107,7 +107,7 @@ the saved prefix to reproduce the committed fixture.
 
 Ruling BB (for Task 4): the on-device HRP download must verify the entry CRC-32 (from the central
 directory or data descriptor) against the inflated bytes, because an ETag match does not guarantee the same
-bytes. A mismatch fails the import and keeps the existing `patterns.db`.
+bytes. A mismatch fails the import and keeps the existing `patterns.db` (see "Ruling BB, as implemented" below).
 
 ## Fixture contents (`hrp_fixture.zip`, entry `LICENCE_.csv`, CRLF, 16 199 rows)
 
@@ -138,3 +138,29 @@ bytes. A mismatch fails the import and keeps the existing `patterns.db`.
   the same codes.
 - **Pattern ids** are assigned 1..N in first-seen order of the kept devices. `peakDbw` is the parsed
   maximum POWER.
+
+## Full HRP file (Task 4 `HrpFullTest`)
+
+`spectra_licence_hrp.zip` 1,562,523,638 bytes, ETag `0x8DF2EDC716D83D0`, Last-Modified 2026-10-20 19:00:44 GMT,
+entry `LICENCE_.csv` 10,060,668,828 bytes, entry timestamp 2026-10-21 00:00, CRC-32 `0xcde3120b`, against the
+towers.db built from the 2026-10-22 export (852,634 carriers).
+
+```
+devices 95319, patterns 3390, skippedIncomplete 741534, skippedUnknown 17857, rows 280553129
+SDD 2909149471: pattern 1, peak bearing 265, peak 33.6 dBW, floor code 100 (peak - 25.0 dB)
+```
+
+- `hrp_reference.py`: 611 s wall-clock, 1.1 GB peak RSS.
+- Kotlin `HrpImporter` (host JVM, 256 MB heap cap): 32.3 s (towers 0.05 s, stream 32.3 s); `patterns.db` 3.73 MB;
+  peak heap used 31.6 MB (baseline 4.9 MB). Byte parser alone: ~14 M rows/s on the host.
+- Run: `ACMA_HRP_ZIP=<scratch>/hrp/spectra_licence_hrp.zip ACMA_FULL_ZIP=<scratch>/acma/spectra_rrl.zip ./gradlew :core:acma:test --tests '*HrpFullTest*'`
+
+**Data shape (2026-10-23 scan of all 854,710 runs, not only carriers).** Contrary to the earlier "verified fact",
+most devices are *not* in angle order: 96,697 runs are 360 rows in order 0..359; 315,528 are 360 rows covering
+0..359 exactly once in another order; 51,980 are 359 rows missing angle 0; 390,505 are other shapes (split runs,
+gaps). Rule 2 as written (and the reference) keeps only the first group, hence 741,534 `skippedIncomplete`.
+
+**Ruling BB, as implemented.** `java.util.zip.ZipFile`'s entry stream does *not* check the CRC (verified on JDK 17:
+a zip with a flipped CRC reads without error; only `ZipInputStream` checks). `HrpImporter` therefore CRC-32s and
+counts the inflated bytes itself and throws `ZipException` at end of stream on a CRC or size mismatch; `HrpWorker`
+then discards the zip and its sidecar (`<zip>.etag`: ETag, Content-Length, Last-Modified) and retries.

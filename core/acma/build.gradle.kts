@@ -24,4 +24,6 @@ tasks.test {
     jvmArgs("-XX:MaxNewSize=32m")
     // FullExportTest runs only when ACMA_FULL_ZIP is set; make the variable an input so it is not skipped as up to date.
     inputs.property("acmaFullZip", providers.environmentVariable("ACMA_FULL_ZIP").orElse(""))
+    // HrpFullTest also needs ACMA_HRP_ZIP (the 1.56 GB spectra_licence_hrp.zip).
+    inputs.property("acmaHrpZip", providers.environmentVariable("ACMA_HRP_ZIP").orElse(""))
 }

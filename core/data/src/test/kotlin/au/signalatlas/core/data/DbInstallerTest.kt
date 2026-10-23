@@ -121,7 +121,7 @@ class DbInstallerTest {
         val inst = installer()
         inst.install(build())
         inst.install(build())
-        val stale = listOf("x.building", "x.building-journal", "y.tmp", "y.tmp-journal").map { File(dir, it).apply { writeText("z") } }
+        val stale = listOf("towers.db.building", "towers.db.building-journal", "towers.prev.db.tmp", "towers.y.tmp-journal").map { File(dir, it).apply { writeText("z") } }
         inst.cleanupStale()
         stale.forEach { assertThat(it.exists()).isFalse() }
         assertThat(inst.live.exists()).isTrue()
@@ -149,13 +149,13 @@ class DbInstallerTest {
         inst.install(build())
         // Simulate the old crash window: live gone, previous = last good, candidate still .building.
         inst.live.delete()
-        File(dir, "x.building").writeText("z")
+        File(dir, "towers.db.building").writeText("z")
         val prevStamp = meta(inst.previous, "extract_stamp")
         inst.cleanupStale()
         assertThat(inst.live.exists()).isTrue()
         assertThat(meta(inst.live, "extract_stamp")).isEqualTo(prevStamp)
         assertThat(prevStamp).isEqualTo(oldStamp)
-        assertThat(File(dir, "x.building").exists()).isFalse()
+        assertThat(File(dir, "towers.db.building").exists()).isFalse()
     }
 
     @Test fun failingFinalMovePropagatesAndLiveIsIntact() {

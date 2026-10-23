@@ -5,10 +5,13 @@ import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import au.signalatlas.core.data.PatternRepository
 import au.signalatlas.core.data.TowerStore
 import au.signalatlas.core.data.TowerRepository
 import kotlinx.coroutines.CancellationException
@@ -21,6 +24,7 @@ import kotlinx.coroutines.flow.stateIn
 import java.io.IOException
 import java.time.Clock
 import java.time.Duration
+import java.time.Instant
 
 sealed interface UpdateStatus {
     data object Unknown : UpdateStatus
@@ -33,6 +37,12 @@ sealed interface UpdateStatus {
 }
 
 /**
+ * The antenna-pattern data: when the installed `patterns.db` was imported (null = none, standard
+ * patterns in use), how many devices it covers, and the pattern job's progress while it runs.
+ */
+data class HrpStatus(val lastImportedAt: Instant?, val devices: Int, val running: UpdateStatus.Running?)
+
+/**
  * Ties the update check and the scheduled/manual update runs into one [status].
  *
  * Unique work (each run is [AcmaDownloadWorker] then [AcmaImportWorker], see [UpdateWork]):
@@ -40,6 +50,8 @@ sealed interface UpdateStatus {
  * - [PERIODIC_WORK]: the weekly download; it enqueues its import as [AUTO_WORK] (KEEP).
  * - [AUTO_WORK]: every other automatic run: the stale-data chain download -> import, and the
  *   periodic run's import. KEEP everywhere, so at most one automatic chain is pending.
+ * - [HRP_WORK] / [HRP_MANUAL_WORK]: the antenna-pattern job ([HrpWorker]), monthly or on request,
+ *   independent of the tower update; its state is [hrpStatus].
  *
  * [status] is shared in [scope] for as long as that scope lives (the app's scope in production),
  * so every collector reads the same upstream instead of starting its own WorkManager queries.
@@ -48,6 +60,7 @@ class UpdateManager(
     context: Context,
     private val remote: AcmaRemote,
     private val repo: TowerRepository,
+    patterns: PatternRepository,
     private val prefs: UpdatePrefs,
     scope: CoroutineScope,
     private val clock: Clock = Clock.systemUTC(),
@@ -56,6 +69,10 @@ class UpdateManager(
         const val PERIODIC_WORK = "acma-periodic"
         const val AUTO_WORK = "acma-auto"
         const val MANUAL_WORK = "acma-manual"
+        /** The monthly antenna-pattern job (periodic, KEEP). */
+        const val HRP_WORK = "hrp-monthly"
+        /** "Download patterns now" (one-time, REPLACE). */
+        const val HRP_MANUAL_WORK = "hrp-manual"
         /** [UpdateStatus.Running] phase of a manual update queued until any network is available. */
         const val PHASE_WAITING = "waiting"
         /** [UpdateStatus.Running] phase of a manual update queued until an unmetered (Wi-Fi) network. */
@@ -82,6 +99,13 @@ class UpdateManager(
         workManager.getWorkInfosForUniqueWorkFlow(AUTO_WORK),
     ) { check, store, manual, periodic, auto -> derive(check, store, manual, periodic + auto) }
         .stateIn(scope, SharingStarted.Eagerly, UpdateStatus.Unknown)
+
+    val hrpStatus: StateFlow<HrpStatus> = combine(
+        patterns.patterns,
+        workManager.getWorkInfosForUniqueWorkFlow(HRP_WORK),
+        workManager.getWorkInfosForUniqueWorkFlow(HRP_MANUAL_WORK),
+    ) { store, monthly, manual -> HrpStatus(store?.importedAt, store?.deviceCount ?: 0, runningStatus(manual + monthly)) }
+        .stateIn(scope, SharingStarted.Eagerly, HrpStatus(null, 0, null))
 
     /**
      * Compares ACMA's current stamp with the live DB's. Hits the network at most once per
@@ -151,6 +175,34 @@ class UpdateManager(
             .beginUniqueWork(MANUAL_WORK, ExistingWorkPolicy.REPLACE, UpdateWork.downloadRequest(network, expedited = true, input))
             .then(UpdateWork.importRequest(expedited = true))
             .enqueue()
+    }
+
+    /**
+     * The monthly antenna-pattern job on Wi-Fi + charging + storage-not-low (KEEP). It downloads only
+     * when ACMA's HRP ETag differs from the installed patterns'.
+     */
+    fun scheduleHrp() {
+        workManager.enqueueUniquePeriodicWork(
+            HRP_WORK,
+            ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<HrpWorker>(UpdatePolicy.HRP_PERIOD)
+                .setConstraints(UpdatePolicy.hrpConstraints())
+                .addTag(UpdateWork.TAG_HRP)
+                .build(),
+        )
+    }
+
+    /** "Download patterns now": the pattern job as soon as Wi-Fi is available (REPLACE). */
+    fun downloadPatternsNow() {
+        workManager.enqueueUniqueWork(
+            HRP_MANUAL_WORK,
+            ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<HrpWorker>()
+                .setConstraints(UpdatePolicy.hrpManualConstraints())
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+                .addTag(UpdateWork.TAG_HRP)
+                .build(),
+        )
     }
 
     /** Cancels a queued or running manual update ("Cancel" while waiting). */

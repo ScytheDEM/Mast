@@ -9,24 +9,32 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
 
+/** Checks a candidate DB before an installer may make it live. Must never throw. */
+fun interface CandidateValidator {
+    fun validate(db: File): Validation
+}
+
 /**
- * Swaps a validated candidate DB in as `towers.db`, keeping the prior one as `towers.prev.db`.
+ * Swaps a validated candidate DB in as `<name>.db` (default `towers.db`), keeping the prior one as
+ * `<name>.prev.db`. Several installers with different [name]s can share one [dir].
  *
- * Invariant: once a first DB has been installed, `towers.db` exists at every instant. The old live
+ * Invariant: once a first DB has been installed, `<name>.db` exists at every instant. The old live
  * DB is preserved as `previous` by hard link (or copy) rather than moved, and the candidate then
  * replaces `live` with one atomic rename, so a crash at any point leaves either the old or the new
  * complete DB as `live`. The candidate must live in [dir] so the rename is same-directory.
  *
- * [cleanupStale] must only run before any import starts (it deletes in-progress `*.building` files).
+ * [cleanupStale] must only run before this installer's import starts (it deletes in-progress
+ * `<name>.*.building` files).
  */
 class DbInstaller(
     private val dir: File,
-    private val validator: DbValidator,
+    private val validator: CandidateValidator,
+    private val name: String = "towers",
     private val mover: (Path, Path) -> Unit = { from, to -> Files.move(from, to, ATOMIC_MOVE, REPLACE_EXISTING) },
 ) {
-    val live: File = File(dir, "towers.db")
-    val previous: File = File(dir, "towers.prev.db")
-    private val previousTmp: File = File(dir, "towers.prev.db.tmp")
+    val live: File = File(dir, "$name.db")
+    val previous: File = File(dir, "$name.prev.db")
+    private val previousTmp: File = File(dir, "$name.prev.db.tmp")
 
     @Synchronized
     fun install(candidate: File): Validation {
@@ -67,13 +75,17 @@ class DbInstaller(
         return true
     }
 
-    /** Recovers a missing live DB, then removes leftovers of a crashed import. Never touches towers.db or towers.prev.db. */
+    /**
+     * Recovers a missing live DB, then removes this installer's leftovers of a crashed import
+     * (`<name>.*.building`, `<name>.*.tmp` and their journals). Never touches live or previous, nor
+     * another installer's files in the same directory.
+     */
     @Synchronized
     fun cleanupStale() {
         recover()
         dir.listFiles()?.forEach { f ->
             val n = f.name
-            if (n == previousTmp.name || STALE_SUFFIXES.any { n.endsWith(it) || n.endsWith("$it-journal") }) f.delete()
+            if (n.startsWith("$name.") && STALE_SUFFIXES.any { n.endsWith(it) || n.endsWith("$it-journal") }) f.delete()
         }
     }
 

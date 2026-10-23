@@ -18,6 +18,6 @@ class SignalAtlasApp : Application(), Configuration.Provider {
     /** WorkManager's default initializer is removed in the manifest so the worker gets its deps. */
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
-            .setWorkerFactory(TowerUpdateWorkerFactory(container.updateDeps))
+            .setWorkerFactory(TowerUpdateWorkerFactory(container.updateDeps, container.hrpDeps))
             .build()
 }

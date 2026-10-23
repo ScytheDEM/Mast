@@ -26,6 +26,21 @@ class UpdatePolicyTest {
         assertThat(c.requiresStorageNotLow()).isTrue()
     }
 
+    @Test fun hrpNeedsWifiChargingAndStorageMonthly() {
+        val c = UpdatePolicy.hrpConstraints()
+        assertThat(c.requiredNetworkType).isEqualTo(NetworkType.UNMETERED)
+        assertThat(c.requiresCharging()).isTrue()
+        assertThat(c.requiresStorageNotLow()).isTrue()
+        assertThat(UpdatePolicy.HRP_PERIOD).isEqualTo(Duration.ofDays(30))
+        assertThat(UpdatePolicy.HRP_MIN_FREE_BYTES).isAtLeast(3_000_000_000L)
+    }
+
+    @Test fun manualHrpNeedsOnlyWifi() {
+        val c = UpdatePolicy.hrpManualConstraints()
+        assertThat(c.requiredNetworkType).isEqualTo(NetworkType.UNMETERED)
+        assertThat(c.requiresCharging()).isFalse()
+    }
+
     @Test fun noDataIsStale() {
         assertThat(UpdatePolicy.isStale(null, now)).isTrue()
     }
