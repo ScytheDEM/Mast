@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Android 16 Live Updates (promoted ongoing notifications); a normal permission, ignored on older releases. -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
 
     <application>
         <!-- Started from the app screen or the Quick Settings tile only (foreground), never in the background. -->
@@ -11,6 +13,18 @@
             android:name="au.signalatlas.feature.trip.TripService"
             android:exported="false"
             android:foregroundServiceType="location" />
+
+        <!-- Quick Settings tile "Trip": a tap starts or stops the trip (user-initiated, so a foreground start). -->
+        <service
+            android:name="au.signalatlas.feature.trip.TripTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_trip"
+            android:label="@string/trip_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

@@ -33,6 +33,7 @@ class TripService : Service() {
     private var observers: List<Job> = emptyList()
     private var requestedIntervalMs = 0L
     private var started = false
+    private var voice: TripVoice? = null
 
     private val listener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
@@ -79,6 +80,7 @@ class TripService : Service() {
         wakeLock = getSystemService(PowerManager::class.java)
             ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "signalatlas:trip")?.apply { acquire(MAX_TRIP_MS) }
         manager = getSystemService(LocationManager::class.java)
+        voice = TripVoice(this, { TripRuntime.voiceEnabled() })
         requestUpdates(MOVING_INTERVAL_MS)
         observers = listOf(
             scope.launch {
@@ -102,6 +104,7 @@ class TripService : Service() {
     /** Alerts post a heads-up notification. */
     private fun onAlert(n: TripNotifications, alert: Alert) {
         n.postAlert(alert)
+        voice?.speak(alert)
     }
 
     @SuppressLint("MissingPermission") // the app asks for location before it starts a trip
@@ -133,6 +136,7 @@ class TripService : Service() {
         manager?.removeUpdates(listener)
         wakeLock?.takeIf { it.isHeld }?.release()
         scope.cancel()
+        voice?.shutdown()
         TripRuntime.controller?.onServiceGone()
         notifications?.cancelAll()
         super.onDestroy()

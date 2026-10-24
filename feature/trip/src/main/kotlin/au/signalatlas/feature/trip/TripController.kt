@@ -319,4 +319,5 @@ class TripController(
 /** Where the service finds the controller (set by the app container; feature modules cannot see the app). */
 object TripRuntime {
     @Volatile var controller: TripController? = null
+    @Volatile var voiceEnabled: () -> Boolean = { false }
 }

@@ -60,6 +60,9 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -94,6 +97,9 @@ import au.signalatlas.app.ui.coverage.CoverageActions
 import au.signalatlas.app.ui.coverage.CoverageControlsCard
 import au.signalatlas.app.ui.coverage.CoverageLegend
 import au.signalatlas.app.ui.coverage.CoverageToolbar
+import au.signalatlas.app.ui.trip.TripBanner
+import au.signalatlas.app.ui.trip.TripUi
+import au.signalatlas.feature.trip.TripState
 import au.signalatlas.app.ui.coverage.IncreaseResolutionSheet
 import au.signalatlas.app.ui.coverage.PointReadout
 import au.signalatlas.app.ui.nearby.NearbyContent
@@ -158,7 +164,9 @@ fun MapScreen(
     connectedActions: ConnectedActions = ConnectedActions.None,
     hints: UiHints = remember { UiHints.InMemory() },
     calibration: CalibrationHooks = CalibrationHooks.None,
+    trip: TripUi = TripUi.None,
 ) {
+    val tripState by trip.state.collectAsStateWithLifecycle()
     val camera = viewModel<MapCameraHolder>().camera
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -285,6 +293,22 @@ fun MapScreen(
         }
     }
 
+    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val onTrip = {
+        if (tripState is TripState.Running) {
+            trip.onToggle()
+        } else {
+            withLocation {
+                // Alerts need notifications (API 33+); the trip runs without them, so this is a request, not a gate.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+                trip.onToggle()
+            }
+        }
+    }
     val onMyLocation = {
         withLocation {
             location.refresh()
@@ -410,6 +434,9 @@ fun MapScreen(
                 snackbar = snackbar,
                 connected = connected,
                 onConnectedBar = onConnectedBar,
+                tripRunning = tripState is TripState.Running,
+                tripBanner = (tripState as? TripState.Running)?.stats?.banner,
+                onTrip = onTrip,
             )
         }
         val paneContent: @Composable (Pane) -> Unit = { p ->
@@ -635,6 +662,9 @@ private fun MapControls(
     snackbar: SnackbarHostState,
     connected: ConnectedUi?,
     onConnectedBar: () -> Unit,
+    tripRunning: Boolean,
+    tripBanner: String?,
+    onTrip: () -> Unit,
 ) {
     // The info bar sits along the bottom; the buttons above it move up by its height.
     val barInset = if (connected != null) CONNECTED_BAR_INSET + CONNECTED_ROW_INSET * connected.otherSims.size else 0.dp
@@ -660,6 +690,7 @@ private fun MapControls(
             }
             if (!searchExpanded || docked) {
                 Spacer(Modifier.height(10.dp))
+                tripBanner?.let { TripBanner(it, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
                 AnimatedVisibility(state.update.showsChip(), enter = fadeIn(), exit = fadeOut()) {
                     UpdateChip(state.update, onClick = onOpenUpdates, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
@@ -726,6 +757,8 @@ private fun MapControls(
                 filterCount = filterCount,
                 filtersOpen = filtersOpen,
                 onFilters = onFilters,
+                tripRunning = tripRunning,
+                onTrip = onTrip,
             )
         }
         if (connected != null) {

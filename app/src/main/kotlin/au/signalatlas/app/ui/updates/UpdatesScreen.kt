@@ -76,6 +76,7 @@ fun UpdatesScreen(
     onDownloadPatterns: () -> Unit = {},
     onOpenStorage: (() -> Unit)? = null,
     onOpenCalibration: (() -> Unit)? = null,
+    onOpenTrip: (() -> Unit)? = null,
 ) {
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -165,6 +166,12 @@ fun UpdatesScreen(
                     Spacer(Modifier.height(24.dp))
                     OutlinedButton(onClick = onOpenCalibration, modifier = Modifier.fillMaxWidth().height(48.dp)) {
                         Text(stringResource(R.string.calibration_open))
+                    }
+                }
+                if (onOpenTrip != null) {
+                    Spacer(Modifier.height(24.dp))
+                    OutlinedButton(onClick = onOpenTrip, modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                        Text(stringResource(R.string.trip_open_settings))
                     }
                 }
                 if (onOpenStorage != null) {

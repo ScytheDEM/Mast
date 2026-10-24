@@ -67,8 +67,18 @@ fun CoverageToolbar(
     filterCount: Int = 0,
     filtersOpen: Boolean = false,
     onFilters: (() -> Unit)? = null,
+    /** The "Trip" button (only when given): checked while a trip runs. */
+    tripRunning: Boolean = false,
+    onTrip: (() -> Unit)? = null,
 ) {
     HorizontalFloatingToolbar(expanded = true, modifier = modifier) {
+        if (onTrip != null) {
+            ToggleButton(checked = tripRunning, onCheckedChange = { onTrip() }, modifier = Modifier.testTag("trip-button")) {
+                Icon(painterResource(R.drawable.ic_trip), null, Modifier.size(ToggleButtonDefaults.IconSize))
+                Spacer(Modifier.width(ToggleButtonDefaults.IconSpacing))
+                Text(stringResource(R.string.trip_button))
+            }
+        }
         if (onFilters != null) {
             val badgeDescription = if (filterCount > 0) pluralStringResource(R.plurals.filters_badge_description, filterCount, filterCount) else null
             ToggleButton(checked = filtersOpen, onCheckedChange = { onFilters() }, modifier = Modifier.testTag("filters-button")) {

@@ -32,6 +32,7 @@ dependencies {
     api(project(":core:data"))
     api(project(":core:model"))
     api(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

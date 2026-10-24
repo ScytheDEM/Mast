@@ -36,6 +36,8 @@ import au.signalatlas.app.ui.map.MapViewModel
 import au.signalatlas.app.ui.storage.StorageScreen
 import au.signalatlas.app.ui.storage.StorageViewModel
 import au.signalatlas.app.ui.updates.UpdatesScreen
+import au.signalatlas.app.ui.trip.TripSettingsScreen
+import au.signalatlas.app.ui.trip.TripUi
 import au.signalatlas.app.ui.updates.currentNetworkKind
 
 private enum class Root { Loading, FirstRun, Map }
@@ -49,6 +51,11 @@ fun AppScaffold(container: AppContainer) {
     var showUpdates by rememberSaveable { mutableStateOf(false) }
     var showStorage by rememberSaveable { mutableStateOf(false) }
     var showCalibration by rememberSaveable { mutableStateOf(false) }
+    var showTrip by rememberSaveable { mutableStateOf(false) }
+    val tripConfig by container.tripSettings.config.collectAsStateWithLifecycle()
+    val tripUi = remember(container) {
+        TripUi(container.trip.state) { if (container.trip.isRunning) container.trip.stop() else container.trip.start() }
+    }
     val connected by container.connected.ui.collectAsStateWithLifecycle()
     val connectedActions = remember(container) {
         ConnectedActions(
@@ -98,6 +105,7 @@ fun AppScaffold(container: AppContainer) {
                     connected = connected, connectedActions = connectedActions,
                     hints = container.hints,
                     calibration = calibrationHooks,
+                    trip = tripUi,
                 )
             }
         }
@@ -120,6 +128,7 @@ fun AppScaffold(container: AppContainer) {
                 onDownloadPatterns = vm::downloadPatternsNow,
                 onOpenStorage = { showStorage = true },
                 onOpenCalibration = { showCalibration = true },
+                onOpenTrip = { showTrip = true },
             )
         }
 
@@ -139,6 +148,14 @@ fun AppScaffold(container: AppContainer) {
         }
 
         AnimatedVisibility(
+            visible = showTrip && showUpdates && root == Root.Map,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it } + fadeOut(),
+        ) {
+            TripSettingsScreen(config = tripConfig, onConfig = container.tripSettings::update, onBack = { showTrip = false })
+        }
+
+        AnimatedVisibility(
             visible = showStorage && showUpdates && root == Root.Map,
             enter = slideInHorizontally { it },
             exit = slideOutHorizontally { it } + fadeOut(),
@@ -153,8 +170,9 @@ fun AppScaffold(container: AppContainer) {
             )
         }
     }
-    BackHandler(enabled = showUpdates && !showStorage && !showCalibration) { showUpdates = false }
-    BackHandler(enabled = showCalibration) { showCalibration = false }
+    BackHandler(enabled = showUpdates && !showStorage && !showCalibration && !showTrip) { showUpdates = false }
+    BackHandler(enabled = showTrip) { showTrip = false }
+    BackHandler(enabled = showCalibration && !showTrip) { showCalibration = false }
     BackHandler(enabled = showStorage) { showStorage = false }
 }
 

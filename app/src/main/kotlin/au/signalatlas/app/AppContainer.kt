@@ -62,7 +62,7 @@ import au.signalatlas.core.update.UpdateDeps
 import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateNotifications
 import au.signalatlas.core.update.UpdatePrefs
-import au.signalatlas.feature.trip.MemoryTripSettings
+import au.signalatlas.app.data.TripPrefs
 import au.signalatlas.feature.trip.TripController
 import au.signalatlas.feature.trip.TripHooks
 import au.signalatlas.feature.trip.TripRuntime
@@ -188,7 +188,7 @@ class AppContainer(context: Context) {
 
     val hints: UiHints = PrefsUiHints(app)
 
-    val tripSettings: TripSettings = MemoryTripSettings()
+    val tripSettings: TripSettings = TripPrefs(app)
 
     val radio = RadioMonitor(app, appScope)
 
@@ -257,7 +257,10 @@ class AppContainer(context: Context) {
             publishFix = location::feed,
             launchService = { TripService.start(app) }, haltService = { TripService.stop(app) },
         ),
-    ).also { TripRuntime.controller = it }
+    ).also {
+        TripRuntime.controller = it
+        TripRuntime.voiceEnabled = { tripSettings.config.value.voice }
+    }
 
     /** Opens the installed DB (after crash recovery) once per process. */
     private val startJob = appScope.launch(start = CoroutineStart.LAZY) {

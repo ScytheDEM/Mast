@@ -290,4 +290,18 @@
     <string name="cellular_calibration_off">Your readings are not being used to improve predictions.</string>
     <string name="cellular_calibration_switch">Use my signal to improve predictions</string>
     <string name="cellular_bars_description">Signal strength %1$d of 4 bars</string>
+
+    <string name="trip_button">Trip</string>
+    <string name="trip_open_settings">Trip alerts</string>
+    <string name="trip_settings_title">Trip alerts</string>
+    <string name="trip_window">Warning window</string>
+    <string name="trip_seconds">%d s</string>
+    <string name="trip_min_dead">Minimum dead zone</string>
+    <string name="trip_metres">%d m</string>
+    <string name="trip_floor">Warn when I lose</string>
+    <string name="trip_floor_5g">5G</string>
+    <string name="trip_floor_4g">4G+</string>
+    <string name="trip_floor_all">All data</string>
+    <string name="trip_voice">Speak alerts</string>
+    <string name="trip_live_updates">Live updates are off for this app. Turn them on in system settings to see the trip in the status bar.</string>
 </resources>
