@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import au.signalatlas.app.data.BasemapKeys
 import au.signalatlas.app.data.Coverage
 import au.signalatlas.app.data.LocationSource
+import au.signalatlas.app.data.PatternAccess
 import au.signalatlas.app.data.TowerData
 import au.signalatlas.app.data.TowerSnapshot
 import au.signalatlas.app.data.Updates
@@ -57,6 +58,8 @@ class MapViewModel(
     private val coverage: Coverage,
     private val compute: CoroutineDispatcher = Dispatchers.Default,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** The installed antenna patterns, for the open site's radiation plot (none = typical patterns only). */
+    private val patterns: PatternAccess = PatternAccess.None,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(MapUiState())
@@ -98,11 +101,14 @@ class MapViewModel(
             .launchIn(viewModelScope)
 
         combine(data.changes, selectedId) { _, id -> id }
-            .mapLatest { id -> id to id?.let { withContext(io) { loadDetail(it) } } }
-            .onEach { (id, detail) ->
+            .mapLatest { id ->
+                val detail = id?.let { withContext(io) { loadDetail(it) } }
+                Triple(id, detail, detail?.let { withContext(io) { sectorPlots(it, patterns) } }.orEmpty())
+            }
+            .onEach { (id, detail, plots) ->
                 // A site that no longer exists (e.g. after an update) closes the sheet.
                 if (id != null && detail == null) selectedId.value = null
-                _state.update { it.copy(selected = detail, selectedId = if (detail == null) null else id) }
+                _state.update { it.copy(selected = detail, selectedId = if (detail == null) null else id, selectedPlots = plots) }
             }
             .launchIn(viewModelScope)
 
@@ -184,6 +190,15 @@ class MapViewModel(
         }
     }
 
+    /**
+     * "Show predicted coverage for {network}" on a site: turns the overlay on for that network (and keeps it as the
+     * user's choice).
+     */
+    fun showCoverageFor(n: Network) {
+        networkChosen = true
+        updateCoverage { it.copy(on = true, network = n) }
+    }
+
     fun setCoverageNetwork(n: Network) {
         networkChosen = true
         updateCoverage { it.copy(network = n) }
@@ -195,6 +210,9 @@ class MapViewModel(
 
     /** Signal or Reliability: the same cached tiles, drawn through the other colour ramp. */
     fun setCoverageView(view: CoverageSelection.View) = updateCoverage { it.copy(view = view) }
+
+    /** The map's coverage source has (true) or has no (false) tiles outstanding; drives the "Calculating coverage…" pill. */
+    fun onCoverageLoading(loading: Boolean) = _state.update { it.copy(coverage = it.coverage.copy(calculating = loading)) }
 
     /** The settled map zoom, for the "Zoom in" chip. */
     fun onZoom(zoom: Double) = _state.update { it.copy(zoom = zoom) }
@@ -306,6 +324,7 @@ class MapViewModel(
         // A view switch keeps the point's numbers; anything else changes the tiles they came from.
         if (before.copy(view = after.view, urlTemplate = after.urlTemplate) != after) dismissReadout()
         if (!after.on && after.increase != null) dismissIncreaseResolution()
+        if (!after.on && after.calculating) _state.update { it.copy(coverage = it.coverage.copy(calculating = false)) }
         applyCoverage()
     }
 
@@ -343,7 +362,7 @@ class MapViewModel(
 
     fun selectSite(id: Int?) {
         selectedId.value = id
-        if (id == null) _state.update { it.copy(selected = null, selectedId = null) }
+        if (id == null) _state.update { it.copy(selected = null, selectedId = null, selectedPlots = emptyList()) }
     }
 
     /** The search field's text changed; results follow after [SEARCH_DEBOUNCE_MS], tagged with their query. */

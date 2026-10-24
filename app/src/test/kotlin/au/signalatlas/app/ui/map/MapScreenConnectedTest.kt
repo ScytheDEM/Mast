@@ -9,6 +9,11 @@ import androidx.compose.ui.test.performClick
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.core.app.ApplicationProvider
 import au.signalatlas.app.connected.ConnectedStatus
+import au.signalatlas.app.connected.FIX
+import au.signalatlas.app.connected.connectedUi
+import au.signalatlas.app.connected.match
+import au.signalatlas.app.connected.radio
+import androidx.compose.ui.test.performScrollTo
 import au.signalatlas.app.connected.ConnectedUi
 import au.signalatlas.app.location.DeviceLocationSource
 import au.signalatlas.app.ui.theme.SignalAtlasTheme
@@ -59,14 +64,15 @@ class MapScreenConnectedTest {
         compose.onNodeWithText("See your tower").assertIsDisplayed()
     }
 
-    @Test fun tappingAMatchedTowerOpensItsSiteSheet() {
-        val ui = ConnectedUi(
-            ConnectedStatus.CONNECTED, "Telstra", rsrpDbm = -94,
-            tower = au.signalatlas.app.connected.TowerRef(101160, 1300.0, 45.0),
-        )
+    @Test fun tappingTheBarOpensCellularDetailsAndOpenTowerSelectsTheSite() {
+        val ui = connectedUi(radio(), match(), FIX).let { it.copy(tower = it.tower!!.copy(siteId = 101160)) }
         show(ui)
         compose.onNodeWithTag("connected-bar").performClick()
-        compose.waitForIdle()
+        settle()
+        compose.onNodeWithText("Cellular details").assertIsDisplayed()
+        assertThat(vm.state.value.selectedId).isNull()
+        compose.onNodeWithText("Open tower").performScrollTo().performClick()
+        settle()
         assertThat(vm.state.value.selectedId).isEqualTo(101160)
     }
 
@@ -75,5 +81,11 @@ class MapScreenConnectedTest {
         compose.waitForIdle()
         assertThat(starts).isAtLeast(1)
         assertThat(stops).isEqualTo(0)
+    }
+
+    private fun settle() = repeat(3) {
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idleFor(200, java.util.concurrent.TimeUnit.MILLISECONDS)
+        compose.mainClock.advanceTimeBy(500)
+        compose.waitForIdle()
     }
 }

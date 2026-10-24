@@ -192,4 +192,24 @@ class RadioMonitorTest {
         assertThat(m.state.value.sim).isNotNull()
         m.stop()
     }
+
+    @Test fun `dual SIM publishes a state per active subscription with the data SIM as primary`() = runTest {
+        val subs = listOf(
+            ShadowSubscriptionManager.SubscriptionInfoBuilder.newBuilder().setId(1).setMcc("505").setMnc("01").setCarrierName("Telstra").buildSubscriptionInfo(),
+            ShadowSubscriptionManager.SubscriptionInfoBuilder.newBuilder().setId(2).setMcc("505").setMnc("02").setCarrierName("Optus").buildSubscriptionInfo(),
+        )
+        shadowOf(app.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager).setActiveSubscriptionInfos(*subs.toTypedArray())
+        ShadowSubscriptionManager.setDefaultDataSubscriptionId(2)
+        val m = monitor(this)
+        m.start()
+        runCurrent()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertThat(m.dataSubscriptionId.value).isEqualTo(2)
+        assertThat(m.states.value.keys).containsExactly(1, 2).inOrder()
+        assertThat(m.states.value.getValue(1).sim!!.network).isEqualTo(Network.TELSTRA)
+        assertThat(m.states.value.getValue(2).sim!!.network).isEqualTo(Network.OPTUS)
+        assertThat(m.state.value.sim!!.subId).isEqualTo(2) // the selected (data) SIM
+        assertThat(m.states.value.getValue(2)).isEqualTo(m.state.value)
+        m.stop()
+    }
 }

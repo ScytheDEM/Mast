@@ -8,6 +8,9 @@ import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import au.signalatlas.app.connected.ConnectedController
 import au.signalatlas.app.connected.ReadOnlyCellMap
+import au.signalatlas.app.data.PrefsUiHints
+import au.signalatlas.app.data.RepositoryPatternAccess
+import au.signalatlas.app.data.UiHints
 import au.signalatlas.app.data.AppStorage
 import au.signalatlas.app.data.CalibrationPrefs
 import au.signalatlas.app.data.CalibrationSettings
@@ -159,6 +162,8 @@ class AppContainer(context: Context) {
 
     val calibrationSettings: CalibrationSettings = CalibrationPrefs(app)
 
+    val hints: UiHints = PrefsUiHints(app)
+
     val radio = RadioMonitor(app, appScope)
 
     private val candidates = EngineCandidateSource(towerQuery, CoverageEngine(), { patterns.patterns.value }, TerrainTablesAt(coverage::terrainTablesAt))
@@ -175,6 +180,7 @@ class AppContainer(context: Context) {
         ConnectedController(
             radio.state, location.fixes, CellMatcher(candidates, ReadOnlyCellMap(calibration)), calibrationSettings, appScope,
             startRadio = radio::start, stopRadio = radio::stop, startLogger = sampleLogger::start, stopLogger = sampleLogger::stop,
+            radioStates = radio.states, dataSubId = radio.dataSubscriptionId,
         )
     }
 
@@ -260,6 +266,7 @@ class AppContainer(context: Context) {
 
     fun mapViewModel() = MapViewModel(
         towerData, ManagerUpdates(updateManager), LocatorBasemapKeys(basemap), location, ServiceCoverage(coverage, repo, patterns),
+        patterns = RepositoryPatternAccess(patterns),
     )
 
     private companion object {

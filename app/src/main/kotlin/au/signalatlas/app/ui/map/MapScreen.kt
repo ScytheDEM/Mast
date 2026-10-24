@@ -56,6 +56,7 @@ import androidx.compose.material3.adaptive.layout.rememberPaneExpansionState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
@@ -79,10 +80,15 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.window.core.layout.WindowSizeClass
 import au.signalatlas.app.R
+import au.signalatlas.app.connected.CalibrationHooks
 import au.signalatlas.app.connected.ConnectedStatus
 import au.signalatlas.app.connected.ConnectedUi
+import au.signalatlas.app.ui.connected.CellularDetailsContent
 import au.signalatlas.app.ui.connected.ConnectedInfoBar
+import au.signalatlas.app.data.UiHints
 import au.signalatlas.app.location.DeviceLocationSource
+import au.signalatlas.app.ui.coverage.CalculatingPill
+import au.signalatlas.app.ui.coverage.CoverageExplainerCard
 import au.signalatlas.app.ui.coverage.AccuracyChip
 import au.signalatlas.app.ui.coverage.CoverageActions
 import au.signalatlas.app.ui.coverage.CoverageControlsCard
@@ -92,7 +98,9 @@ import au.signalatlas.app.ui.coverage.IncreaseResolutionSheet
 import au.signalatlas.app.ui.coverage.PointReadout
 import au.signalatlas.app.ui.nearby.NearbyContent
 import au.signalatlas.core.map.MapCameraState
+import au.signalatlas.core.map.SectorBeams
 import au.signalatlas.core.map.TowerMap
+import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SiteSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -104,7 +112,7 @@ class MapCameraHolder : ViewModel() {
     val camera = MapCameraState()
 }
 
-private enum class Pane { None, Site, Nearby }
+private enum class Pane { None, Site, Cellular, Filters, Nearby }
 
 /** What the connected-tower feature needs from the map screen's lifecycle and permission flow. */
 class ConnectedActions(
@@ -119,9 +127,18 @@ class ConnectedActions(
 }
 
 /** Room the bottom info bar takes: bar height plus its margin. */
-private val CONNECTED_BAR_INSET = 60.dp
+private val CONNECTED_BAR_INSET = 92.dp
+
+/** Further room per extra SIM row in the bar. */
+private val CONNECTED_ROW_INSET = 40.dp
 
 private const val SITE_ZOOM = 14.0
+
+/** Roughly the 10 km a tower's predicted coverage reaches. */
+private const val COVERAGE_FIT_ZOOM = 12.0
+
+/** Room the labelled toolbar takes at the bottom start, so the round buttons stack above it on narrow windows. */
+private val TOOLBAR_INSET = 72.dp
 
 /**
  * The map fills the window edge to edge and is always the first child of the root [Box], so its
@@ -139,6 +156,8 @@ fun MapScreen(
     /** The connected tower (info bar and map highlight); null = the feature is not wired (tests). */
     connected: ConnectedUi? = null,
     connectedActions: ConnectedActions = ConnectedActions.None,
+    hints: UiHints = remember { UiHints.InMemory() },
+    calibration: CalibrationHooks = CalibrationHooks.None,
 ) {
     val camera = viewModel<MapCameraHolder>().camera
     val focusManager = LocalFocusManager.current
@@ -150,8 +169,13 @@ fun MapScreen(
         .isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_EXPANDED_LOWER_BOUND)
 
     var showNearby by rememberSaveable { mutableStateOf(false) }
-    var showBands by rememberSaveable { mutableStateOf(false) }
-    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    var showFilters by rememberSaveable { mutableStateOf(false) }
+    var showCellular by rememberSaveable { mutableStateOf(false) }
+    // Not saved: a fold/unfold or recreation must never bring back an expanded (focused) search.
+    var searchExpanded by remember { mutableStateOf(false) }
+    val windowClass = currentWindowAdaptiveInfo().windowSizeClass
+    CollapseSearchOnWindowChange(windowClass.minWidthDp to windowClass.minHeightDp) { searchExpanded = false }
+    var explainerSeen by remember { mutableStateOf(hints.coverageExplainerSeen()) }
     var coverageOptionsOpen by rememberSaveable { mutableStateOf(true) }
     var rationaleFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var afterGrant by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -160,6 +184,8 @@ fun MapScreen(
 
     val pane = when {
         state.selected != null -> Pane.Site
+        showCellular && connected?.cells != null -> Pane.Cellular
+        showFilters -> Pane.Filters
         showNearby -> Pane.Nearby
         else -> Pane.None
     }
@@ -214,9 +240,10 @@ fun MapScreen(
         when {
             s == null -> Unit
             s.status == ConnectedStatus.NEEDS_PHONE || s.status == ConnectedStatus.NEEDS_LOCATION -> phoneRationale = true
-            else -> s.tower?.siteId?.let { id ->
-                s.highlight?.serving?.let { (lat, lon) -> camera.animateTo(lat, lon, SITE_ZOOM) }
-                vm.selectSite(id)
+            s.cells != null -> {
+                showFilters = false
+                showNearby = false
+                showCellular = true
             }
         }
     }
@@ -279,7 +306,14 @@ fun MapScreen(
     }
     val onNearby = {
         withLocation { scope.launch { location.currentFix() } }
+        showFilters = false
+        showCellular = false
         showNearby = true
+    }
+    val onFilters = {
+        showNearby = false
+        showCellular = false
+        showFilters = !showFilters
     }
     val openSite = { s: SiteSummary ->
         // Keyboard and focus go first, so the closing keyboard cannot disturb the sheet opening.
@@ -302,8 +336,27 @@ fun MapScreen(
         onView = vm::setCoverageView,
     )
 
+    val closePane = {
+        when (pane) {
+            Pane.Site -> vm.selectSite(null)
+            Pane.Filters -> showFilters = false
+            Pane.Cellular -> showCellular = false
+            else -> showNearby = false
+        }
+    }
     BackHandler(enabled = pane != Pane.None && !searchExpanded) {
-        if (pane == Pane.Site) vm.selectSite(null) else showNearby = false
+        closePane()
+    }
+
+    val siteBeams = remember(state.selected, state.selectedPlots) {
+        state.selected?.let { siteBeams(it.site.lat, it.site.lon, state.selectedPlots) }
+    }
+    val onShowCoverage: (Network) -> Unit = { n ->
+        state.selected?.site?.let { camera.animateTo(it.lat, it.lon, COVERAGE_FIT_ZOOM) }
+        coverageOptionsOpen = true
+        vm.showCoverageFor(n)
+        // The modal sheet would hide the map; the side pane sits beside it and stays.
+        if (!expanded) vm.selectSite(null)
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -323,11 +376,14 @@ fun MapScreen(
                 onZoom = vm::onZoom,
                 onLongPress = vm::longPress,
                 onMapTap = vm::onMapTap,
+                onCoverageLoading = vm::onCoverageLoading,
                 selectedColor = MaterialTheme.colorScheme.primary.toArgb(),
                 modifier = Modifier.fillMaxSize(),
                 userLocation = state.location.takeIf { state.locationGranted },
                 userLocationColor = MaterialTheme.colorScheme.primary.toArgb(),
                 connected = connected?.highlight,
+                siteBeams = siteBeams,
+                beamLengthM = SectorBeams.lengthMetersForZoom(state.zoom),
             )
         }
 
@@ -340,13 +396,16 @@ fun MapScreen(
                 onSearchExpandedChange = { searchExpanded = it },
                 onQueryChange = vm::search,
                 onResultClick = openSite,
-                onFilter = vm::setFilter,
-                onOpenBands = { showBands = true },
+                filterCount = state.filter.activeCount(),
+                filtersOpen = pane == Pane.Filters,
+                onFilters = onFilters,
                 onOpenUpdates = onOpenUpdates,
                 onMyLocation = onMyLocation,
                 onNearby = onNearby,
                 onIncrease = vm::openIncreaseResolution,
                 coverageOptionsOpen = coverageOptionsOpen,
+                showExplainer = state.coverage.on && !explainerSeen,
+                onDismissExplainer = { explainerSeen = true; hints.markCoverageExplainerSeen() },
                 coverage = coverageActions,
                 snackbar = snackbar,
                 connected = connected,
@@ -355,7 +414,27 @@ fun MapScreen(
         }
         val paneContent: @Composable (Pane) -> Unit = { p ->
             when (p) {
-                Pane.Site -> state.selected?.let { SiteSheetContent(it, onClose = { vm.selectSite(null) }) }
+                Pane.Site -> state.selected?.let {
+                    SiteSheetContent(it, onClose = { vm.selectSite(null) }, plots = state.selectedPlots, onShowCoverage = onShowCoverage)
+                }
+                Pane.Cellular -> connected?.let { ui ->
+                    CellularDetailsContent(
+                        ui = ui,
+                        calibration = calibration,
+                        onOpenTower = { id ->
+                            ui.highlight?.serving?.let { (lat, lon) -> camera.animateTo(lat, lon, SITE_ZOOM) }
+                            showCellular = false
+                            vm.selectSite(id)
+                        },
+                        onClose = { showCellular = false },
+                    )
+                }
+                Pane.Filters -> FiltersContent(
+                    filter = state.filter,
+                    availableBands = state.availableBands,
+                    onFilter = vm::setFilter,
+                    onClose = { showFilters = false },
+                )
                 Pane.Nearby -> NearbyContent(
                     locationGranted = state.locationGranted,
                     locationEnabled = state.locationEnabled,
@@ -373,7 +452,10 @@ fun MapScreen(
             ExpandedPanes(pane, controls, paneContent)
         } else {
             controls(false)
-            CompactSheet(pane, onDismiss = { if (pane == Pane.Site) vm.selectSite(null) else showNearby = false }, paneContent)
+            // A different pane gets a fresh sheet: a modal sheet whose content changes height while open can lose its anchors.
+            var lastPane by remember { mutableStateOf(pane) }
+            if (pane != Pane.None) lastPane = pane
+            key(lastPane) { CompactSheet(pane, onDismiss = closePane, paneContent) }
         }
     }
 
@@ -384,9 +466,6 @@ fun MapScreen(
             onConfirmMetered = vm::confirmIncreaseOnMobileData,
             onDismiss = vm::dismissIncreaseResolution,
         )
-    }
-    if (showBands) {
-        BandsSheet(state.filter, state.availableBands, onFilter = vm::setFilter, onDismiss = { showBands = false })
     }
     if (phoneRationale) {
         AlertDialog(
@@ -542,20 +621,23 @@ private fun MapControls(
     onSearchExpandedChange: (Boolean) -> Unit,
     onQueryChange: (String) -> Unit,
     onResultClick: (SiteSummary) -> Unit,
-    onFilter: (au.signalatlas.core.model.TowerFilter) -> Unit,
-    onOpenBands: () -> Unit,
+    filterCount: Int,
+    filtersOpen: Boolean,
+    onFilters: () -> Unit,
     onOpenUpdates: () -> Unit,
     onMyLocation: () -> Unit,
     onNearby: () -> Unit,
     onIncrease: () -> Unit,
     coverageOptionsOpen: Boolean,
+    showExplainer: Boolean,
+    onDismissExplainer: () -> Unit,
     coverage: CoverageActions,
     snackbar: SnackbarHostState,
     connected: ConnectedUi?,
     onConnectedBar: () -> Unit,
 ) {
     // The info bar sits along the bottom; the buttons above it move up by its height.
-    val barInset = if (connected != null) CONNECTED_BAR_INSET else 0.dp
+    val barInset = if (connected != null) CONNECTED_BAR_INSET + CONNECTED_ROW_INSET * connected.otherSims.size else 0.dp
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth()) {
             if (docked) {
@@ -578,7 +660,6 @@ private fun MapControls(
             }
             if (!searchExpanded || docked) {
                 Spacer(Modifier.height(10.dp))
-                FilterChipRow(state.filter, onFilter, onOpenBands)
                 AnimatedVisibility(state.update.showsChip(), enter = fadeIn(), exit = fadeOut()) {
                     UpdateChip(state.update, onClick = onOpenUpdates, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
@@ -599,13 +680,16 @@ private fun MapControls(
                 AnimatedVisibility(state.coverage.on && !state.coverage.needsZoom(state.zoom), enter = fadeIn(), exit = fadeOut()) {
                     AccuracyChip(state.coverage.accuracy, onClick = onIncrease, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
+                AnimatedVisibility(state.coverage.showsCalculating(state.zoom), enter = fadeIn(), exit = fadeOut()) {
+                    CalculatingPill(Modifier.padding(start = 16.dp, top = 4.dp))
+                }
                 state.coverage.readout?.let {
                     PointReadout(it.result, Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
                 }
             }
         }
         Column(
-            Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + barInset),
+            Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + barInset + (if (docked) 0.dp else TOOLBAR_INSET)),
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -627,6 +711,9 @@ private fun MapControls(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (state.coverage.on) {
+                AnimatedVisibility(showExplainer, enter = fadeIn(), exit = fadeOut()) {
+                    CoverageExplainerCard(onDismissExplainer)
+                }
                 AnimatedVisibility(coverageOptionsOpen, enter = fadeIn(), exit = fadeOut()) {
                     CoverageControlsCard(state.coverage, coverage)
                 }
@@ -636,6 +723,9 @@ private fun MapControls(
                 on = state.coverage.on,
                 optionsOpen = coverageOptionsOpen,
                 actions = coverage,
+                filterCount = filterCount,
+                filtersOpen = filtersOpen,
+                onFilters = onFilters,
             )
         }
         if (connected != null) {

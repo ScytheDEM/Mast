@@ -36,8 +36,6 @@
     <string name="back">Back</string>
     <string name="tech_4g">4G</string>
     <string name="tech_5g">5G</string>
-    <string name="filter_bands">Bands</string>
-    <string name="filter_bands_count">Bands · %1$d</string>
     <string name="fab_my_location">My location</string>
     <string name="fab_nearby">Nearby</string>
 
@@ -48,7 +46,6 @@
     <string name="network_nbn">NBN</string>
 
     <!-- Bands sheet -->
-    <string name="bands_title">Bands</string>
     <string name="bands_all">All bands</string>
     <string name="bands_lte">4G (LTE)</string>
     <string name="bands_nr">5G (NR)</string>
@@ -226,4 +223,71 @@
     <string name="calibration_omni">omni</string>
     <string name="calibration_reset_sector">Reset this sector</string>
     <string name="calibration_scatter_description">Measured against predicted signal, %1$d samples</string>
+    <string name="filters_title">Filters</string>
+    <string name="filters_reset">Reset</string>
+    <string name="filters_showing_all">Showing every network, technology and band</string>
+    <plurals name="filters_active">
+        <item quantity="one">%1$d filter active</item>
+        <item quantity="other">%1$d filters active</item>
+    </plurals>
+    <string name="filters_networks">Networks</string>
+    <string name="filters_technology">Technology</string>
+    <string name="filters_bands">Bands</string>
+    <string name="filters_button">Filters</string>
+    <plurals name="filters_badge_description">
+        <item quantity="one">%1$d active filter</item>
+        <item quantity="other">%1$d active filters</item>
+    </plurals>
+    <string name="pattern_title">Radiation pattern</string>
+    <string name="pattern_hint">Where each sector sends its signal. The line marks its direction; rings are 10, 20 and 30 dB down.</string>
+    <string name="pattern_sector_label">%1$s · %2$s°</string>
+    <string name="pattern_omni_label">%1$s · all directions</string>
+    <string name="pattern_source_acma">From ACMA antenna pattern data.</string>
+    <string name="pattern_source_typical">Typical pattern from the antenna\'s beamwidth. Download antenna patterns in Tower data for exact shapes.</string>
+    <string name="site_show_coverage">Show predicted coverage for %1$s</string>
+    <string name="coverage_calculating">Calculating coverage…</string>
+    <string name="coverage_explainer_title">Predicted coverage</string>
+    <string name="coverage_explainer_body">Predicted signal from ACMA tower data. Colours: Excellent, Good, Fair, Weak. Tap a spot for details.</string>
+    <string name="coverage_explainer_dismiss">Got it</string>
+    <string name="cellular_title">Cellular details</string>
+    <string name="cellular_subtitle">What your phone sees right now</string>
+    <string name="cellular_open_details">Cellular details</string>
+    <string name="cellular_data_sim">Data SIM</string>
+    <string name="cellular_sim_n">SIM %1$d</string>
+    <string name="cellular_serving">Serving cell</string>
+    <string name="cellular_secondary">5G secondary cells</string>
+    <string name="cellular_neighbours">Nearby cells</string>
+    <string name="cellular_no_neighbours">No other cells reported</string>
+    <string name="cellular_not_available">No cell information for this SIM right now</string>
+    <string name="cellular_tech">Technology</string>
+    <string name="cellular_tech_lte">4G LTE</string>
+    <string name="cellular_tech_nr">5G NR</string>
+    <string name="cellular_band">Band</string>
+    <string name="cellular_channel">Channel</string>
+    <string name="cellular_pci">PCI</string>
+    <string name="cellular_cell_id">Cell ID</string>
+    <string name="cellular_tac">TAC</string>
+    <string name="cellular_rsrp">RSRP</string>
+    <string name="cellular_rsrq">RSRQ</string>
+    <string name="cellular_sinr">SINR</string>
+    <string name="cellular_ta">Distance (timing advance)</string>
+    <string name="cellular_db">%1$s dB</string>
+    <string name="cellular_channel_value">%1$d · %2$s</string>
+    <string name="cellular_ta_value">≈ %1$s</string>
+    <string name="cellular_tower">Matched tower</string>
+    <string name="cellular_tower_value">Site %1$d · %2$s %3$s · %4$s</string>
+    <string name="cellular_tower_unknown">Site not identified</string>
+    <string name="cellular_open_tower">Open tower</string>
+    <string name="cellular_measured_vs_predicted">Measured %1$s vs %2$s predicted here</string>
+    <string name="cellular_delta_weaker">%1$d dB weaker than predicted</string>
+    <string name="cellular_delta_stronger">%1$d dB stronger than predicted</string>
+    <string name="cellular_delta_match">In line with the prediction</string>
+    <plurals name="cellular_samples">
+        <item quantity="one">Improving predictions: %1$d sample on this tower</item>
+        <item quantity="other">Improving predictions: %1$d samples on this tower</item>
+    </plurals>
+    <string name="cellular_samples_none">Improving predictions: no samples on this tower yet</string>
+    <string name="cellular_calibration_off">Your readings are not being used to improve predictions.</string>
+    <string name="cellular_calibration_switch">Use my signal to improve predictions</string>
+    <string name="cellular_bars_description">Signal strength %1$d of 4 bars</string>
 </resources>

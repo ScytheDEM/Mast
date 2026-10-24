@@ -40,6 +40,10 @@ class ConnectedController(
     private val startLogger: () -> Unit,
     private val stopLogger: () -> Unit,
     private val compute: CoroutineDispatcher = Dispatchers.Default,
+    /** Every active SIM's state (dual SIM); empty or single-entry = one SIM. */
+    private val radioStates: StateFlow<Map<Int, RadioState>> = MutableStateFlow(emptyMap()),
+    /** The SIM that carries mobile data; null = unknown (the primary is [radioState]'s). */
+    private val dataSubId: StateFlow<Int?> = MutableStateFlow(null),
 ) {
     private val lock = Any()
     private var foreground = false
@@ -58,8 +62,8 @@ class ConnectedController(
         foreground = true
         startRadio()
         trackJob = scope.launch {
-            combine(radioState, fixes) { s, f -> s to f }.conflate().collect { (state, fix) ->
-                _ui.value = withContext(compute) { build(state, fix) }
+            combine(radioState, fixes, radioStates, dataSubId) { s, f, all, data -> Inputs(s, f, all, data) }.conflate().collect {
+                _ui.value = withContext(compute) { buildAll(it) }
             }
         }
         syncLogger()
@@ -84,6 +88,17 @@ class ConnectedController(
 
     private fun syncLogger() = synchronized(lock) {
         if (foreground && settings.enabled.value) startLogger() else stopLogger()
+    }
+
+    private class Inputs(val state: RadioState, val fix: Fix?, val all: Map<Int, RadioState>, val dataSubId: Int?)
+
+    /** The primary SIM's [ConnectedUi] with a compact one for each further active SIM. */
+    private fun buildAll(i: Inputs): ConnectedUi {
+        val primary = i.state.sim?.subId
+        val others = i.all.values.filter { it.sim != null && it.sim?.subId != primary }
+            .sortedBy { it.sim?.subId }
+            .map { build(it, i.fix).copy(isData = it.sim?.subId == i.dataSubId) }
+        return build(i.state, i.fix).copy(isData = i.dataSubId == null || primary == i.dataSubId || others.isEmpty(), otherSims = others)
     }
 
     private fun build(state: RadioState, fix: Fix?): ConnectedUi {
