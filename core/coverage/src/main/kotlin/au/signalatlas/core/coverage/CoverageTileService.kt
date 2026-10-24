@@ -247,8 +247,10 @@ class CoverageTileService internal constructor(
         }
         val version = terrainVersion(tile.selectionId, stamp, tile.patternsEtag, tile.z, tile.x, tile.y, create = true, recheck = true)
         val key = TileKey(tile.z, tile.x, tile.y, tile.selectionId, stamp, tile.patternsEtag, version, calVersion(tile.z, tile.x, tile.y))
+        val png = rawTile(key, sel).thenApply { TerrariumEncoder.encode(it.rsrp, tile.view, it.prob) }
+        // After the render is queued, so an idle pool starts the tile before the (much slower) demand sample.
         ensureDemand(key, sel)
-        return rawTile(key, sel).thenApply { TerrariumEncoder.encode(it.rsrp, tile.view, it.prob) }
+        return png
     }
 
     /** The key a tile of the current selection and data has now (creating its terrain region); null when coverage is off. */
@@ -451,7 +453,7 @@ class CoverageTileService internal constructor(
         val view = cal.current()
         if (view.regionVersion(key.z, key.x, key.y) != key.calibrationVersion) throw TileCancelledException()
         val rasters = if (key.calibrationVersion == 0L) emptyList() else view.rasters(key.z, key.x, key.y)
-        return renderer.render(preparedFor(key, sel, region, cancel), key.z, key.x, key.y, FALLBACK_AREA, THRESHOLD_DBM, cancel, rasters)
+        return renderer.render(preparedFor(key, sel, region), key.z, key.x, key.y, FALLBACK_AREA, THRESHOLD_DBM, cancel, rasters)
     }
 
     /**
@@ -492,15 +494,18 @@ class CoverageTileService internal constructor(
      * The region prepared for [key]'s terrain version: the plain quick-model one while its region has no tables, else
      * one built from exactly the tables of that version's snapshot (no mixing). Asks for the region's missing tables.
      * Fails with [TileCancelledException] if the region moved on to another version meanwhile.
+     *
+     * It never waits for the region's table demand: that needs a quick render of the whole z10 tile (seconds with tens of
+     * thousands of carriers), which [ensureDemand] runs as a background job, so a visible tile renders at once with the
+     * tables published so far.
      */
-    private fun preparedFor(key: TileKey, sel: CoverageSelection, region: Region, cancel: CancelToken): PreparedRegion {
+    private fun preparedFor(key: TileKey, sel: CoverageSelection, region: Region): PreparedRegion {
         val tc = terrain
         if (tc == null || key.terrainVersion == 0L) return region.prepared!!
         val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y)
             ?: return region.prepared!!
         // Dropped meanwhile (LRU or trim): no tile may be rendered quick under this key's terrain version.
         val tr = tc.existingRegion(tk) ?: throw TileCancelledException()
-        if (!recordDemand(tc, tr, key, region, cancel)) throw TileCancelledException()
         val snap = tc.snapshot(tr)
         if (snap.version != key.terrainVersion) throw TileCancelledException()
         tc.ensureTables(tr, Triple(key.z, key.x, key.y))

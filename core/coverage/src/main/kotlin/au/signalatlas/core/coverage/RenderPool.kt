@@ -13,8 +13,8 @@ typealias TileAddress = Triple<Int, Int, Int>
 /**
  * Runs tile renders on a dedicated, bounded set of daemon threads, never more than `threads()` at once.
  *
- * Which queued job runs next is decided when a slot frees: tiles in the visible set first, closest to the viewport
- * centre first, then everything else in submission order (until the first [setVisible], every job counts as
+ * Which queued job runs next is decided when a slot frees: tiles in the visible set first, highest zoom first, closest to
+ * the viewport centre first, then everything else in submission order (until the first [setVisible], every job counts as
  * visible; a lower `priority` goes first among visible jobs). [setVisible] cancels the [CancelToken] of running jobs outside the set and drops queued ones
  * (calling their `onCancelled`).
  *
@@ -145,6 +145,10 @@ class RenderPool internal constructor(
         val vb = isVisible(b)
         if (va != vb) return if (va) -1 else 1
         if (va && a.priority != b.priority) return a.priority.compareTo(b.priority)
+        // The viewport's own zoom before its ancestors (fallbacks MapLibre shows meanwhile), which cover more ground and
+        // take far longer to render: a z11 parent of a z15 view took 8 s on a 2-thread device and used to run first, as
+        // its centre is nearest the viewport's.
+        if (va && a.tile.first != b.tile.first) return b.tile.first.compareTo(a.tile.first)
         if (va && visible != null) {
             val c = distance(a).compareTo(distance(b))
             if (c != 0) return c

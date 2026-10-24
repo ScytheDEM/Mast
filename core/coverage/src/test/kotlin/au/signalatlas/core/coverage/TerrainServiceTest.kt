@@ -94,6 +94,19 @@ class TerrainServiceTest {
         assertThat(tables.map { it.second }).containsExactly(r.renderer.tableFor[3550f to 30f], r.renderer.tableFor[700f to 30f])
     }
 
+    /**
+     * Latency (2026-10-24): a visible tile never waits for its region's table demand, which needs a quick render of the
+     * whole z10 tile (8 s with Sydney's 52k carriers on a 2-thread device). The demand runs as a background job after it.
+     */
+    @Test fun aVisibleTileRendersBeforeItsRegionsDemandSample() {
+        val r = rig(threads = 1)
+        val (z, x, y) = r.tile
+        r.render(z + 3, x * 8, y * 8)
+        waitUntil(what = "demand sample") { r.renderer.renders.any { it.z == z } }
+        assertThat(r.renderer.renders.first().z).isEqualTo(z + 3)
+        assertThat(r.renderer.renders.map { it.z }.take(2)).containsExactly(z + 3, z).inOrder()
+    }
+
     /** Task: the calibration matcher predicts with the tables the map already has (any batch, keyed like the renderer's). */
     @Test fun aPointQueryGetsTheTablesTheRegionHasReadyAndNothingBefore() {
         val r = rig()

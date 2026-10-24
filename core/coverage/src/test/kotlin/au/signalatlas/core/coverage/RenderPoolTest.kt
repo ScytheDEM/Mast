@@ -54,6 +54,26 @@ class RenderPoolTest {
         assertThat(order.toList()).containsExactly(501, 500, 510, 901).inOrder()
     }
 
+    @Test fun theViewportsZoomRunsBeforeItsAncestorsEvenIfTheyAreNearerTheCentre() {
+        val p = pool({ 1 })
+        val order = CopyOnWriteArrayList<TileAddress>()
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        p.submit(addr(0), { started.countDown(); release.await() }, {})
+        started.await()
+        // A z15 view (two tiles) and its z11 and z13 ancestors, whose centres sit nearest the viewport centre.
+        val z15a = TileAddress(15, 30148, 19663)
+        val z15b = TileAddress(15, 30149, 19663)
+        val z13 = TileAddress(13, 7537, 4915)
+        val z11 = TileAddress(11, 1884, 1228)
+        for (t in listOf(z11, z13, z15b, z15a)) p.submit(t, { order += t }, {})
+        p.setVisible(setOf(z15a, z15b, z13, z11))
+        release.countDown()
+        waitUntil { order.size == 4 }
+        assertThat(order.take(2)).containsExactly(z15a, z15b)
+        assertThat(order.drop(2)).containsExactly(z13, z11).inOrder()
+    }
+
     @Test fun lowerPriorityNumbersRunFirstAmongVisibleJobsEvenIfFartherAway() {
         val p = pool({ 1 })
         val order = CopyOnWriteArrayList<String>()
