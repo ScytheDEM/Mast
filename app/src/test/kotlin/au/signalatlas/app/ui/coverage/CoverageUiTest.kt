@@ -103,7 +103,7 @@ class CoverageUiTest {
         val calls = mutableListOf<Boolean>()
         val noop = CoverageActions({ calls += it }, {}, {}, {}, {}, {})
         compose.setContent { SignalAtlasTheme { CoverageToolbar(on = false, optionsOpen = false, actions = noop) } }
-        compose.onNodeWithContentDescription("Coverage").performClick()
+        compose.onNodeWithText("Coverage").performClick()
         assertThat(calls).containsExactly(true)
     }
 

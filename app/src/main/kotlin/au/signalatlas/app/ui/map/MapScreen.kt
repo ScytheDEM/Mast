@@ -104,7 +104,7 @@ class MapCameraHolder : ViewModel() {
     val camera = MapCameraState()
 }
 
-private enum class Pane { None, Site, Nearby }
+private enum class Pane { None, Site, Filters, Nearby }
 
 /** What the connected-tower feature needs from the map screen's lifecycle and permission flow. */
 class ConnectedActions(
@@ -122,6 +122,9 @@ class ConnectedActions(
 private val CONNECTED_BAR_INSET = 60.dp
 
 private const val SITE_ZOOM = 14.0
+
+/** Room the labelled toolbar takes at the bottom start, so the round buttons stack above it on narrow windows. */
+private val TOOLBAR_INSET = 72.dp
 
 /**
  * The map fills the window edge to edge and is always the first child of the root [Box], so its
@@ -150,7 +153,7 @@ fun MapScreen(
         .isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_EXPANDED_LOWER_BOUND)
 
     var showNearby by rememberSaveable { mutableStateOf(false) }
-    var showBands by rememberSaveable { mutableStateOf(false) }
+    var showFilters by rememberSaveable { mutableStateOf(false) }
     // Not saved: a fold/unfold or recreation must never bring back an expanded (focused) search.
     var searchExpanded by remember { mutableStateOf(false) }
     val windowClass = currentWindowAdaptiveInfo().windowSizeClass
@@ -163,6 +166,7 @@ fun MapScreen(
 
     val pane = when {
         state.selected != null -> Pane.Site
+        showFilters -> Pane.Filters
         showNearby -> Pane.Nearby
         else -> Pane.None
     }
@@ -282,7 +286,12 @@ fun MapScreen(
     }
     val onNearby = {
         withLocation { scope.launch { location.currentFix() } }
+        showFilters = false
         showNearby = true
+    }
+    val onFilters = {
+        showNearby = false
+        showFilters = !showFilters
     }
     val openSite = { s: SiteSummary ->
         // Keyboard and focus go first, so the closing keyboard cannot disturb the sheet opening.
@@ -305,8 +314,15 @@ fun MapScreen(
         onView = vm::setCoverageView,
     )
 
+    val closePane = {
+        when (pane) {
+            Pane.Site -> vm.selectSite(null)
+            Pane.Filters -> showFilters = false
+            else -> showNearby = false
+        }
+    }
     BackHandler(enabled = pane != Pane.None && !searchExpanded) {
-        if (pane == Pane.Site) vm.selectSite(null) else showNearby = false
+        closePane()
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -343,8 +359,9 @@ fun MapScreen(
                 onSearchExpandedChange = { searchExpanded = it },
                 onQueryChange = vm::search,
                 onResultClick = openSite,
-                onFilter = vm::setFilter,
-                onOpenBands = { showBands = true },
+                filterCount = state.filter.activeCount(),
+                filtersOpen = pane == Pane.Filters,
+                onFilters = onFilters,
                 onOpenUpdates = onOpenUpdates,
                 onMyLocation = onMyLocation,
                 onNearby = onNearby,
@@ -359,6 +376,12 @@ fun MapScreen(
         val paneContent: @Composable (Pane) -> Unit = { p ->
             when (p) {
                 Pane.Site -> state.selected?.let { SiteSheetContent(it, onClose = { vm.selectSite(null) }) }
+                Pane.Filters -> FiltersContent(
+                    filter = state.filter,
+                    availableBands = state.availableBands,
+                    onFilter = vm::setFilter,
+                    onClose = { showFilters = false },
+                )
                 Pane.Nearby -> NearbyContent(
                     locationGranted = state.locationGranted,
                     locationEnabled = state.locationEnabled,
@@ -376,7 +399,7 @@ fun MapScreen(
             ExpandedPanes(pane, controls, paneContent)
         } else {
             controls(false)
-            CompactSheet(pane, onDismiss = { if (pane == Pane.Site) vm.selectSite(null) else showNearby = false }, paneContent)
+            CompactSheet(pane, onDismiss = closePane, paneContent)
         }
     }
 
@@ -387,9 +410,6 @@ fun MapScreen(
             onConfirmMetered = vm::confirmIncreaseOnMobileData,
             onDismiss = vm::dismissIncreaseResolution,
         )
-    }
-    if (showBands) {
-        BandsSheet(state.filter, state.availableBands, onFilter = vm::setFilter, onDismiss = { showBands = false })
     }
     if (phoneRationale) {
         AlertDialog(
@@ -545,8 +565,9 @@ private fun MapControls(
     onSearchExpandedChange: (Boolean) -> Unit,
     onQueryChange: (String) -> Unit,
     onResultClick: (SiteSummary) -> Unit,
-    onFilter: (au.signalatlas.core.model.TowerFilter) -> Unit,
-    onOpenBands: () -> Unit,
+    filterCount: Int,
+    filtersOpen: Boolean,
+    onFilters: () -> Unit,
     onOpenUpdates: () -> Unit,
     onMyLocation: () -> Unit,
     onNearby: () -> Unit,
@@ -581,7 +602,6 @@ private fun MapControls(
             }
             if (!searchExpanded || docked) {
                 Spacer(Modifier.height(10.dp))
-                FilterChipRow(state.filter, onFilter, onOpenBands)
                 AnimatedVisibility(state.update.showsChip(), enter = fadeIn(), exit = fadeOut()) {
                     UpdateChip(state.update, onClick = onOpenUpdates, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
@@ -608,7 +628,7 @@ private fun MapControls(
             }
         }
         Column(
-            Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + barInset),
+            Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + barInset + (if (docked) 0.dp else TOOLBAR_INSET)),
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -639,6 +659,9 @@ private fun MapControls(
                 on = state.coverage.on,
                 optionsOpen = coverageOptionsOpen,
                 actions = coverage,
+                filterCount = filterCount,
+                filtersOpen = filtersOpen,
+                onFilters = onFilters,
             )
         }
         if (connected != null) {
