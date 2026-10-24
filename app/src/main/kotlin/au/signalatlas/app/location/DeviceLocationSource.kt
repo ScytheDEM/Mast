@@ -92,6 +92,13 @@ class DeviceLocationSource(
         }
     }
 
+    /** A fix from the trip service (which runs its own location request): published like a provider fix, so the sample logger sees it. */
+    fun feed(fix: Fix) {
+        lastAtNanos = nowNanos()
+        _fixes.value = fix
+        _last.value = fix.lat to fix.lon
+    }
+
     fun stop() {
         if (!listening) return
         manager?.let { LocationManagerCompat.removeUpdates(it, listener) }

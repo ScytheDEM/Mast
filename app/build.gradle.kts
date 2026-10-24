@@ -60,6 +60,7 @@ dependencies {
     implementation(project(":core:geo"))
     implementation(project(":core:radio"))
     implementation(project(":core:calibration"))
+    implementation(project(":feature:trip"))
     implementation(project(":engine"))
 
     implementation(platform(libs.androidx.compose.bom))

@@ -62,6 +62,12 @@ import au.signalatlas.core.update.UpdateDeps
 import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateNotifications
 import au.signalatlas.core.update.UpdatePrefs
+import au.signalatlas.feature.trip.MemoryTripSettings
+import au.signalatlas.feature.trip.TripController
+import au.signalatlas.feature.trip.TripHooks
+import au.signalatlas.feature.trip.TripRuntime
+import au.signalatlas.feature.trip.TripService
+import au.signalatlas.feature.trip.TripSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -74,6 +80,24 @@ import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.io.File
 import java.util.concurrent.TimeUnit
+
+/**
+ * A start/stop pair shared by several users (the map screen's connected-tower feature and a running trip): it starts on
+ * the first [acquire] and stops on the last [release].
+ */
+class SharedRun(private val start: () -> Unit, private val stop: () -> Unit) {
+    private val owners = HashSet<String>()
+
+    fun acquire(owner: String) {
+        val first = synchronized(owners) { owners.isEmpty().also { owners += owner } }
+        if (first) start()
+    }
+
+    fun release(owner: String) {
+        val last = synchronized(owners) { owners.remove(owner) && owners.isEmpty() }
+        if (last) stop()
+    }
+}
 
 /** Manual dependency graph, one per process (owned by [SignalAtlasApp]). */
 class AppContainer(context: Context) {
@@ -164,7 +188,13 @@ class AppContainer(context: Context) {
 
     val hints: UiHints = PrefsUiHints(app)
 
+    val tripSettings: TripSettings = MemoryTripSettings()
+
     val radio = RadioMonitor(app, appScope)
+
+    /** The radio polling and the sample logger are shared by the map screen and a running trip. */
+    private val radioRun = SharedRun(radio::start, radio::stop)
+    private val loggerRun by lazy { SharedRun(sampleLogger::start, sampleLogger::stop) }
 
     private val candidates = EngineCandidateSource(towerQuery, CoverageEngine(), { patterns.patterns.value }, TerrainTablesAt(coverage::terrainTablesAt))
 
@@ -179,7 +209,8 @@ class AppContainer(context: Context) {
     val connected: ConnectedController by lazy {
         ConnectedController(
             radio.state, location.fixes, CellMatcher(candidates, ReadOnlyCellMap(calibration)), calibrationSettings, appScope,
-            startRadio = radio::start, stopRadio = radio::stop, startLogger = sampleLogger::start, stopLogger = sampleLogger::stop,
+            startRadio = { radioRun.acquire(MAP_USER) }, stopRadio = { radioRun.release(MAP_USER) },
+            startLogger = { loggerRun.acquire(MAP_USER) }, stopLogger = { loggerRun.release(MAP_USER) },
             radioStates = radio.states, dataSubId = radio.dataSubscriptionId,
         )
     }
@@ -214,6 +245,19 @@ class AppContainer(context: Context) {
     val location = DeviceLocationSource(app)
 
     private val towerData = RepositoryTowerData(repo, repoStarted)
+
+    /** The trip: look-ahead, alerts and the location service. Calibration keeps logging while driving. */
+    val trip = TripController(
+        appScope, { points, selection, thr -> coverage.predictAlong(points, selection, thr) },
+        radio.state, radio.states, radio.dataSubscriptionId, tripSettings, { coverage.selection.value?.network },
+        TripHooks(
+            startRadio = { radioRun.acquire(TRIP_USER) }, stopRadio = { radioRun.release(TRIP_USER) },
+            startLogger = { if (calibrationSettings.enabled.value) loggerRun.acquire(TRIP_USER) },
+            stopLogger = { loggerRun.release(TRIP_USER) },
+            publishFix = location::feed,
+            launchService = { TripService.start(app) }, haltService = { TripService.stop(app) },
+        ),
+    ).also { TripRuntime.controller = it }
 
     /** Opens the installed DB (after crash recovery) once per process. */
     private val startJob = appScope.launch(start = CoroutineStart.LAZY) {
@@ -271,6 +315,8 @@ class AppContainer(context: Context) {
 
     private companion object {
         const val TAG = "SignalAtlas"
+        const val MAP_USER = "map"
+        const val TRIP_USER = "trip"
         const val THERMAL_FORECAST_S = 10
         /** Per-phase import timings: `phase=<name> ms=<elapsed>`, then `phase=total`. */
         const val IMPORT_LOG_TAG = "AcmaImporter"

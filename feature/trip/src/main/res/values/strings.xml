@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="trip_channel_status">Trip status</string>
+    <string name="trip_channel_status_description">Shown while a trip is running.</string>
+    <string name="trip_channel_alerts">Coverage alerts</string>
+    <string name="trip_channel_alerts_description">Warnings before you lose mobile coverage, and when it returns.</string>
+    <string name="trip_notification_title">Trip</string>
+    <string name="trip_stop_action">Stop trip</string>
+    <string name="trip_alert_title">Signal Atlas</string>
+</resources>
