@@ -42,7 +42,8 @@ add_executable(saengine_tests
     test/tile_test.cpp
     test/robustness_test.cpp
     test/terrain_test.cpp
-    test/calibration_test.cpp)
+    test/calibration_test.cpp
+    test/seam_test.cpp)
 target_compile_definitions(saengine_tests PRIVATE
     SA_VECTOR_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/vectors")
 target_link_libraries(saengine_tests PRIVATE saengine_core GTest::gtest_main)

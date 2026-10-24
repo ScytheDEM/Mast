@@ -83,8 +83,13 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
    - **Tilt (downtilt, positive down):** `min(|ACMA tilt|, 15)` if ACMA tilt ≠ 0 (ACMA uses both signs for downtilt: 39.6k negative vs 21.9k positive in the 2026-10-22 export). Otherwise by `h_tx`: < 15 m → 6°, 15–30 → 4°, 30–50 → 3°, > 50 → 2°. Add 2° for f ≥ 24.25 GHz.
    - **Formula:** `θ = atan2(h_tx − 1.5, d)` in degrees (positive downwards) and `A_V = min(12·((θ − tilt)/θ3dB)², 30)`.
    - **Combined:** `A = min(A_H + A_V, max(FB, 30))`.
-5. **Area class** per tile (from the count of sites within 3 km of the tile centre, any network): ≥ 40 → DENSE_URBAN,
-   ≥ 12 → URBAN, ≥ 3 → SUBURBAN, else RURAL.
+5. **Area class** per carrier (amended 2026-10-24 after the tile-seam bug): from the count of sites within 3 km of the
+   carrier's *site* (any network, the site itself included): ≥ 40 → DENSE_URBAN, ≥ 12 → URBAN, ≥ 3 → SUBURBAN, else
+   RURAL. Computed once per carrier when its region is prepared (`CarrierArrays.area`, Kotlin `AreaClassifier.perSite`)
+   and used on every tile and point query, so a carrier keeps one path-loss model everywhere. The renderer's per-call
+   `RenderParams.area` is only the fallback for a carrier without its own class. (Before the amendment the class was
+   taken per tile, from the tile centre: neighbouring tiles across a density step switched every carrier's model, which
+   showed as 10–25 dB seams at tile borders, e.g. −85 vs −110 dBm on B5.)
 6. **Path loss `PL(d, f, h_tx, class)`.** `d` is the 3D distance in km, floored at 0.02. `h_rx = 1.5` m.
    - **f < 1500 MHz, Okumura-Hata:** `69.55 + 26.16·log f − 13.82·log h_b − a(h_m) + (44.9 − 6.55·log h_b)·log d`.
      - `h_b = clamp(h_tx, 3, 200)`.
@@ -114,8 +119,8 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
    - **SINR code:** `uint8 = clamp(round((SINR + 20)·4), 0, 255)`.
    - **Probability code:** `uint8 = round(P·255)`.
    - **Culling:** a carrier is evaluated for a tile only if its `R_max` (the distance where peak-direction RSRP falls to
-     −140 dBm, computed once per carrier as the maximum over all four area classes, so culling never drops a carrier that the
-     tile's class would reach; outdoor, capped at 80 km) reaches the tile's bounding box.
+     −140 dBm, computed once per carrier as the maximum over all four area classes, so culling never drops a carrier whatever
+     class it has; outdoor, capped at 80 km) reaches the tile's bounding box.
 10. **Terrarium encoding** (map display): `elev = RSRP_dBm`, with no coverage → −200. Probability view: `elev = P·100`.
     The bytes are `R = floor((elev+32768)/256)`, `G = floor(elev+32768) mod 256`, `B = floor(frac(elev+32768)·256)`.
 11. **Legend.** `color-relief` stops at alpha 0.45. Probability view: 0 → transparent, 50 → `#F4A261`, 90 → `#2A9D8F`,

@@ -190,6 +190,19 @@ class Geometry(unittest.TestCase):
         self.assertEqual(ref.area_class(3), "SUBURBAN")
         self.assertEqual(ref.area_class(2), "RURAL")
 
+    def test_site_area_counts_sites_around_the_site_itself_included(self):
+        # Rule 5 as amended 2026-10-24: 11 others within 3 km + the site = 12 -> URBAN; one 3.5 km away is not counted.
+        lat, lon = -33.87, 151.21
+        sites = [(lat, lon)] + [(lat + 0.01 * k / 11, lon) for k in range(1, 12)] + [(lat + 0.0315, lon)]
+        self.assertEqual(ref.site_area(sites, lat, lon), ("URBAN", 12))
+
+    def test_carrier_area_column_overrides_the_tile_class(self):
+        carriers = {"carrierArea": [1, None, 7]}
+        self.assertEqual(ref.carrier_area(carriers, 0, "RURAL"), "URBAN")
+        self.assertEqual(ref.carrier_area(carriers, 1, "RURAL"), "RURAL")
+        self.assertEqual(ref.carrier_area(carriers, 2, "RURAL"), "RURAL")  # out of range = absent, as in the engine
+        self.assertEqual(ref.carrier_area({}, 0, "SUBURBAN"), "SUBURBAN")
+
 
 class Calibration(unittest.TestCase):
     def test_terms(self):

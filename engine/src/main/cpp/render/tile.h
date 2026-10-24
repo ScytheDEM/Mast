@@ -39,6 +39,10 @@ struct CarrierArrays {
     // Network ordinal per carrier (< 32), selecting the residual rasters that apply (RenderParams::residuals). Null =
     // no raster applies to any carrier.
     const uint8_t* network = nullptr;
+    // Rule 5 (amended 2026-10-24): the area class of each carrier (an sa::Area value), derived once per carrier from
+    // the site density around its site, so every tile uses the same path-loss model for a given carrier. Null, or a
+    // value > 3, = RenderParams::area (the fallback).
+    const uint8_t* area = nullptr;
 };
 
 // Calibration rule 5: a per-tile residual raster, 256 x 256 int8 in 0.25 dB steps (row-major, row 0 = north edge),
@@ -59,7 +63,7 @@ struct PatternTable {
 struct RenderParams {
     int32_t z, x, y;
     int32_t grid;  // 128 (bilinear upsample to 256) or 256
-    Area area;     // fixed per tile (derived by the caller, rule 5)
+    Area area;     // fallback for carriers without their own class (CarrierArrays::area, rule 5)
     bool indoor;
     float thrDbm;
     bool debugNoBounds = false;  // tests only: evaluate every carrier everywhere (no pruning)

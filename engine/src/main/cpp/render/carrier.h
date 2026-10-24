@@ -35,8 +35,14 @@ inline bool carrierUsable(const CarrierArrays& c, int32_t i) {
            std::isfinite(c.eirpRe[i]);
 }
 
-// Prepares carrier `i` for area class `area` (rasterBits, group are left 0; the renderer sets them).
-Carrier prepareCarrier(const CarrierArrays& c, const PatternTable& patterns, int32_t i, Area area);
+// Rule 5 (amended 2026-10-24): carrier `i`'s own area class, or `fallback` when it has none (no array, or a value > 3).
+inline Area carrierArea(const CarrierArrays& c, int32_t i, Area fallback) {
+    return c.area != nullptr && c.area[i] <= static_cast<uint8_t>(Area::Rural) ? static_cast<Area>(c.area[i]) : fallback;
+}
+
+// Prepares carrier `i` with its own area class, or `fallbackArea` when it has none (rasterBits, group are left 0; the
+// renderer sets them).
+Carrier prepareCarrier(const CarrierArrays& c, const PatternTable& patterns, int32_t i, Area fallbackArea);
 
 struct CarrierEval {
     double rsrp;      // dBm, including L_terr and the calibration terms (not the residual raster)

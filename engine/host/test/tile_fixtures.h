@@ -37,6 +37,7 @@ struct Vec {
     // Calibration (each empty = no array) and residual rasters (Calibration rules 4-6).
     std::vector<float> calOffsetDb, calSlope, calDmedKm, calSigmaScale;
     std::vector<uint8_t> network;
+    std::vector<uint8_t> area;  // per-carrier area class (rule 5, amended 2026-10-24); empty = no array
     std::vector<std::vector<int8_t>> rasterCodes;
     std::vector<uint32_t> rasterMask;
     std::vector<sa::ResidualRaster> rasters;  // rebuilt by params()
@@ -53,6 +54,7 @@ struct Vec {
         c.calDmedKm = ptr(calDmedKm);
         c.calSigmaScale = ptr(calSigmaScale);
         c.network = ptr(network);
+        c.area = ptr(area);
         return c;
     }
 
@@ -116,6 +118,7 @@ inline Vec loadVec(const std::string& file) {
     v.calDmedKm = as<float>(jsonArray(json, "calDmedKm"));
     v.calSigmaScale = as<float>(jsonArray(json, "calSigmaScale"));
     v.network = as<uint8_t>(jsonArray(json, "network"));
+    v.area = as<uint8_t>(jsonArray(json, "carrierArea"));  // absent -> empty -> the tile's class for every carrier
     for (const std::string& obj : sa_test::objectsStartingWith(json, "residuals", "{\"mask\"")) {
         const std::vector<uint8_t> raw = sa_test::base64Decode(sa_test::jsonString(obj, "codes"));
         v.rasterCodes.emplace_back(raw.begin(), raw.end());

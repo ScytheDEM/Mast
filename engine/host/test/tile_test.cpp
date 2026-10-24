@@ -60,7 +60,8 @@ TEST_P(TileVectorTest, MatchesReference) {
 INSTANTIATE_TEST_SUITE_P(Vectors, TileVectorTest,
                          ::testing::Values("tile_canberra_z13.json", "tile_edge_z12.json",
                                            "tile_canberra_z13_urban_indoor_hi.json",
-                                           "tile_canberra_z13_urban_indoor_mid.json"));
+                                           "tile_canberra_z13_urban_indoor_mid.json",
+                                           "tile_canberra_z13_carrier_area.json"));
 
 TEST(Tile, NoCarriersInRangeIsAllZeroAndFast) {
     Vec v = loadVec("tile_canberra_z13.json");

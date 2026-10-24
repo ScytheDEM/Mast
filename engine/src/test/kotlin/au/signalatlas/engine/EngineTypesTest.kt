@@ -177,6 +177,21 @@ class EngineTypesTest {
             .isGreaterThan(0)
     }
 
+    @Test fun perCarrierAreaIsMarshalledByBatchRowAndAbsentMeansTheRenderArea() {
+        val asked = ArrayList<Int>()
+        val p = PreparedCarriers.build(batch(), null, false, FakeDerive(), area = { r ->
+            asked += r
+            if (r == 2) null else AreaClass.entries[r % 4]
+        })
+        assertThat(asked).containsExactly(0, 2, 5).inOrder()
+        assertThat(p.areaAt(0)).isEqualTo(AreaClass.DENSE_URBAN)
+        assertThat(p.areaAt(1)).isNull()
+        assertThat(p.areaAt(2)).isEqualTo(AreaClass.URBAN)
+        assertThat(p.fields[CarrierField.AREA.ordinal].get(1)).isEqualTo(NO_AREA)
+        val none = PreparedCarriers.build(batch(), null, false, FakeDerive())
+        assertThat((0 until none.size).map(none::areaAt)).containsExactly(null, null, null)
+    }
+
     @Test fun closeIsIdempotent() {
         val p = PreparedCarriers.build(batch(), null, false, FakeDerive())
         assertThat(p.isClosed).isFalse()

@@ -10,7 +10,7 @@
 
 namespace sa {
 
-Carrier prepareCarrier(const CarrierArrays& c, const PatternTable& patterns, int32_t i, Area area) {
+Carrier prepareCarrier(const CarrierArrays& c, const PatternTable& patterns, int32_t i, Area fallbackArea) {
     Carrier cr{};
     const uint8_t* hrp = nullptr;
     int16_t peak = 0;
@@ -20,7 +20,7 @@ Carrier prepareCarrier(const CarrierArrays& c, const PatternTable& patterns, int
     }
     const AntennaParams ap{c.az[i], c.hBw[i], c.fb[i], c.gain[i], c.tilt[i], c.hTx[i], c.freqMhz[i], hrp, peak};
     cr.ant = prepareAntenna(ap);
-    cr.pl = preparePathLoss(c.freqMhz[i], c.hTx[i], area);
+    cr.pl = preparePathLoss(c.freqMhz[i], c.hTx[i], carrierArea(c, i, fallbackArea));
     const float nan = std::numeric_limits<float>::quiet_NaN();
     cr.cal = prepareCal(c.calOffsetDb ? c.calOffsetDb[i] : nan, c.calSlope ? c.calSlope[i] : nan,
                         c.calDmedKm ? c.calDmedKm[i] : nan, c.calSigmaScale ? c.calSigmaScale[i] : nan);

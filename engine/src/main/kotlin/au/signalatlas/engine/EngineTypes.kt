@@ -7,7 +7,11 @@ import java.nio.IntBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 
-/** Area class of a tile. The ordinals are the C++ `sa::Area` values (checked by a JVM test). */
+/**
+ * Area class (rule 5): since the 2026-10-24 amendment a property of each carrier (from the site density around its
+ * site), so a carrier uses one path-loss model on every tile. The ordinals are the C++ `sa::Area` values (checked by a
+ * JVM test).
+ */
 enum class AreaClass { DENSE_URBAN, URBAN, SUBURBAN, RURAL }
 
 /**
@@ -72,7 +76,13 @@ internal enum class CarrierField(val elemBytes: Int) {
 
     /** [SectorTerms] fields (Calibration rules 4 and 6) and the network ordinal (selects residual rasters). */
     CAL_OFFSET(4), CAL_SLOPE(4), CAL_DMED_KM(4), CAL_SIGMA_SCALE(4), NETWORK(1),
+
+    /** The carrier's [AreaClass] ordinal (rule 5, amended 2026-10-24); [NO_AREA] = the render's area. */
+    AREA(1),
 }
+
+/** [CarrierField.AREA] value of a carrier without its own class. */
+internal const val NO_AREA: Byte = -1
 
 /** The pattern table uploaded for a [PatternStore][au.signalatlas.core.data.PatternStore]: see [CoverageEngine]. */
 internal class PatternUpload(
@@ -138,6 +148,13 @@ class PreparedCarriers internal constructor(
     internal fun calSigmaScaleAt(i: Int): Float = fields[CarrierField.CAL_SIGMA_SCALE.ordinal].getFloat(i * 4)
     internal fun networkAt(i: Int): Int = fields[CarrierField.NETWORK.ordinal].get(i).toInt()
 
+    /** Carrier [i]'s own area class, or null when renders use the call's area for it. */
+    fun areaAt(i: Int): AreaClass? {
+        require(i in 0 until size) { "carrier index $i out of 0 until $size" }
+        val v = fields[CarrierField.AREA.ordinal].get(i).toInt()
+        return AreaClass.entries.getOrNull(v)
+    }
+
     /** Rule 9 culling range of carrier [i] (km): the matcher's R_max. */
     fun rMaxKm(i: Int): Float {
         require(i in 0 until size) { "carrier index $i out of 0 until $size" }
@@ -182,6 +199,7 @@ class PreparedCarriers internal constructor(
             batch: CarrierBatch, patterns: PatternUpload?, indoor: Boolean, derive: Derive,
             terrain: ((batchRow: Int) -> TerrainTable?)? = null,
             calibration: ((batchRow: Int) -> SectorTerms?)? = null,
+            area: ((batchRow: Int) -> AreaClass?)? = null,
         ): PreparedCarriers {
             val total = batch.size
             require(total <= MAX_CARRIERS) {
@@ -214,6 +232,7 @@ class PreparedCarriers internal constructor(
             val calDmed = buf(CarrierField.CAL_DMED_KM).asFloatBuffer()
             val calSigma = buf(CarrierField.CAL_SIGMA_SCALE).asFloatBuffer()
             val network = buf(CarrierField.NETWORK)
+            val areaBuf = buf(CarrierField.AREA)
             val pool = ArrayList<TerrainTable>()
             val slotOf = java.util.IdentityHashMap<TerrainTable, Int>()
 
@@ -244,6 +263,7 @@ class PreparedCarriers internal constructor(
                 calDmed.put(k, cal.dMedianKm)
                 calSigma.put(k, cal.sigmaScale)
                 network.put(k, batch.network[r])
+                areaBuf.put(k, area?.invoke(r)?.ordinal?.toByte() ?: NO_AREA)
             }
             if (patterns != null && m > 0) {
                 val ids = IntArray(m)

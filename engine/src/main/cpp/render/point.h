@@ -9,9 +9,9 @@
 
 namespace sa {
 
-// Writes `outRsrp[i]` (c.n entries) = the RSRP (dBm) of carrier i at (lat, lon) for area class `area`: antenna, path
-// loss (indoor adds O2I), the terrain lookup when the carrier has a table, and the calibration terms, exactly as
-// renderTile evaluates a grid sample (no residual raster, no culling: carriers beyond R_max are still predicted).
+// Writes `outRsrp[i]` (c.n entries) = the RSRP (dBm) of carrier i at (lat, lon) for its own area class (`area` is the
+// fallback for carriers without one, see CarrierArrays::area): antenna, path loss (indoor adds O2I), the terrain
+// lookup when the carrier has a table, and the calibration terms, exactly as renderTile evaluates a grid sample (no residual raster, no culling: carriers beyond R_max are still predicted).
 // Carriers with a non-finite position or EIRP get NaN. Returns c.n, or kRenderInvalid for a bad n, a missing array,
 // a null `outRsrp` (when n > 0) or a non-finite point.
 int32_t predictPoint(const CarrierArrays& c, const PatternTable& patterns, double lat, double lon, Area area,

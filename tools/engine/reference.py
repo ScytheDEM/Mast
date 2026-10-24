@@ -360,10 +360,27 @@ def tile_centre(z, x, y):
 
 
 def tile_area(sites, z, x, y):
-    """Rule 5 for a tile: `sites` is an iterable of (lat, lon) of every kept site (any network)."""
+    """The tile-centre class: `sites` is an iterable of (lat, lon) of every kept site (any network). Since rule 5 was
+    amended (2026-10-24) this is only the renderer's fallback for carriers without their own class."""
     clat, clon = tile_centre(z, x, y)
     n = sum(1 for lat, lon in sites if haversine_m(clat, clon, lat, lon) <= 3000.0)
     return area_class(n), n
+
+
+def site_area(sites, lat, lon):
+    """Rule 5 (amended 2026-10-24): the area class of every carrier of the site at (lat, lon), from the number of
+    sites (any network, the site itself included) within 3 km of it. `sites` is an iterable of (lat, lon)."""
+    n = sum(1 for s_lat, s_lon in sites if haversine_m(lat, lon, s_lat, s_lon) <= 3000.0)
+    return area_class(n), n
+
+
+def carrier_area(carriers, i, fallback):
+    """Carrier i's own class (the optional `carrierArea` column of AREAS indices), else `fallback` (the tile's class
+    passed to the renderer). Out-of-range values count as absent, as in the engine."""
+    col = carriers.get("carrierArea")
+    if col is None or col[i] is None or not 0 <= col[i] < len(AREAS):
+        return fallback
+    return AREAS[col[i]]
 
 
 def reaches_tile(lat, lon, r_max_km, bounds):
@@ -412,7 +429,9 @@ def carrier_usable(carriers, i):
 
 def carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain=None):
     """One carrier at one point: (RSRP dBm, sigma dB, terrain complete). Rules 3-8, Terrain rule 5, Calibration rules
-    4 and 6 (the optional `calOffsetDb`, `calSlope`, `calDmedKm`, `calSigmaScale` columns; no residual raster)."""
+    4 and 6 (the optional `calOffsetDb`, `calSlope`, `calDmedKm`, `calSigmaScale` columns; no residual raster).
+    `area` is the fallback for a carrier without its own `carrierArea` (rule 5)."""
+    area = carrier_area(carriers, i, area)
     h = h_tx_clamped(carriers["hTx"][i])
     d2 = haversine_m(carriers["lat"][i], carriers["lon"][i], lat, lon)
     d3 = math.sqrt(d2 * d2 + (h - H_RX) ** 2)

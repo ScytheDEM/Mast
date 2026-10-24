@@ -31,6 +31,7 @@ Floats have 6 decimals. In CSVs, `nan` means "not supplied" (NaN in `AntennaPara
 | `tile_canberra_z13.json` | One rendered tile (below). |
 | `tile_canberra_z13_urban_indoor_hi.json` | The Canberra tile, URBAN, indoor, > 2200 MHz carriers only (UMa) (below). |
 | `tile_canberra_z13_urban_indoor_mid.json` | The same, 1500–2200 MHz carriers only (COST-231) (below). |
+| `tile_canberra_z13_carrier_area.json` | The Canberra tile, TELSTRA + OPTUS, with a `carrierArea` column (rule 5 as amended 2026-10-24: each carrier's class from the sites within 3 km of its own site, as an index into `AREAS`); the tile's own `area` (RURAL) is then only the fallback, and no carrier has it, so the vector fails if the engine ignores the column. |
 | `tile_edge_z12.json` | A fringe tile, same format (below). |
 
 ### `tile_canberra_z13.json`

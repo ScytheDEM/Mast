@@ -3,7 +3,7 @@
 Usage: python3 -I tools/engine/make_vectors.py <rrl_fixture.zip> <out_dir>
 
 Writes pathloss.csv, antenna.csv, patterns.csv, eirp_re.csv, tile_canberra_z13.json,
-tile_canberra_z13_urban_indoor_{hi,mid}.json and tile_edge_z12.json (the first fringe tile found outward from Canberra) into
+tile_canberra_z13_urban_indoor_{hi,mid}.json, tile_canberra_z13_carrier_area.json and tile_edge_z12.json (the first fringe tile found outward from Canberra) into
 <out_dir> (normally engine/host/test/vectors). Floats are written with 6 decimals, "nan" (CSV) or
 null (JSON) means "not supplied". Output is deterministic.
 """
@@ -173,12 +173,26 @@ def json_value(v):
     raise TypeError(type(v))
 
 
-def render(model, z, x, y, grid=None, networks=("TELSTRA",), area=None, indoor=False, families=None):
-    """Render a tile; `area` overrides the rule-5 class (the renderer takes area as an input)."""
+def with_carrier_areas(model, carriers):
+    """Adds the `carrierArea` column (rule 5 amended 2026-10-24: AREAS index from the sites within 3 km of each
+    carrier's site, any network)."""
+    sites = list(model["sites"].values())
+    by_site = {}
+    carriers["carrierArea"] = [ref.AREAS.index(by_site.setdefault((lat, lon), ref.site_area(sites, lat, lon)[0]))
+                               for lat, lon in zip(carriers["lat"], carriers["lon"])]
+    return carriers
+
+
+def render(model, z, x, y, grid=None, networks=("TELSTRA",), area=None, indoor=False, families=None,
+           carrier_areas=False):
+    """Render a tile; `area` overrides the tile-centre class (the renderer's fallback, an input). `carrier_areas`
+    gives every carrier its own class (rule 5 as amended)."""
     derived, n_sites = ref.tile_area(model["sites"].values(), z, x, y)
     area = area or derived
     grid = grid or (128 if z <= 13 else 256)
     carriers = tile_carriers(model, networks, families)
+    if carrier_areas:
+        carriers = with_carrier_areas(model, carriers)
     out = ref.render_tile(carriers, [], z, x, y, grid, area, indoor, -118.0)
     return {"area": area, "derivedArea": derived, "sites": n_sites, "grid": grid, "networks": list(networks),
             "families": None if families is None else list(families), "indoor": indoor, "carriers": carriers, "out": out}
@@ -258,6 +272,10 @@ def main():
         if not best or share < 0.9:
             raise ValueError("%s tile: best server from %s on only %.1f%% of covered pixels" % (suffix, fam, share * 100))
         write_tile(os.path.join(out_dir, "tile_canberra_z13_urban_indoor_%s.json" % suffix), TILE_Z, x, y, urban)
+    per_carrier = render(model, TILE_Z, x, y, networks=("TELSTRA", "OPTUS"), carrier_areas=True)
+    if ref.AREAS.index(per_carrier["area"]) in per_carrier["carriers"]["carrierArea"]:
+        raise ValueError("carrier-area tile: some carrier has the tile's own class, so the vector cannot tell them apart")
+    write_tile(os.path.join(out_dir, "tile_canberra_z13_carrier_area.json"), TILE_Z, x, y, per_carrier)
     x, y, rendered = find_fringe_tile(model, FRINGE_Z)
     write_tile(os.path.join(out_dir, "tile_edge_z12.json"), FRINGE_Z, x, y, rendered)
 

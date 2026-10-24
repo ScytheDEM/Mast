@@ -24,10 +24,11 @@ constexpr jint kOk = 0;
 constexpr jint kInvalid = -2;  // same code as sa::kRenderInvalid
 
 // Order and element sizes of the carrier buffers passed to nativeRender: CarrierFields in EngineTypes.kt.
-constexpr int kFieldCount = 22;
-constexpr size_t kFieldSize[kFieldCount] = {8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 1};
+constexpr int kFieldCount = 23;
+constexpr size_t kFieldSize[kFieldCount] = {8, 8, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4, 2, 4, 4, 4, 4, 4, 1, 1};
 constexpr int kTerrainSlotField = 16;  // int32 per carrier: 0 = no terrain table, k = pool entry k - 1
 constexpr int kCalOffsetField = 17;    // then slope, d_median (km), sigma scale (floats) and network (uint8)
+constexpr int kAreaField = 22;         // uint8 per carrier: sa::Area value (rule 5), > 3 = the call's area
 
 // Returns the buffer's address when it is a direct buffer with at least `count * elem` bytes aligned to `elem`.
 // A zero-length request is always satisfied (`*ok` stays true and nullptr is returned).
@@ -185,6 +186,7 @@ void resolveCarriers(JNIEnv* env, jobjectArray fields, jint n, jobjectArray tabl
     c.calDmedKm = static_cast<const float*>(ptr[kCalOffsetField + 2]);
     c.calSigmaScale = static_cast<const float*>(ptr[kCalOffsetField + 3]);
     c.network = static_cast<const uint8_t*>(ptr[kCalOffsetField + 4]);
+    c.area = static_cast<const uint8_t*>(ptr[kAreaField]);
     out.ok = true;
 }
 

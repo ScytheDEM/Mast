@@ -26,7 +26,9 @@ class CoverageEngine {
      * means that carrier has none. Carriers may share a [TerrainTable] (same object), which is then uploaded once.
      * The tables are held by the result, so they stay alive for as long as it can render.
      *
-     * [calibration] (null = uncalibrated) is asked likewise for each kept carrier's [SectorTerms] (null = none).
+     * [calibration] (null = uncalibrated) is asked likewise for each kept carrier's [SectorTerms] (null = none), and
+     * [area] for its own [AreaClass] (rule 5, amended 2026-10-24; see [AreaClassifier.perSite]); a carrier without one
+     * (null, or no [area]) uses the area passed to [render] / [predictPoint].
      *
      * @throws IllegalArgumentException if the batch has more than [PreparedCarriers.MAX_CARRIERS] carriers (callers
      * prepare per region) or the store's pattern bytes are not `patternCount * 360` long.
@@ -35,10 +37,11 @@ class CoverageEngine {
         batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean,
         terrain: ((batchRow: Int) -> TerrainTable?)? = null,
         calibration: ((batchRow: Int) -> SectorTerms?)? = null,
-    ): PreparedCarriers = PreparedCarriers.build(batch, patterns?.let(::upload), indoor, NATIVE_DERIVE, terrain, calibration)
+        area: ((batchRow: Int) -> AreaClass?)? = null,
+    ): PreparedCarriers = PreparedCarriers.build(batch, patterns?.let(::upload), indoor, NATIVE_DERIVE, terrain, calibration, area)
 
     /**
-     * Every carrier's RSRP (dBm) at ([lat], [lon]) for [area] (indoor adds the O2I loss): the same model as [render],
+     * Every carrier's RSRP (dBm) at ([lat], [lon]) for its own area class, or [area] for carriers without one (indoor adds the O2I loss): the same model as [render],
      * including terrain tables and calibration terms, but no culling (carriers beyond R_max are predicted too) and no
      * residual raster. Index i is carrier i of [prepared] ([PreparedCarriers.batchIndex]). A few microseconds per
      * carrier on the calling thread.
@@ -101,7 +104,7 @@ class CoverageEngine {
     }
 
     /**
-     * Renders tile (z, x, y) of [prepared] for [area], with coverage threshold [thrDbm] (rule 8). The grid is 128
+     * Renders tile (z, x, y) of [prepared] (carriers without their own area class use [area]), with coverage threshold [thrDbm] (rule 8). The grid is 128
      * for z <= 13 and 256 above (rule 9). [residuals] are the tile's residual rasters (Calibration rule 5). Returns null
      * when [cancel] fired.
      *
