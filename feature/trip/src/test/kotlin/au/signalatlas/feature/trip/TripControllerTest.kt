@@ -114,11 +114,11 @@ class TripControllerTest {
         evaluate(c)
         val s = stats(c)
         assertThat(s.network).isEqualTo("Telstra")
-        assertThat(s.tech).isEqualTo("4G")
+        assertThat(s.tech).isEqualTo("all data")
         assertThat(s.distanceM).isWithin(30.0).of(1_000.0)
         // Window 25 m/s x 90 s = 2250 m; the dead stretch starts 3 km ahead (at 1000 m now): not yet.
         assertThat(alerts).isEmpty()
-        assertThat(s.banner).startsWith("Trip · Telstra 4G · next dead zone in 3.")
+        assertThat(s.banner).startsWith("Trip · Telstra · all data · next dead zone in 3.")
 
         // 800 m further on the stretch is 2.2 km ahead: inside the window.
         c.drive(72, from = 41)
@@ -206,9 +206,9 @@ class TripControllerTest {
 
     @Test fun theBannerForQuietAndDeadStates() {
         val covered = TripStats(0, 0.0, "Telstra", "4G", TripStatus(true, null, null, null, emptyList(), 0.0))
-        assertThat(covered.banner).isEqualTo("Trip · Telstra 4G · No dead zones ahead")
+        assertThat(covered.banner).isEqualTo("Trip · Telstra · 4G · No dead zones ahead")
         val dead = TripStats(0, 0.0, "Telstra", "4G", TripStatus(false, null, null, 1_500.0, emptyList(), 0.0))
-        assertThat(dead.banner).isEqualTo("Trip · Telstra 4G · Coverage returns in ~1.5 km")
+        assertThat(dead.banner).isEqualTo("Trip · Telstra · 4G · Coverage returns in ~1.5 km")
         assertThat(TripStats(0, message = "Waiting for GPS…").banner).isEqualTo("Trip · Waiting for GPS…")
     }
 }

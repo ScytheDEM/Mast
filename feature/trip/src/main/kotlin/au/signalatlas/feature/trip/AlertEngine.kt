@@ -11,7 +11,7 @@ data class Alert(val kind: AlertKind, val text: String, val distanceM: Double? =
 
 /** What the engine knows after one evaluation, for the ongoing notification and the trip banner. */
 data class TripStatus(
-    /** Covered here (P >= 0.5, or the measured RSRP is above the threshold by 3 dB). */
+    /** Covered here: false inside a dead stretch (predicted P < 0.5 at this position, or no signal measured and none predicted). */
     val covered: Boolean,
     /** While covered: start of the next qualifying dead stretch ahead, and its length (>= the path's end if cut off). */
     val nextDeadM: Double?,
@@ -26,7 +26,7 @@ data class TripStatus(
     val text: String
         get() = when {
             covered -> nextDeadM?.let { "Next dead zone in ${TripText.distance(it)}" } ?: "No dead zones ahead"
-            else -> returnsInM?.let { "Coverage returns in ~${TripText.distance(it)}" } ?: "No coverage ahead"
+            else -> returnsInM?.let { "Coverage returns in ~${TripText.distance(it)}" } ?: "No coverage ahead for 10 km+"
         }
 
     /** The status-bar chip text: the distance to the next change, or null when there is none. */
@@ -81,18 +81,26 @@ class AlertEngine(private val config: () -> AlertConfig = { AlertConfig() }) {
 
     /** A "Leaving" alert has been given and the dead stretch has not been entered yet; valid until [pendingUntilOdo]. */
     private var pending = false
+    /** A "Leaving" alert is outstanding (the stretch not entered yet): no second one for a drifting prediction. */
+    private var leavingPending = false
     private var pendingUntilOdo = 0.0
     /** We entered a dead stretch we had alerted about; "Back in coverage" is due. */
     private var deadAlerted = false
     private var coveredSinceOdo: Double? = null
     private var earlyArmed = true
+    private var candidateStartOdo: Double? = null
+    private var candidateCount = 0
 
     fun evaluate(i: AlertInput): AlertResult {
         val cfg = config()
         val thr = cfg.thresholdDbm
         val windowM = windowM(i.speedMps, cfg.windowSeconds)
         val p = i.probabilities
-        val covered = (p.firstOrNull() ?: 0f) >= COVERED_P || (i.measuredRsrp != null && i.measuredRsrp >= thr + COVERED_MARGIN_DB)
+        val measuredOk = i.measuredRsrp != null && i.measuredRsrp >= thr + COVERED_MARGIN_DB
+        // With predictions, the predicted state at this position decides (a stale or optimistic measurement must not
+        // hide a dead stretch we are inside); the measurement decides only when there are no predictions.
+        val inZone = if (p.isNotEmpty()) p[0] < COVERED_P else !measuredOk
+        val covered = !inZone
 
         i.measuredRsrp?.let { history.addLast(i.nowMs to it) }
         while (history.isNotEmpty() && i.nowMs - history.first().first > EARLY_WINDOW_MS) history.removeFirst()
@@ -102,17 +110,30 @@ class AlertEngine(private val config: () -> AlertConfig = { AlertConfig() }) {
         alertedStartsOdo.removeAll { it < i.odometerM - FORGET_BEHIND_M }
 
         if (covered) {
-            if (pending && i.odometerM > pendingUntilOdo) pending = false
+            if (pending && i.odometerM > pendingUntilOdo) { pending = false; leavingPending = false }
 
-            // Rule 4: leaving coverage. Not again while we are in a dead stretch we already alerted about (a brief
-            // covered patch inside it is not "back in coverage" until rule 6 says so).
+            // Rule 4: leaving coverage, only from a covered position. The stretch must persist over two consecutive
+            // evaluations (matched by position, +-300 m) so one noisy prediction does not alert, and no new alert is
+            // given while an earlier one is pending (not yet entered) or while inside an alerted stretch.
             val first = stretches.firstOrNull()
-            if (first != null && !deadAlerted && first.startM <= windowM && !isAlerted(i.odometerM + first.startM) && rateOk(AlertKind.LEAVING, i.nowMs)) {
+            if (first != null && first.startM > 0.0) {
+                val abs = i.odometerM + first.startM
+                val c = candidateStartOdo
+                if (c != null && kotlin.math.abs(c - abs) <= HYSTERESIS_M) candidateCount++ else candidateCount = 1
+                candidateStartOdo = abs
+            } else {
+                candidateStartOdo = null
+                candidateCount = 0
+            }
+            if (first != null && first.startM > 0.0 && candidateCount >= PERSIST_EVALS && !leavingPending && !deadAlerted &&
+                first.startM <= windowM && !isAlerted(i.odometerM + first.startM) && rateOk(AlertKind.LEAVING, i.nowMs)
+            ) {
                 val text = "Leaving ${i.network} ${i.tech} coverage in ~${TripText.distance(first.startM)} · dead zone ~${TripText.distance(first.lenM)}"
                 alerts += Alert(AlertKind.LEAVING, text, first.startM, first.lenM)
                 fire(AlertKind.LEAVING, i.nowMs)
                 alertedStartsOdo += i.odometerM + first.startM
                 pending = true
+                leavingPending = true
                 pendingUntilOdo = i.odometerM + first.startM + HYSTERESIS_M
             }
 
@@ -146,10 +167,13 @@ class AlertEngine(private val config: () -> AlertConfig = { AlertConfig() }) {
             }
         } else {
             coveredSinceOdo = null
+            candidateStartOdo = null
+            candidateCount = 0
             if (pending) {
                 deadAlerted = true
                 pending = false
             }
+            leavingPending = false
         }
 
         val status = if (covered) {
@@ -207,6 +231,8 @@ class AlertEngine(private val config: () -> AlertConfig = { AlertConfig() }) {
 
     companion object {
         const val STEP_M = 50.0
+        /** Consecutive evaluations a dead stretch must be seen in before "Leaving" fires. */
+        const val PERSIST_EVALS = 2
         const val COVERED_P = 0.5f
         const val COVERED_MARGIN_DB = 3
         const val HYSTERESIS_M = 300.0

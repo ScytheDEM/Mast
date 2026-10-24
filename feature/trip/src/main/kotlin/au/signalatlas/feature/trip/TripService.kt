@@ -33,6 +33,7 @@ class TripService : Service() {
     private var observers: List<Job> = emptyList()
     private var requestedIntervalMs = 0L
     private var started = false
+    @Volatile private var stopped = false
     private var voice: TripVoice? = null
 
     private val listener = object : LocationListener {
@@ -59,7 +60,7 @@ class TripService : Service() {
         val controller = TripRuntime.controller
         if (intent?.action == ACTION_STOP) {
             controller?.stop()
-            stopSelf()
+            shutdown()
             return START_NOT_STICKY
         }
         if (controller == null || !controller.isRunning) {
@@ -87,9 +88,7 @@ class TripService : Service() {
                 controller.state.collect { s ->
                     when (s) {
                         is TripState.Running -> n.postOngoing(s.stats)
-                        TripState.Idle -> {
-                            stopSelf()
-                        }
+                        TripState.Idle -> shutdown()
                     }
                 }
             },
@@ -111,7 +110,7 @@ class TripService : Service() {
     @Synchronized
     private fun requestUpdates(intervalMs: Long) {
         val m = manager ?: return
-        if (intervalMs == requestedIntervalMs) return
+        if (stopped || intervalMs == requestedIntervalMs) return
         try {
             m.removeUpdates(listener)
             val provider = provider(m) ?: return
@@ -131,14 +130,29 @@ class TripService : Service() {
             .firstOrNull { it in enabled }
     }
 
+    /**
+     * Deterministic stop, from the stop action, a trip that ended elsewhere (map button, tile) or the system: no more
+     * location requests, no evaluation or collectors, the notifications gone, and the service itself stopped.
+     */
+    @Synchronized
+    private fun shutdown() {
+        if (!stopped) {
+            stopped = true
+            manager?.removeUpdates(listener)
+            requestedIntervalMs = 0
+            observers.forEach { it.cancel() }
+            scope.cancel()
+            voice?.shutdown()
+            wakeLock?.takeIf { it.isHeld }?.release()
+            TripRuntime.controller?.onServiceGone()
+            notifications?.cancelAll()
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     override fun onDestroy() {
-        observers.forEach { it.cancel() }
-        manager?.removeUpdates(listener)
-        wakeLock?.takeIf { it.isHeld }?.release()
-        scope.cancel()
-        voice?.shutdown()
-        TripRuntime.controller?.onServiceGone()
-        notifications?.cancelAll()
+        shutdown()
         super.onDestroy()
     }
 

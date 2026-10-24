@@ -57,7 +57,7 @@ data class TripStats(
     /** "Trip · Telstra 4G · next dead zone in 6.2 km", "Trip · Telstra 4G · No dead zones ahead". */
     val banner: String
         get() {
-            val label = listOfNotNull(network, tech).joinToString(" ").ifEmpty { null }
+            val label = listOfNotNull(network, tech).joinToString(" · ").ifEmpty { null }
             val detail = status?.text?.let { if (status.covered && status.nextDeadM != null) it.replaceFirstChar(Char::lowercase) else it }
                 ?: message
             return listOfNotNull("Trip", label, detail).joinToString(" · ")
@@ -245,7 +245,7 @@ class TripController(
                 alertCount += result.alerts.size
                 _state.value = TripState.Running(
                     TripStats(
-                        startedAtMs, odometerM, networkName(network), tech, result.status, alertCount, _stationary.value,
+                        startedAtMs, odometerM, networkName(network), floorLabel(cfg.floor), result.status, alertCount, _stationary.value,
                     ),
                 )
             }
@@ -297,6 +297,13 @@ class TripController(
         private const val MIN_STEP_M = 3.0
         private const val MAX_ODOMETER_ACCURACY_M = 100.0
         private const val MAX_RADIO_AGE_MS = 10_000L
+
+        /** The tech floor as shown in titles: "all data", "4G+", "5G". */
+        fun floorLabel(f: TechFloor): String = when (f) {
+            TechFloor.LOSE_5G -> "5G"
+            TechFloor.LOSE_4G -> "4G+"
+            TechFloor.LOSE_ALL -> "all data"
+        }
 
         fun networkName(n: Network): String = when (n) {
             Network.TELSTRA -> "Telstra"

@@ -33,7 +33,7 @@ class TripDeliveryTest {
 
     @Test fun contentTextsAndChip() {
         val c = TripContent.of(stats(List(40) { 0.9f }))
-        assertThat(c.title).isEqualTo("Trip · Telstra 4G")
+        assertThat(c.title).isEqualTo("Trip · Telstra · 4G")
         assertThat(c.text).isEqualTo("Next dead zone in 1.8 km")
         assertThat(c.shortCritical).isEqualTo("1.8 km")
         assertThat(c.progress).isEqualTo(0)
@@ -52,7 +52,7 @@ class TripDeliveryTest {
         assertThat(applied).isFalse()
         assertThat(notif.channelId).isEqualTo("trip_status")
         assertThat(notif.flags and Notification.FLAG_ONGOING_EVENT).isNotEqualTo(0)
-        assertThat(notif.extras.getCharSequence(Notification.EXTRA_TITLE).toString()).isEqualTo("Trip · Telstra 4G")
+        assertThat(notif.extras.getCharSequence(Notification.EXTRA_TITLE).toString()).isEqualTo("Trip · Telstra · 4G")
         assertThat(notif.extras.getCharSequence(Notification.EXTRA_TEXT).toString()).isEqualTo("Next dead zone in 1.8 km")
         assertThat(notif.actions.map { it.title.toString() }).containsExactly("Stop trip")
     }

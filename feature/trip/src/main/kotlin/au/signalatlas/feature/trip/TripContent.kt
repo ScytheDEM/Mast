@@ -43,7 +43,7 @@ data class TripContent(
         }
 
         fun of(stats: TripStats?, title: String = "Trip", waiting: String = TripController.WAITING_GPS): TripContent {
-            val label = stats?.let { listOfNotNull(it.network, it.tech).joinToString(" ") }?.takeIf { it.isNotEmpty() }
+            val label = stats?.let { listOfNotNull(it.network, it.tech).joinToString(" · ") }?.takeIf { it.isNotEmpty() }
             val status = stats?.status
             return TripContent(
                 title = if (label != null) "$title · $label" else title,

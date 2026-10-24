@@ -38,7 +38,7 @@ class AlertEngineTest {
         assertThat(run.alerts).hasSize(1)
         val (at, a) = run.alerts.single()
         assertThat(a.kind).isEqualTo(AlertKind.LEAVING)
-        // Window = 25 m/s x 90 s = 2250 m: the first evaluation with the zone inside it.
+        // Window = 25 m/s x 90 s = 2250 m: the zone is inside it from 2750 m; it has to persist for a second evaluation.
         assertThat(at).isEqualTo(2_750.0)
         assertThat(a.text).isEqualTo("Leaving Telstra 4G coverage in ~2.3 km · dead zone ~2.0 km")
         assertThat(a.distanceM).isEqualTo(2_250.0)
@@ -124,7 +124,7 @@ class AlertEngineTest {
         assertThat(AlertEngine.windowM(100.0, 90)).isEqualTo(5_000.0)
         assertThat(AlertEngine.horizonM(25.0, 90)).isEqualTo(12_250.0)
 
-        // Slow (5 m/s): window 500 m, so a zone 2 km away is silent and one 400 m away alerts.
+        // Slow (5 m/s): window 500 m, so a zone 2 km away is silent and one within 500 m alerts.
         val slow = Run(AlertEngine(), speed = 5.0)
         slow.drive(world(2_000.0..3_999.0), 0.0, 1_400.0)
         assertThat(slow.alerts).isEmpty()
@@ -166,10 +166,12 @@ class AlertEngineTest {
         val engine = AlertEngine()
         val p = List(8) { 0.9f } + List(20) { 0.1f } // dead from 400 m ahead
         fun eval(t: Long, odo: Double) = engine.evaluate(AlertInput(t, odo, 25.0, "Telstra", "4G", -90, p)).alerts
-        assertThat(eval(0, 0.0).map { it.kind }).containsExactly(AlertKind.LEAVING)
-        assertThat(eval(2_000, 50.0)).isEmpty() // same zone (position matches within 300 m)
+        assertThat(eval(0, 0.0)).isEmpty() // seen once: not yet
+        assertThat(eval(2_000, 50.0).map { it.kind }).containsExactly(AlertKind.LEAVING)
+        assertThat(eval(4_000, 100.0)).isEmpty() // same zone (position matches within 300 m)
         assertThat(eval(30_000, 5_000.0)).isEmpty() // a new zone, but under 60 s since the last "Leaving"
-        assertThat(eval(61_000, 5_100.0).map { it.kind }).containsExactly(AlertKind.LEAVING)
+        assertThat(eval(31_000, 5_050.0)).isEmpty()
+        assertThat(eval(62_000, 5_100.0).map { it.kind }).containsExactly(AlertKind.LEAVING)
     }
 
     @Test fun lose5GUsesMinus110AndOnlyMeasuredRsrpAboveItCounts() {
@@ -177,22 +179,22 @@ class AlertEngineTest {
         assertThat(AlertConfig(floor = TechFloor.LOSE_4G).thresholdDbm).isEqualTo(-118)
         assertThat(AlertConfig(floor = TechFloor.LOSE_5G).thresholdDbm).isEqualTo(-110)
         val engine = AlertEngine { AlertConfig(floor = TechFloor.LOSE_5G) }
-        val none = List(30) { 0.1f }
-        fun status(rsrp: Int?) = engine.evaluate(AlertInput(0, 0.0, 25.0, "Telstra", "5G", rsrp, none)).status
-        assertThat(status(-105).covered).isTrue() // >= -110 + 3
-        assertThat(status(-108).covered).isFalse()
-        assertThat(status(null).covered).isFalse()
-        // The default floor accepts -108 as covered (-118 + 3 = -115).
+        // Without predictions the measurement decides: >= -110 + 3 is covered.
+        fun covered(e: AlertEngine, rsrp: Int?) = e.evaluate(AlertInput(0, 0.0, 25.0, "Telstra", "5G", rsrp, emptyList())).status.covered
+        assertThat(covered(engine, -105)).isTrue()
+        assertThat(covered(engine, -108)).isFalse()
+        assertThat(covered(engine, null)).isFalse()
         val all = AlertEngine()
-        assertThat(all.evaluate(AlertInput(0, 0.0, 25.0, "Telstra", "4G", -108, none)).status.covered).isTrue()
-        assertThat(all.evaluate(AlertInput(0, 0.0, 25.0, "Telstra", "4G", -116, none)).status.covered).isFalse()
+        assertThat(covered(all, -108)).isTrue() // -118 + 3 = -115
+        assertThat(covered(all, -116)).isFalse()
     }
 
     @Test fun lose5GTextsUseTheTechLabelGiven() {
         val engine = AlertEngine { AlertConfig(floor = TechFloor.LOSE_5G) }
         val p = List(5) { 0.9f } + List(20) { 0.1f }
-        val a = engine.evaluate(AlertInput(0, 0.0, 25.0, "Optus", "5G", -90, p)).alerts.single()
-        assertThat(a.text).isEqualTo("Leaving Optus 5G coverage in ~300 m · dead zone ~1.0 km")
+        assertThat(engine.evaluate(AlertInput(0, 0.0, 25.0, "Optus", "5G", -90, p)).alerts).isEmpty()
+        val a = engine.evaluate(AlertInput(2_000, 50.0, 25.0, "Optus", "5G", -90, p.drop(1))).alerts.single()
+        assertThat(a.text).isEqualTo("Leaving Optus 5G coverage in ~200 m · dead zone ~1.0 km")
     }
 
     @Test fun textsRoundTo100mBelowAKilometreAndTo0_1kmAbove() {
@@ -211,10 +213,60 @@ class AlertEngineTest {
     @Test fun noCoverageAheadWhileInsideTheZoneIsReported() {
         val engine = AlertEngine()
         val r = engine.evaluate(AlertInput(0, 0.0, 25.0, "Telstra", "4G", null, List(100) { 0.0f }))
-        assertThat(r.status.text).isEqualTo("No coverage ahead")
+        assertThat(r.status.text).isEqualTo("No coverage ahead for 10 km+")
         assertThat(r.status.shortText).isNull()
         // A covered stretch under 300 m does not count as returning.
         val p = List(10) { 0.0f } + List(5) { 0.9f } + List(100) { 0.0f }
         assertThat(engine.evaluate(AlertInput(1, 0.0, 25.0, "Telstra", "4G", null, p)).status.returnsInM).isNull()
+    }
+
+    @Test fun insideAStretchTheStatusIsInZoneEvenIfTheMeasurementLooksFine() {
+        val engine = AlertEngine()
+        val p = List(10) { 0.05f } + List(100) { 0.95f } // dead for 500 m, then covered
+        // Measured -90 (stale / optimistic) must not turn this into "Next dead zone in 100 m".
+        val r = engine.evaluate(AlertInput(0, 0.0, 25.0, "Telstra", "4G", -90, p))
+        assertThat(r.status.covered).isFalse()
+        assertThat(r.status.text).isEqualTo("Coverage returns in ~500 m")
+        assertThat(r.alerts).isEmpty()
+        assertThat(engine.evaluate(AlertInput(2_000, 50.0, 25.0, "Telstra", "4G", -90, p.drop(1))).alerts).isEmpty() // no "Leaving in ~100 m"
+    }
+
+    @Test fun leavingNeverFiresFromInsideTheStretchAndAfterwardsTheStatusFollows() {
+        val run = Run(AlertEngine())
+        val w = world(zone)
+        run.drive(w, 4_000.0, 5_500.0) // starts 1 km before, enters at 5000
+        val leaving = run.alerts.filter { it.second.kind == AlertKind.LEAVING }
+        assertThat(leaving).hasSize(1)
+        assertThat(leaving.single().first).isLessThan(5_000.0)
+        assertThat(run.last!!.status.text).isEqualTo("Coverage returns in ~1.5 km")
+        run.drive(w, 5_550.0, 8_000.0)
+        assertThat(run.last!!.status.text).isEqualTo("No dead zones ahead")
+    }
+
+    @Test fun aSingleNoisyEvaluationDoesNotAlert() {
+        val engine = AlertEngine()
+        val clear = List(100) { 0.95f }
+        val blip = List(8) { 0.95f } + List(20) { 0.05f } + List(72) { 0.95f }
+        fun eval(t: Long, odo: Double, p: List<Float>) = engine.evaluate(AlertInput(t, odo, 25.0, "Telstra", "4G", -90, p)).alerts
+        assertThat(eval(0, 0.0, clear)).isEmpty()
+        assertThat(eval(2_000, 50.0, blip)).isEmpty()
+        assertThat(eval(4_000, 100.0, clear)).isEmpty()
+        assertThat(eval(6_000, 150.0, blip)).isEmpty() // seen once again, not twice in a row
+    }
+
+    @Test fun aDriftingPredictionAfterTheAlertDoesNotAlertAgain() {
+        val engine = AlertEngine()
+        fun p(startPts: Int, lenPts: Int) = List(startPts) { 0.95f } + List(lenPts) { 0.05f } + List(60) { 0.95f }
+        fun eval(t: Long, odo: Double, p: List<Float>) = engine.evaluate(AlertInput(t, odo, 25.0, "Telstra", "4G", -90, p)).alerts
+        eval(0, 0.0, p(30, 40))
+        assertThat(eval(2_000, 50.0, p(29, 40)).single().text).isEqualTo("Leaving Telstra 4G coverage in ~1.5 km · dead zone ~2.0 km")
+        // The prediction now says the zone starts 1 km later and is shorter: the earlier alert stands, no new text.
+        var t = 4_000L
+        var odo = 100.0
+        repeat(10) {
+            assertThat(eval(t, odo, p(40, 10))).isEmpty()
+            t += 2_000
+            odo += 50.0
+        }
     }
 }
