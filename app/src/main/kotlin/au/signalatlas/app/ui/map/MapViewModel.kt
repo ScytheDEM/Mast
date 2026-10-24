@@ -211,6 +211,9 @@ class MapViewModel(
     /** Signal or Reliability: the same cached tiles, drawn through the other colour ramp. */
     fun setCoverageView(view: CoverageSelection.View) = updateCoverage { it.copy(view = view) }
 
+    /** The map's coverage source has (true) or has no (false) tiles outstanding; drives the "Calculating coverage…" pill. */
+    fun onCoverageLoading(loading: Boolean) = _state.update { it.copy(coverage = it.coverage.copy(calculating = loading)) }
+
     /** The settled map zoom, for the "Zoom in" chip. */
     fun onZoom(zoom: Double) = _state.update { it.copy(zoom = zoom) }
 
@@ -321,6 +324,7 @@ class MapViewModel(
         // A view switch keeps the point's numbers; anything else changes the tiles they came from.
         if (before.copy(view = after.view, urlTemplate = after.urlTemplate) != after) dismissReadout()
         if (!after.on && after.increase != null) dismissIncreaseResolution()
+        if (!after.on && after.calculating) _state.update { it.copy(coverage = it.coverage.copy(calculating = false)) }
         applyCoverage()
     }
 

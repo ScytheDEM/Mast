@@ -82,7 +82,10 @@ import au.signalatlas.app.R
 import au.signalatlas.app.connected.ConnectedStatus
 import au.signalatlas.app.connected.ConnectedUi
 import au.signalatlas.app.ui.connected.ConnectedInfoBar
+import au.signalatlas.app.data.UiHints
 import au.signalatlas.app.location.DeviceLocationSource
+import au.signalatlas.app.ui.coverage.CalculatingPill
+import au.signalatlas.app.ui.coverage.CoverageExplainerCard
 import au.signalatlas.app.ui.coverage.AccuracyChip
 import au.signalatlas.app.ui.coverage.CoverageActions
 import au.signalatlas.app.ui.coverage.CoverageControlsCard
@@ -147,6 +150,7 @@ fun MapScreen(
     /** The connected tower (info bar and map highlight); null = the feature is not wired (tests). */
     connected: ConnectedUi? = null,
     connectedActions: ConnectedActions = ConnectedActions.None,
+    hints: UiHints = remember { UiHints.InMemory() },
 ) {
     val camera = viewModel<MapCameraHolder>().camera
     val focusManager = LocalFocusManager.current
@@ -163,6 +167,7 @@ fun MapScreen(
     var searchExpanded by remember { mutableStateOf(false) }
     val windowClass = currentWindowAdaptiveInfo().windowSizeClass
     CollapseSearchOnWindowChange(windowClass.minWidthDp to windowClass.minHeightDp) { searchExpanded = false }
+    var explainerSeen by remember { mutableStateOf(hints.coverageExplainerSeen()) }
     var coverageOptionsOpen by rememberSaveable { mutableStateOf(true) }
     var rationaleFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var afterGrant by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -358,6 +363,7 @@ fun MapScreen(
                 onZoom = vm::onZoom,
                 onLongPress = vm::longPress,
                 onMapTap = vm::onMapTap,
+                onCoverageLoading = vm::onCoverageLoading,
                 selectedColor = MaterialTheme.colorScheme.primary.toArgb(),
                 modifier = Modifier.fillMaxSize(),
                 userLocation = state.location.takeIf { state.locationGranted },
@@ -385,6 +391,8 @@ fun MapScreen(
                 onNearby = onNearby,
                 onIncrease = vm::openIncreaseResolution,
                 coverageOptionsOpen = coverageOptionsOpen,
+                showExplainer = state.coverage.on && !explainerSeen,
+                onDismissExplainer = { explainerSeen = true; hints.markCoverageExplainerSeen() },
                 coverage = coverageActions,
                 snackbar = snackbar,
                 connected = connected,
@@ -593,6 +601,8 @@ private fun MapControls(
     onNearby: () -> Unit,
     onIncrease: () -> Unit,
     coverageOptionsOpen: Boolean,
+    showExplainer: Boolean,
+    onDismissExplainer: () -> Unit,
     coverage: CoverageActions,
     snackbar: SnackbarHostState,
     connected: ConnectedUi?,
@@ -642,6 +652,9 @@ private fun MapControls(
                 AnimatedVisibility(state.coverage.on && !state.coverage.needsZoom(state.zoom), enter = fadeIn(), exit = fadeOut()) {
                     AccuracyChip(state.coverage.accuracy, onClick = onIncrease, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
+                AnimatedVisibility(state.coverage.showsCalculating(state.zoom), enter = fadeIn(), exit = fadeOut()) {
+                    CalculatingPill(Modifier.padding(start = 16.dp, top = 4.dp))
+                }
                 state.coverage.readout?.let {
                     PointReadout(it.result, Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))
                 }
@@ -670,6 +683,9 @@ private fun MapControls(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (state.coverage.on) {
+                AnimatedVisibility(showExplainer, enter = fadeIn(), exit = fadeOut()) {
+                    CoverageExplainerCard(onDismissExplainer)
+                }
                 AnimatedVisibility(coverageOptionsOpen, enter = fadeIn(), exit = fadeOut()) {
                     CoverageControlsCard(state.coverage, coverage)
                 }

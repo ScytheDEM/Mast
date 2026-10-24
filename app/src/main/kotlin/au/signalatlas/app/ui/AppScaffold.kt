@@ -88,6 +88,7 @@ fun AppScaffold(container: AppContainer) {
                 Root.Map -> MapScreen(
                     state, vm, container.location, onOpenUpdates = { showUpdates = true },
                     connected = connected, connectedActions = connectedActions,
+                    hints = container.hints,
                 )
             }
         }

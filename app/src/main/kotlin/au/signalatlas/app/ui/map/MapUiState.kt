@@ -56,7 +56,12 @@ data class CoverageUiState(
     val accuracy: Accuracy = Accuracy.QUICK,
     /** The "Increase resolution" sheet, if it is open. */
     val increase: IncreaseUiState? = null,
+    /** The overlay still has tiles being calculated (reported by the map). */
+    val calculating: Boolean = false,
 ) {
+    /** The small "Calculating coverage…" pill: coverage is on, in range, and tiles are outstanding. */
+    fun showsCalculating(zoom: Double?): Boolean = on && !needsZoom(zoom) && calculating
+
     /** Coverage is on but the map is too far out to show it. */
     fun needsZoom(zoom: Double?): Boolean = on && zoom != null && zoom < MIN_ZOOM
 

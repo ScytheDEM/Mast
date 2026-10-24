@@ -245,4 +245,8 @@
     <string name="pattern_source_acma">From ACMA antenna pattern data.</string>
     <string name="pattern_source_typical">Typical pattern from the antenna\'s beamwidth. Download antenna patterns in Tower data for exact shapes.</string>
     <string name="site_show_coverage">Show predicted coverage for %1$s</string>
+    <string name="coverage_calculating">Calculating coverage…</string>
+    <string name="coverage_explainer_title">Predicted coverage</string>
+    <string name="coverage_explainer_body">Predicted signal from ACMA tower data. Colours: Excellent, Good, Fair, Weak. Tap a spot for details.</string>
+    <string name="coverage_explainer_dismiss">Got it</string>
 </resources>
