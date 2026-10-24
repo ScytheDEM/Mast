@@ -20,6 +20,12 @@ import kotlinx.coroutines.runBlocking
 /** Carriers prepared for rendering; maps render-time carrier indices back to rows of the source batch. */
 interface PreparedRegion {
     fun batchIndex(i: Int): Int
+
+    /** Number of carriers kept. */
+    val size: Int
+
+    /** Carrier [i]'s culling range in km (rule 9); infinite when unknown. */
+    fun rMaxKm(i: Int): Float = Float.POSITIVE_INFINITY
 }
 
 /** The part of the engine the tile service uses; lets tests run without native code. */
@@ -50,12 +56,18 @@ interface TileRenderer {
     fun buildTerrainTable(
         dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,
     ): TerrainTable?
+
+    /** Every carrier's RSRP (dBm, NaN = unusable) at the point, index i = carrier i of [prepared] (see [CoverageEngine.predictPoint]). */
+    fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass): FloatArray =
+        throw UnsupportedOperationException("point prediction")
 }
 
 /** [TileRenderer] backed by the native [CoverageEngine]. */
 class EngineTileRenderer(private val engine: CoverageEngine) : TileRenderer {
     private class Prepared(val carriers: PreparedCarriers) : PreparedRegion {
         override fun batchIndex(i: Int) = carriers.batchIndex(i)
+        override val size get() = carriers.size
+        override fun rMaxKm(i: Int) = carriers.rMaxKm(i)
     }
 
     override fun prepare(
@@ -66,6 +78,9 @@ class EngineTileRenderer(private val engine: CoverageEngine) : TileRenderer {
     override fun buildTerrainTable(
         dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,
     ): TerrainTable? = engine.buildTerrainTable(dem, siteLat, siteLon, hTxAgl, freqMhz, cancel)
+
+    override fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass): FloatArray =
+        engine.predictPoint((prepared as Prepared).carriers, lat, lon, area, indoor = false)
 
     override fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,

@@ -119,6 +119,8 @@ class FakeRenderer : TileRenderer {
         return object : FakePrepared {
             override val tableCount = tables.size
             override val carriers = batch.size
+            override val size = batch.size
+            override val source = batch
             override fun batchIndex(i: Int) = batch.size - 1 - i
         }
     }
@@ -126,6 +128,17 @@ class FakeRenderer : TileRenderer {
     interface FakePrepared : PreparedRegion {
         val tableCount: Int
         val carriers: Int
+        val source: CarrierBatch
+    }
+
+    /** RSRP of a batch row at a point for [predictPoint] (NaN = unusable). */
+    @Volatile var predict: (CarrierBatch, Int, Double, Double) -> Float = { _, _, _, _ -> -100f }
+    val predictCalls = AtomicInteger()
+
+    override fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass): FloatArray {
+        predictCalls.incrementAndGet()
+        val p = prepared as FakePrepared
+        return FloatArray(p.size) { k -> predict(p.source, p.batchIndex(k), lat, lon) }
     }
 
     class Build(

@@ -4,7 +4,10 @@ import au.signalatlas.core.data.CarrierBatch
 import au.signalatlas.core.data.PatternStore
 import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.core.model.CalibrationSnapshot
+import au.signalatlas.core.model.GeoBounds
+import au.signalatlas.core.model.LatLon
 import au.signalatlas.core.model.Network
+import au.signalatlas.core.model.Tech
 import au.signalatlas.engine.AreaClass
 import au.signalatlas.engine.AreaClassifier
 import au.signalatlas.engine.CancelToken
@@ -13,6 +16,8 @@ import au.signalatlas.engine.TerrainTable
 import au.signalatlas.engine.RenderedTile
 import au.signalatlas.engine.SectorTerms
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -279,12 +284,114 @@ class CoverageTileService internal constructor(
      * terrain support, the area's elevation not stored, or no table built yet). Reads only: it never starts a download
      * or a build, so a point query uses terrain only where the map has already been shown with it.
      */
-    fun terrainTablesAt(lat: Double, lon: Double): ((CarrierBatch, Int) -> TerrainTable?)? {
+    fun terrainTablesAt(lat: Double, lon: Double): ((CarrierBatch, Int) -> TerrainTable?)? =
+        selection.value?.let { terrainLookup(it, lat, lon) }
+
+    private fun terrainLookup(sel: CoverageSelection, lat: Double, lon: Double): ((CarrierBatch, Int) -> TerrainTable?)? {
         val tc = terrain ?: return null
-        val sel = selection.value ?: return null
         val stamp = towers.stamp() ?: return null
         val at = TileMath.locate(lat, lon, TerrainCoordinator.TERRAIN_ZOOM) ?: return null
         return tc.tableLookup(tc.keyFor(sel.cacheId(), stamp, patternsEtag(), TerrainCoordinator.TERRAIN_ZOOM, at.x, at.y))
+    }
+
+    private val along = object {
+        var key = ""
+        val cells = object : LinkedHashMap<Long, AlongPath.Raw>(1024, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, AlongPath.Raw>) = size > AlongPath.MAX_CELLS
+        }
+    }
+
+    /**
+     * The prediction at each of [points] for [selection] (its networks, techs, bands; outdoor): the best server's RSRP
+     * and its P(RSRP + shadowing >= [thresholdDbm]) (rule 8), from the engine's point model over the prepared region
+     * carriers (calibration terms, and terrain tables where the map has built them for the selection). Regions are
+     * prepared on demand; the work runs on [Dispatchers.Default], never the caller's thread. Results are cached on a
+     * ~44 m grid, so a path re-evaluated as a vehicle moves only computes its new far end. Points outside the
+     * tower data, or when no tower DB is installed, are [PointPrediction.NONE].
+     */
+    suspend fun predictAlong(
+        points: List<LatLon>, selection: CoverageSelection, thresholdDbm: Float = AlongPath.DEFAULT_THRESHOLD_DBM,
+    ): List<PointPrediction> = withContext(Dispatchers.Default) { predictAlongBlocking(points, selection, thresholdDbm) }
+
+    private fun predictAlongBlocking(points: List<LatLon>, sel: CoverageSelection, thr: Float): List<PointPrediction> {
+        val stamp = towers.stamp() ?: return points.map { PointPrediction.NONE }
+        val etag = patternsEtag()
+        val dataKey = "${sel.cacheId()}|$stamp|$etag|t${terrainEpoch.value}|c${calibration.value.version}"
+        val raws = arrayOfNulls<AlongPath.Raw>(points.size)
+        val cellKeys = LongArray(points.size) { AlongPath.cellKey(points[it].lat, points[it].lon) }
+        val missing = LinkedHashMap<Pair<Int, Int>, MutableList<Int>>()
+        synchronized(along) {
+            if (along.key != dataKey) {
+                along.key = dataKey
+                along.cells.clear()
+            }
+            for (i in points.indices) {
+                val p = points[i]
+                val at = TileMath.locate(p.lat, p.lon, FALLBACK_ZOOM)
+                if (at == null) {
+                    raws[i] = AlongPath.Raw.NONE
+                    continue
+                }
+                val cached = along.cells[cellKeys[i]]
+                if (cached != null) raws[i] = cached else missing.getOrPut(at.x to at.y) { ArrayList() } += i
+            }
+        }
+        for ((tile, idx) in missing) {
+            val computed = try {
+                predictTile(tile.first, tile.second, idx.map { points[it] }, sel, stamp, etag)
+            } catch (e: StaleTileException) {
+                null // the data changed meanwhile: not cached, answered as no coverage
+            } catch (e: TileCancelledException) {
+                null
+            }
+            synchronized(along) {
+                for ((n, i) in idx.withIndex()) {
+                    val raw = computed?.get(n)
+                    raws[i] = raw ?: AlongPath.Raw.NONE
+                    if (raw != null && along.key == dataKey) along.cells[cellKeys[i]] = raw
+                }
+            }
+        }
+        return raws.map { AlongPath.toPrediction(it ?: AlongPath.Raw.NONE, thr) }
+    }
+
+    /** Raw predictions of [pts] (all inside z10 tile [tx], [ty]). Blocking. */
+    private fun predictTile(
+        tx: Int, ty: Int, pts: List<LatLon>, sel: CoverageSelection, stamp: String, etag: String,
+    ): List<AlongPath.Raw> {
+        val key = TileKey(FALLBACK_ZOOM, tx, ty, sel.cacheId(), stamp, etag, 0L, calVersion(FALLBACK_ZOOM, tx, ty))
+        val region = region(key, sel)
+        val full = region.prepared ?: return pts.map { AlongPath.Raw.NONE }
+        val batch = region.batch
+        // Carriers whose R_max reaches the points' bounding box: the same culling the renderer applies.
+        val box = GeoBounds(pts.minOf { it.lat }, pts.minOf { it.lon }, pts.maxOf { it.lat }, pts.maxOf { it.lon })
+        val rows = (0 until full.size).map { full.batchIndex(it) to full.rMaxKm(it) }.filter { (row, rMax) ->
+            val lat = batch.siteLat[row].coerceIn(box.south, box.north)
+            val lon = batch.siteLon[row].coerceIn(box.west, box.east)
+            TileMath.distanceM(batch.siteLat[row], batch.siteLon[row], lat, lon) <= rMax * 1000.0
+        }.map { it.first }.distinct().sorted().toIntArray()
+        if (rows.isEmpty()) return pts.map { AlongPath.Raw.NONE }
+        val sub = batch.subset(rows)
+        val lookup = terrainLookup(sel, TileMath.centreLat(FALLBACK_ZOOM, ty), TileMath.centreLon(FALLBACK_ZOOM, tx))
+        val cal = region.calibration
+        val areas = region.areas
+        val prepared = renderer.prepare(
+            sub, patterns.value, false,
+            terrain = lookup?.let { t -> { r: Int -> t(sub, r) } },
+            calibration = cal?.let { c -> { r: Int -> c(rows[r]) } },
+            area = areas?.let { a -> { r: Int -> a[rows[r]] } },
+        )
+        return pts.map { p ->
+            val rsrp = renderer.predictPoint(prepared, p.lat, p.lon, FALLBACK_AREA)
+            var best = -1
+            for (k in rsrp.indices) if (rsrp[k].isFinite() && (best < 0 || rsrp[k] > rsrp[best])) best = k
+            if (best < 0) {
+                AlongPath.Raw.NONE
+            } else {
+                val row = rows[prepared.batchIndex(best)]
+                AlongPath.Raw(rsrp[best], Network.entries[batch.network[row].toInt()], Tech.entries[batch.tech[row].toInt()])
+            }
+        }
     }
 
     /** Tiles the viewport needs; other queued or running renders are cancelled. */
