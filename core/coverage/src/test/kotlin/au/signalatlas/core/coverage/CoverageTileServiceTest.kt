@@ -120,6 +120,28 @@ class CoverageTileServiceTest {
         assertThat(r.towers.siteCountQueries.size).isEqualTo(asked)
     }
 
+    @Test fun pendingRendersCountsQueuedAndRunningRendersUntilTheyFinish() {
+        val r = rig(threads = 1)
+        assertThat(r.service.pendingRenders.value).isEqualTo(0)
+        r.renderer.hold = true
+        val a = r.tile(10, 900, 600)
+        val b = r.tile(10, 901, 600)
+        val again = r.tile(10, 900, 600)  // shares a's render
+        waitUntil { r.renderer.renders.size == 1 }
+        assertThat(r.service.pendingRenders.value).isEqualTo(2)
+        r.renderer.hold = false
+        a.await(); b.await(); again.await()
+        waitUntil(what = "pending back to 0") { r.service.pendingRenders.value == 0 }
+        r.tile(10, 900, 600).await()  // memory-cache hit: never counted
+        assertThat(r.service.pendingRenders.value).isEqualTo(0)
+        r.renderer.hold = true
+        val c = r.tile(10, 902, 600)
+        waitUntil { r.service.pendingRenders.value == 1 }
+        r.service.setVisible(setOf(Triple(10, 0, 0)))  // c leaves the viewport and is cancelled
+        runCatching { c.await() }
+        waitUntil(what = "cancelled render uncounted") { r.service.pendingRenders.value == 0 }
+    }
+
     /**
      * Seam hypothesis 2: tiles on either side of a z8 region border are prepared from different regions, which must both
      * hold every carrier that can reach the border (each region is its z8 tile + 80 km, the engine's R_max cap).

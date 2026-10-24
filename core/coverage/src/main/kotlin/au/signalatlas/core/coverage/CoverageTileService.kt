@@ -113,6 +113,16 @@ class CoverageTileService internal constructor(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<SiteKey, Int>) = size > MAX_SITE_COUNTS
     }
 
+    private val pending = java.util.concurrent.atomic.AtomicInteger()
+    private val _pendingRenders = MutableStateFlow(0)
+
+    /**
+     * Tile renders queued or running (requests waiting on a render, not cache hits and not terrain-table builds), so
+     * the UI can show "Calculating coverage…" while it is above 0. Renders of tiles that leave the viewport are
+     * cancelled and stop counting.
+     */
+    val pendingRenders: StateFlow<Int> get() = _pendingRenders
+
     /** A region prepared with the terrain tables of one [TerrainSnapshot] version. */
     private data class TerrainPrepKey(val region: RegionKey, val terrain: TerrainKey, val version: Long)
 
@@ -410,7 +420,11 @@ class CoverageTileService internal constructor(
             future = CompletableFuture()
             inflight[key] = future
         }
-        future.whenComplete { _, _ -> synchronized(inflight) { inflight.remove(key, future) } }
+        _pendingRenders.value = pending.incrementAndGet()
+        future.whenComplete { _, _ ->
+            synchronized(inflight) { inflight.remove(key, future) }
+            _pendingRenders.value = pending.decrementAndGet()
+        }
         pool.submit(
             Triple(key.z, key.x, key.y),
             work = { cancel -> run(key, sel, cancel, future) },
