@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import au.signalatlas.app.AppContainer
+import au.signalatlas.app.connected.CalibrationHooks
 import au.signalatlas.app.ui.firstrun.FirstRunScreen
 import au.signalatlas.app.ui.calibration.CalibrationScreen
 import au.signalatlas.app.ui.calibration.CalibrationViewModel
@@ -54,6 +55,13 @@ fun AppScaffold(container: AppContainer) {
             start = container.connected::start, stop = container.connected::stop,
             onPermissionsChanged = container.connected::onPermissionsChanged,
             offerRationaleOnce = container.calibrationSettings::offerRationaleOnce,
+        )
+    }
+    val calibrationHooks = remember(container) {
+        CalibrationHooks(
+            enabled = container.calibrationSettings.enabled,
+            samplesFor = { container.calibration.scatter(it).size },
+            setEnabled = container.calibrationSettings::setEnabled,
         )
     }
     val calibrationVm: CalibrationViewModel = viewModel { container.calibrationViewModel() }
@@ -89,6 +97,7 @@ fun AppScaffold(container: AppContainer) {
                     state, vm, container.location, onOpenUpdates = { showUpdates = true },
                     connected = connected, connectedActions = connectedActions,
                     hints = container.hints,
+                    calibration = calibrationHooks,
                 )
             }
         }

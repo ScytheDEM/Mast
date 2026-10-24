@@ -22,7 +22,7 @@ import kotlin.math.sin
 enum class ConnectedStatus { NEEDS_PHONE, NEEDS_LOCATION, AIRPLANE, NO_SIM, ROAMING, UNTRACKED, SEARCHING, CONNECTED }
 
 /** The matched tower: its ACMA site (opens the site sheet), distance and compass bearing from the phone. */
-data class TowerRef(val siteId: Int?, val distanceM: Double, val bearingDeg: Double) {
+data class TowerRef(val siteId: Int?, val distanceM: Double, val bearingDeg: Double, val sectorIdent: String? = null) {
     val compass: String get() = COMPASS[((bearingDeg + 22.5) / 45.0).toInt() % 8]
 
     private companion object {
@@ -43,12 +43,34 @@ data class ConnectedUi(
     val confidence: Confidence? = null,
     val speedMbps: Int? = null,
     val highlight: ConnectedHighlight? = null,
+    /** The SIM this describes (dual SIM); null in tests. */
+    val subId: Int? = null,
+    /** True for the SIM that carries mobile data (the primary one). */
+    val isData: Boolean = true,
+    /** Serving band plus the NSA secondary, e.g. ["B28", "n78"]. */
+    val bandList: List<String> = emptyList(),
+    /** The live cell lists for the "Cellular details" sheet; null without a serving cell. */
+    val cells: CellDetails? = null,
+    /** What the tower prediction says the signal is at the phone's position (matched sector, uncalibrated), dBm. */
+    val predictedDbm: Int? = null,
+    /** The other active SIMs of a dual-SIM phone, each as its own compact row (set on the primary only). */
+    val otherSims: List<ConnectedUi> = emptyList(),
 ) {
+    /** The primary SIM first, then the others. */
+    val allSims: List<ConnectedUi> get() = listOf(this) + otherSims
+
     companion object {
         /** The map is not visible: nothing is being read. */
         val IDLE = ConnectedUi(ConnectedStatus.SEARCHING)
     }
 }
+
+/** What the phone sees around it, as shown on the details sheet: neighbours sorted strongest first. */
+data class CellDetails(
+    val serving: ObservedCell,
+    val nrSecondaries: List<ObservedCell>,
+    val neighbours: List<ObservedCell>,
+)
 
 /** The info bar's model from the radio state and the (optional) tower match. Pure. */
 fun connectedUi(state: RadioState, match: MatchResult?, fix: Fix?): ConnectedUi {
@@ -59,7 +81,9 @@ fun connectedUi(state: RadioState, match: MatchResult?, fix: Fix?): ConnectedUi 
     }
     if (state.airplane) return ConnectedUi(ConnectedStatus.AIRPLANE)
     val sim = state.sim ?: return ConnectedUi(ConnectedStatus.NO_SIM)
-    val base = ConnectedUi(ConnectedStatus.SEARCHING, carrier = sim.carrierName?.takeIf { it.isNotBlank() }, network = sim.network)
+    val base = ConnectedUi(
+        ConnectedStatus.SEARCHING, carrier = sim.carrierName?.takeIf { it.isNotBlank() }, network = sim.network, subId = sim.subId,
+    )
     if (sim.roaming) return base.copy(status = ConnectedStatus.ROAMING)
     val serving = state.serving ?: return base
     val withCell = base.copy(
@@ -67,16 +91,22 @@ fun connectedUi(state: RadioState, match: MatchResult?, fix: Fix?): ConnectedUi 
         fiveG = state.displayFiveG || serving.tech == Tech.NR,
         bands = bandsOf(serving, state.nrSecondaries),
         rsrpDbm = serving.rsrp,
+        bandList = listOfNotNull(serving.band, state.nrSecondaries.firstOrNull()?.band?.takeIf { serving.tech == Tech.LTE }).distinct(),
+        cells = CellDetails(
+            serving, state.nrSecondaries,
+            state.neighbours.sortedWith(compareByDescending<ObservedCell> { it.rsrp != null }.thenByDescending { it.rsrp ?: Int.MIN_VALUE }),
+        ),
     )
     if (sim.network == null || match == null || fix == null) return withCell
     val c = match.candidate
     val tower = TowerRef(
         SectorIdentity.siteIdOf(c.ident), match.distanceM,
-        bearingDeg(fix.lat, fix.lon, c.siteLat, c.siteLon),
+        bearingDeg(fix.lat, fix.lon, c.siteLat, c.siteLon), c.ident,
     )
     val sure = match.confidence != Confidence.UNCERTAIN
     return withCell.copy(
         tower = tower,
+        predictedDbm = c.predictedDbm.takeIf { it.isFinite() }?.roundToInt(),
         confidence = match.confidence,
         speedMbps = if (sure) speedMbps(serving.sinr, serving.tech, c.bandwidthMhz) else null,
         highlight = if (sure) {

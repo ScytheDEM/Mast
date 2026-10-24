@@ -179,6 +179,7 @@ class AppContainer(context: Context) {
         ConnectedController(
             radio.state, location.fixes, CellMatcher(candidates, ReadOnlyCellMap(calibration)), calibrationSettings, appScope,
             startRadio = radio::start, stopRadio = radio::stop, startLogger = sampleLogger::start, stopLogger = sampleLogger::stop,
+            radioStates = radio.states, dataSubId = radio.dataSubscriptionId,
         )
     }
 

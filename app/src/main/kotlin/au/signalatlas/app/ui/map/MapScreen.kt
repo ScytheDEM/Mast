@@ -56,6 +56,7 @@ import androidx.compose.material3.adaptive.layout.rememberPaneExpansionState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
@@ -79,8 +80,10 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.window.core.layout.WindowSizeClass
 import au.signalatlas.app.R
+import au.signalatlas.app.connected.CalibrationHooks
 import au.signalatlas.app.connected.ConnectedStatus
 import au.signalatlas.app.connected.ConnectedUi
+import au.signalatlas.app.ui.connected.CellularDetailsContent
 import au.signalatlas.app.ui.connected.ConnectedInfoBar
 import au.signalatlas.app.data.UiHints
 import au.signalatlas.app.location.DeviceLocationSource
@@ -109,7 +112,7 @@ class MapCameraHolder : ViewModel() {
     val camera = MapCameraState()
 }
 
-private enum class Pane { None, Site, Filters, Nearby }
+private enum class Pane { None, Site, Cellular, Filters, Nearby }
 
 /** What the connected-tower feature needs from the map screen's lifecycle and permission flow. */
 class ConnectedActions(
@@ -124,7 +127,10 @@ class ConnectedActions(
 }
 
 /** Room the bottom info bar takes: bar height plus its margin. */
-private val CONNECTED_BAR_INSET = 60.dp
+private val CONNECTED_BAR_INSET = 92.dp
+
+/** Further room per extra SIM row in the bar. */
+private val CONNECTED_ROW_INSET = 40.dp
 
 private const val SITE_ZOOM = 14.0
 
@@ -151,6 +157,7 @@ fun MapScreen(
     connected: ConnectedUi? = null,
     connectedActions: ConnectedActions = ConnectedActions.None,
     hints: UiHints = remember { UiHints.InMemory() },
+    calibration: CalibrationHooks = CalibrationHooks.None,
 ) {
     val camera = viewModel<MapCameraHolder>().camera
     val focusManager = LocalFocusManager.current
@@ -163,6 +170,7 @@ fun MapScreen(
 
     var showNearby by rememberSaveable { mutableStateOf(false) }
     var showFilters by rememberSaveable { mutableStateOf(false) }
+    var showCellular by rememberSaveable { mutableStateOf(false) }
     // Not saved: a fold/unfold or recreation must never bring back an expanded (focused) search.
     var searchExpanded by remember { mutableStateOf(false) }
     val windowClass = currentWindowAdaptiveInfo().windowSizeClass
@@ -176,6 +184,7 @@ fun MapScreen(
 
     val pane = when {
         state.selected != null -> Pane.Site
+        showCellular && connected?.cells != null -> Pane.Cellular
         showFilters -> Pane.Filters
         showNearby -> Pane.Nearby
         else -> Pane.None
@@ -231,9 +240,10 @@ fun MapScreen(
         when {
             s == null -> Unit
             s.status == ConnectedStatus.NEEDS_PHONE || s.status == ConnectedStatus.NEEDS_LOCATION -> phoneRationale = true
-            else -> s.tower?.siteId?.let { id ->
-                s.highlight?.serving?.let { (lat, lon) -> camera.animateTo(lat, lon, SITE_ZOOM) }
-                vm.selectSite(id)
+            s.cells != null -> {
+                showFilters = false
+                showNearby = false
+                showCellular = true
             }
         }
     }
@@ -297,10 +307,12 @@ fun MapScreen(
     val onNearby = {
         withLocation { scope.launch { location.currentFix() } }
         showFilters = false
+        showCellular = false
         showNearby = true
     }
     val onFilters = {
         showNearby = false
+        showCellular = false
         showFilters = !showFilters
     }
     val openSite = { s: SiteSummary ->
@@ -328,6 +340,7 @@ fun MapScreen(
         when (pane) {
             Pane.Site -> vm.selectSite(null)
             Pane.Filters -> showFilters = false
+            Pane.Cellular -> showCellular = false
             else -> showNearby = false
         }
     }
@@ -404,6 +417,18 @@ fun MapScreen(
                 Pane.Site -> state.selected?.let {
                     SiteSheetContent(it, onClose = { vm.selectSite(null) }, plots = state.selectedPlots, onShowCoverage = onShowCoverage)
                 }
+                Pane.Cellular -> connected?.let { ui ->
+                    CellularDetailsContent(
+                        ui = ui,
+                        calibration = calibration,
+                        onOpenTower = { id ->
+                            ui.highlight?.serving?.let { (lat, lon) -> camera.animateTo(lat, lon, SITE_ZOOM) }
+                            showCellular = false
+                            vm.selectSite(id)
+                        },
+                        onClose = { showCellular = false },
+                    )
+                }
                 Pane.Filters -> FiltersContent(
                     filter = state.filter,
                     availableBands = state.availableBands,
@@ -427,7 +452,10 @@ fun MapScreen(
             ExpandedPanes(pane, controls, paneContent)
         } else {
             controls(false)
-            CompactSheet(pane, onDismiss = closePane, paneContent)
+            // A different pane gets a fresh sheet: a modal sheet whose content changes height while open can lose its anchors.
+            var lastPane by remember { mutableStateOf(pane) }
+            if (pane != Pane.None) lastPane = pane
+            key(lastPane) { CompactSheet(pane, onDismiss = closePane, paneContent) }
         }
     }
 
@@ -609,7 +637,7 @@ private fun MapControls(
     onConnectedBar: () -> Unit,
 ) {
     // The info bar sits along the bottom; the buttons above it move up by its height.
-    val barInset = if (connected != null) CONNECTED_BAR_INSET else 0.dp
+    val barInset = if (connected != null) CONNECTED_BAR_INSET + CONNECTED_ROW_INSET * connected.otherSims.size else 0.dp
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth()) {
             if (docked) {

@@ -99,6 +99,33 @@ class ConnectedControllerTest {
         assertThat(c.ui.value.status).isEqualTo(ConnectedStatus.AIRPLANE)  // no longer following
     }
 
+    @Test fun dualSimGivesTheDataSimAsPrimaryAndTheOtherAsACompactRow() = runTest {
+        val optus = TELSTRA.copy(subId = 2, network = Network.OPTUS, carrierName = "Optus", mccMnc = "50502")
+        val states = MutableStateFlow(mapOf(1 to radio(), 2 to radio(sim = optus, serving = lte(rsrp = -88, band = "B1"))))
+        val data = MutableStateFlow<Int?>(1)
+        val c = ConnectedController(
+            radioState, fixes, CellMatcher(noTowers, RecordingMap()), settings, backgroundScope,
+            startRadio = {}, stopRadio = {}, startLogger = {}, stopLogger = {},
+            compute = StandardTestDispatcher(testScheduler), radioStates = states, dataSubId = data,
+        )
+        c.start()
+        runCurrent()
+        val ui = c.ui.value
+        assertThat(ui.subId).isEqualTo(1)
+        assertThat(ui.isData).isTrue()
+        assertThat(ui.otherSims.map { it.subId }).containsExactly(2)
+        assertThat(ui.otherSims.single().isData).isFalse()
+        assertThat(ui.otherSims.single().carrier).isEqualTo("Optus")
+        assertThat(ui.otherSims.single().rsrpDbm).isEqualTo(-88)
+        assertThat(ui.allSims.map { it.carrier }).containsExactly("Telstra", "Optus").inOrder()
+        // Data moves to the second SIM: the flags follow.
+        data.value = 2
+        runCurrent()
+        assertThat(c.ui.value.isData).isFalse()
+        assertThat(c.ui.value.otherSims.single().isData).isTrue()
+        c.stop()
+    }
+
     @Test fun grantingPermissionRestartsTheRadioOnlyWhileStarted() = runTest {
         val c = controller()
         c.onPermissionsChanged()
