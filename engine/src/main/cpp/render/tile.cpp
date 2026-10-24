@@ -24,7 +24,7 @@ constexpr double kNoCoverageRsrp = -200.0;  // grid value of a sample with no ca
 constexpr double kLoad = 0.5;              // rule 8
 constexpr int32_t kBlocks = 16;            // the grid is split into kBlocks x kBlocks blocks for the RSRP bounds
 constexpr double kBoundSlackDb = 0.01;     // keeps the RSRP upper bound safe against rounding
-constexpr double kInterferenceTol = 1e-5;  // relative error allowed when truncating the interference sum
+constexpr double kInterferenceTol = 1e-3;  // relative error allowed when truncating the interference sum
 constexpr int32_t kMaxZ = 30;
 
 // One distinct (lat, lon): the carriers of a site are contiguous in the carrier array.
@@ -148,6 +148,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         car[static_cast<size_t>(byKey[static_cast<size_t>(m)])].group = static_cast<int32_t>(groupFirst.size()) - 1;
     }
     groupFirst.push_back(K);
+    const int32_t G = static_cast<int32_t>(groupFirst.size()) - 1;
 
     // ---- Grid evaluation (rules 8-9), branch and bound per block of grid points.
     //
@@ -158,8 +159,11 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
     // few contenders. The bound ignores the terrain loss (L_terr >= 0 only lowers a carrier's RSRP, so the bound
     // stays valid, merely looser where terrain matters). Calibration terms enter the bound exactly: the offset plus the
     // slope term's maximum over the block's distance range, plus each applicable residual raster's block maximum. The best server and its RSRP are therefore exactly the reference's. The interference sum over
-    // the best server's frequency group is visited in the same order and stops once the rest (bounded by the group
-    // size times the next bound) is under 1e-5 of noise + interference, i.e. under 5e-5 dB of SINR.
+    // the best server's frequency group is visited in decreasing bound and stops once the rest (bounded by the sum of
+    // the remaining members' bounds) is under 1e-3 of noise + interference, i.e. SINR is at most 0.0043 dB high.
+    // (2026-10-24: the old stop rule, group size times the next bound at 1e-5, evaluated ~1500 carriers per pixel in
+    // Sydney, where a frequency group spans every site within 80 km: 90% of a 10 s z15 render. Now 1.8 s; RSRP and
+    // probability are unchanged and 1.6% of that tile's SINR codes move by one 0.25 dB step.)
     const int32_t N = p.grid;
     const int32_t B = N / kBlocks;
     const size_t NN = static_cast<size_t>(N) * static_cast<size_t>(N);
@@ -193,6 +197,10 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
     // Per block of the current block row: bound (dBm), bound as 0.5 * mW, and the visiting order.
     std::vector<double> ub(static_cast<size_t>(kBlocks) * KK), ubLin(static_cast<size_t>(kBlocks) * KK);
     std::vector<int32_t> ord(static_cast<size_t>(kBlocks) * KK);
+    // Per block: the carriers of each interference group in decreasing bound (CSR over groupFirst) and the sum of the
+    // group's linear bounds, which bounds the interference of the members not evaluated yet.
+    std::vector<int32_t> gord(static_cast<size_t>(kBlocks) * KK), gcur(static_cast<size_t>(G));
+    std::vector<double> gsum(static_cast<size_t>(kBlocks) * static_cast<size_t>(G));
 
     std::vector<double> rowSy2(static_cast<size_t>(S)), rowCC(static_cast<size_t>(S)), rowXa(static_cast<size_t>(S)),
         rowXb(static_cast<size_t>(S));
@@ -290,6 +298,18 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 }
             }
             std::sort(bord, bord + K, [bub](int32_t a, int32_t b) { return bub[a] != bub[b] ? bub[a] > bub[b] : a < b; });
+            int32_t* bgord = &gord[static_cast<size_t>(bi) * KK];
+            double* bgsum = &gsum[static_cast<size_t>(bi) * static_cast<size_t>(G)];
+            for (int32_t g = 0; g < G; ++g) {
+                gcur[static_cast<size_t>(g)] = groupFirst[static_cast<size_t>(g)];
+                bgsum[g] = 0.0;
+            }
+            for (int32_t m = 0; m < K; ++m) {
+                const int32_t k = bord[m];
+                const int32_t g = car[static_cast<size_t>(k)].group;
+                bgord[gcur[static_cast<size_t>(g)]++] = k;
+                bgsum[g] += blin[k];
+            }
         }
 
         for (int32_t j = bj * B; j < (bj + 1) * B; ++j) {
@@ -319,6 +339,8 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 const double* bub = &ub[bi * KK];
                 const double* blin = &ubLin[bi * KK];
                 const int32_t* bord = &ord[bi * KK];
+                const int32_t* bgord = &gord[bi * KK];
+                const double* bgsum = &gsum[bi * static_cast<size_t>(G)];
                 const double cs = colSh[static_cast<size_t>(i)], cc = colCh[static_cast<size_t>(i)];
                 ++stamp;
                 double bestR = -std::numeric_limits<double>::infinity();
@@ -369,24 +391,27 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 if (bestK >= 0) {
                     const Carrier& b = car[static_cast<size_t>(bestK)];
                     const int32_t g = b.group;
-                    const double groupSize = groupFirst[static_cast<size_t>(g) + 1] - groupFirst[static_cast<size_t>(g)];
-                    double interf = 0.0;
+                    // `rem` bounds the interference of the group members not evaluated yet: the group's bound sum less
+                    // the bounds of those already evaluated or never interfering (same sector).
+                    double interf = 0.0, rem = bgsum[g];
                     for (int32_t e = 0; e < nEval; ++e) {
                         const int32_t k = evk[static_cast<size_t>(e)];
                         const Carrier& o = car[static_cast<size_t>(k)];
-                        if (o.group == g && o.sectorKey != b.sectorKey) {
-                            interf += kLoad * std::pow(10.0, rs[static_cast<size_t>(k)] / 10.0);
-                        }
+                        if (o.group != g) continue;
+                        rem -= blin[k];
+                        if (o.sectorKey != b.sectorKey) interf += kLoad * std::pow(10.0, rs[static_cast<size_t>(k)] / 10.0);
                     }
-                    if (groupSize > 1.0) {
-                        for (int32_t m = 0; m < K; ++m) {
-                            const int32_t k = bord[m];
-                            const Carrier& o = car[static_cast<size_t>(k)];
-                            if (o.group != g || evalStamp[static_cast<size_t>(k)] == stamp || o.sectorKey == b.sectorKey) continue;
-                            if (blin[k] * groupSize < kInterferenceTol * (b.noiseMw + interf)) break;
-                            evaluate(k);
-                            interf += kLoad * std::pow(10.0, rs[static_cast<size_t>(k)] / 10.0);
+                    for (int32_t m = groupFirst[static_cast<size_t>(g)]; m < groupFirst[static_cast<size_t>(g) + 1]; ++m) {
+                        const int32_t k = bgord[m];
+                        if (evalStamp[static_cast<size_t>(k)] == stamp) continue;
+                        if (car[static_cast<size_t>(k)].sectorKey == b.sectorKey) {
+                            rem -= blin[k];
+                            continue;
                         }
+                        if (rem < kInterferenceTol * (b.noiseMw + interf)) break;
+                        evaluate(k);
+                        interf += kLoad * std::pow(10.0, rs[static_cast<size_t>(k)] / 10.0);
+                        rem -= blin[k];
                     }
                     rsrp = bestR;
                     sinr = bestR - 10.0 * std::log10(interf + b.noiseMw);

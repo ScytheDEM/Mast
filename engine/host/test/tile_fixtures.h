@@ -153,8 +153,11 @@ inline int32_t renderWithRasters(Vec& v, Out& o, sa::PatternTable pat = kNoPatte
     return sa::renderTile(v.arrays(), pat, v.withRasters(), view, nullptr);
 }
 
-// Asserts every pixel is within +-1 of the reference and at most 0.1% differ.
+// Asserts every pixel is within +-1 of the reference and at most 0.1% differ (SINR: 2%, because the engine truncates the
+// interference sum at 1e-3 of noise + interference, which lifts SINR by up to 0.0043 dB and so moves the codes of pixels
+// that sit on a rounding edge; RSRP, probability and the best server are exact).
 inline void compareCodes(const char* what, const std::vector<uint8_t>& got, const std::vector<double>& ref) {
+    const double share = std::string(what) == "sinr" ? 0.02 : 0.001;
     ASSERT_EQ(ref.size(), got.size());
     size_t diff = 0;
     int worst = 0;
@@ -164,7 +167,7 @@ inline void compareCodes(const char* what, const std::vector<uint8_t>& got, cons
         worst = std::max(worst, d);
     }
     EXPECT_LE(worst, 1) << what << ": worst code difference";
-    EXPECT_LE(static_cast<double>(diff), 0.001 * static_cast<double>(ref.size()))
+    EXPECT_LE(static_cast<double>(diff), share * static_cast<double>(ref.size()))
         << what << ": " << diff << " of " << ref.size() << " pixels differ";
     std::printf("[ tile ] %-5s %zu / %zu pixels differ (worst %d)\n", what, diff, ref.size(), worst);
 }
