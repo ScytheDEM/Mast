@@ -120,6 +120,31 @@ class CoverageTileServiceTest {
         assertThat(r.towers.siteCountQueries.size).isEqualTo(asked)
     }
 
+    /**
+     * Seam hypothesis 2: tiles on either side of a z8 region border are prepared from different regions, which must both
+     * hold every carrier that can reach the border (each region is its z8 tile + 80 km, the engine's R_max cap).
+     */
+    @Test fun tilesEitherSideOfARegionBorderSeeTheSameCarriersNearIt() {
+        val r = rig()
+        val all = bigBatch(4)
+        // Sites 50 km west and east of the z8 border at lon 151.875 (z8 x = 235 | 236), and 100 km east (out of reach).
+        val lon = doubleArrayOf(151.875 - 0.54, 151.875 + 0.54, 151.875 + 1.08, 151.875 - 0.01)
+        for (i in 0 until 4) { all.siteLon[i] = lon[i]; all.siteLat[i] = -33.87 }
+        r.towers.batchFor = { b -> all.subset((0 until all.size).filter { b.contains(all.siteLat[it], all.siteLon[it]) }.toIntArray()) }
+        val west = TileMath.locate(-33.87, 151.874, 13)!!
+        val east = TileMath.locate(-33.87, 151.876, 13)!!
+        assertThat(east.x).isEqualTo(west.x + 1)
+        assertThat(west.x shr 5).isNotEqualTo(east.x shr 5)  // different z8 regions
+        r.tile(13, west.x, west.y).await()
+        r.tile(13, east.x, east.y).await()
+        val batches = r.renderer.preparedBatches
+        assertThat(batches).hasSize(2)
+        fun near(b: au.signalatlas.core.data.CarrierBatch) =
+            (0 until b.size).map { b.siteLon[it] }.filter { kotlin.math.abs(it - 151.875) <= 0.75 }.sorted()
+        assertThat(near(batches[0])).isEqualTo(near(batches[1]))
+        assertThat(near(batches[0])).hasSize(3)
+    }
+
     @Test fun setVisibleCancelsRendersForTilesThatAreNotVisible() {
         val r = rig(threads = 1)
         r.renderer.hold = true

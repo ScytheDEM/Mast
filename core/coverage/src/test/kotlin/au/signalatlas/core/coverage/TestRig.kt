@@ -97,6 +97,9 @@ class FakeRenderer : TileRenderer {
     /** Sector terms handed to each prepare, by batch row (empty map = uncalibrated). */
     val preparedTerms = CopyOnWriteArrayList<Map<Int, SectorTerms>>()
 
+    /** Every batch handed to prepare. */
+    val preparedBatches = CopyOnWriteArrayList<CarrierBatch>()
+
     /** Area classes handed to each prepare, by batch row (null entry = none; empty list = no area function). */
     val preparedAreas = CopyOnWriteArrayList<List<AreaClass?>>()
 
@@ -105,6 +108,7 @@ class FakeRenderer : TileRenderer {
         calibration: ((batchRow: Int) -> SectorTerms?)?, area: ((batchRow: Int) -> AreaClass?)?,
     ): PreparedRegion {
         preparedAreas += if (area == null) emptyList() else (0 until batch.size).map(area)
+        preparedBatches += batch
         prepares.incrementAndGet()
         preparedTerms += if (calibration == null) emptyMap() else (0 until batch.size).mapNotNull { r -> calibration(r)?.let { r to it } }.toMap()
         preparedSizes += batch.size
