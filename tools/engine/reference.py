@@ -544,16 +544,21 @@ def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-
 
     scale = grid / 256.0
     axis = []
+    # Rule 9 (amended 2026-10-24): the outermost pixels are extrapolated linearly from the last two samples
+    # (t in [-0.25, 0) or (1, 1.25]) rather than clamped, unless one of the four samples has no coverage.
     for p in range(256):
-        g = clamp((p + 0.5) * scale - 0.5, 0.0, grid - 1.0)
-        i0 = int(math.floor(g))
-        i1 = min(i0 + 1, grid - 1)
-        nearest = min(int(math.floor(g + 0.5)), grid - 1)
-        axis.append((i0, i1, g - i0, nearest))
+        g = (p + 0.5) * scale - 0.5
+        i0 = int(clamp(math.floor(g), 0, grid - 2))
+        nearest = int(clamp(math.floor(g + 0.5), 0, grid - 1))
+        axis.append((i0, i0 + 1, g - i0, nearest))
     for py in range(256):
-        j0, j1, ty, jn = axis[py]
+        j0, j1, ty0, jn = axis[py]
         for px in range(256):
             i0, i1, tx, inn = axis[px]
+            ty = ty0
+            if not (0.0 <= tx <= 1.0 and 0.0 <= ty <= 1.0) and \
+                    min(vals[j0][i0][0], vals[j0][i1][0], vals[j1][i0][0], vals[j1][i1][0]) <= NO_COVERAGE_DBM:
+                tx, ty = clamp(tx, 0.0, 1.0), clamp(ty, 0.0, 1.0)
             v = []
             for k in range(3):
                 top = vals[j0][i0][k] * (1.0 - tx) + vals[j0][i1][k] * tx

@@ -114,7 +114,9 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
    - **Coverage probability:** `P = 0.5·erfc((thr − RSRP)/(σ·√2))`, with default `thr = −118` dBm.
 9. **Tile grid:**
    - Grid size: 128×128 sample points at z ≤ 13, 256×256 at z ≥ 14. Pixel centres follow Web-Mercator; the 128 grid is
-     upsampled bilinearly to 256.
+     upsampled bilinearly to 256. The outermost pixel rows and columns lie a quarter sample outside the outermost
+     samples and are extrapolated linearly from the last two samples (amended 2026-10-24 after the seam bug; clamping
+     them left a step at every tile border), except where one of the four samples has no coverage (then clamped).
    - **RSRP code:** `uint8 = clamp(round((RSRP + 140)·2), 1, 254)`, with 0 = below −140 / no carrier.
    - **SINR code:** `uint8 = clamp(round((SINR + 20)·4), 0, 255)`.
    - **Probability code:** `uint8 = round(P·255)`.

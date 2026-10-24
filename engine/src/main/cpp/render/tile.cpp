@@ -20,6 +20,7 @@ using merc::kDegToRad;
 using merc::kRadToDeg;
 
 constexpr double kNoCoverageSinrDb = -20.0;
+constexpr double kNoCoverageRsrp = -200.0;  // grid value of a sample with no carrier
 constexpr double kLoad = 0.5;              // rule 8
 constexpr int32_t kBlocks = 16;            // the grid is split into kBlocks x kBlocks blocks for the RSRP bounds
 constexpr double kBoundSlackDb = 0.01;     // keeps the RSRP upper bound safe against rounding
@@ -363,7 +364,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     evaluate(k);
                 }
 
-                double sinr = kNoCoverageSinrDb, prob = 0.0, rsrp = -200.0;
+                double sinr = kNoCoverageSinrDb, prob = 0.0, rsrp = kNoCoverageRsrp;
                 uint16_t bestIdx = kNoBest;
                 if (bestK >= 0) {
                     const Carrier& b = car[static_cast<size_t>(bestK)];
@@ -420,12 +421,16 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         if (out.terrainIncompletePx) *out.terrainIncompletePx = incomplete;
         return K;
     }
+    // Rule 9 (amended 2026-10-24): the outermost pixels lie a quarter sample outside the outermost samples and are
+    // extrapolated linearly from the last two (t in [-0.25, 0) or (1, 1.25]) instead of clamped, so both sides of a
+    // tile border estimate the field at the border (clamping left a step of ~1.5 samples' gradient there). Where any
+    // of the four samples has no coverage, t is clamped as before (no extrapolation from the -200 sentinel).
     Axis axis[256];
     const double scale = N / 256.0;
     for (int32_t q = 0; q < 256; ++q) {
-        const double g = clampd((q + 0.5) * scale - 0.5, 0.0, N - 1.0);
-        const int32_t i0 = static_cast<int32_t>(std::floor(g));
-        axis[q] = {i0, std::min(i0 + 1, N - 1), std::min(static_cast<int32_t>(std::floor(g + 0.5)), N - 1), g - i0};
+        const double g = (q + 0.5) * scale - 0.5;
+        const int32_t i0 = std::clamp(static_cast<int32_t>(std::floor(g)), 0, N - 2);
+        axis[q] = {i0, i0 + 1, std::clamp(static_cast<int32_t>(std::floor(g + 0.5)), 0, N - 1), g - i0};
     }
     for (int32_t py = 0; py < 256; ++py) {
         const Axis& ay = axis[py];
@@ -439,7 +444,13 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         const uint8_t* inc = &gInc[static_cast<size_t>(ay.nearest) * N];
         for (int32_t px = 0; px < 256; ++px) {
             const Axis& ax = axis[px];
-            const double tx = ax.t, ty = ay.t;
+            double tx = ax.t, ty = ay.t;
+            if ((tx < 0.0 || tx > 1.0 || ty < 0.0 || ty > 1.0) &&
+                (r0[ax.i0] <= kNoCoverageRsrp || r0[ax.i1] <= kNoCoverageRsrp || r1[ax.i0] <= kNoCoverageRsrp ||
+                 r1[ax.i1] <= kNoCoverageRsrp)) {
+                tx = clampd(tx, 0.0, 1.0);
+                ty = clampd(ty, 0.0, 1.0);
+            }
             const double vr = (r0[ax.i0] * (1.0 - tx) + r0[ax.i1] * tx) * (1.0 - ty) +
                               (r1[ax.i0] * (1.0 - tx) + r1[ax.i1] * tx) * ty;
             const double vs = (s0[ax.i0] * (1.0 - tx) + s0[ax.i1] * tx) * (1.0 - ty) +

@@ -93,6 +93,39 @@ TEST(Seam, PerCarrierAreaClassKeepsTheSharedEdgeContinuous) {
     }
 }
 
+// Rule 9 as amended 2026-10-24: the 128 grid's outermost pixels are extrapolated, not clamped, so next to a site (steep
+// field) the step across a tile border is no larger than the field's own pixel-to-pixel gradient there.
+TEST(Seam, EdgeStepNearASiteFollowsTheLocalGradient) {
+    Vec v = loadVec("tile_canberra_z13.json");
+    v.n = 1;  // the first carrier only, moved 40 m west of a z16 tile border
+    v.area.assign(1, static_cast<uint8_t>(sa::Area::Urban));
+    v.az[0] = std::nanf("");  // omni
+    const int32_t z = 16;
+    const double n = std::ldexp(1.0, z);
+    const int32_t x = static_cast<int32_t>(std::floor((v.lon[0] + 180.0) / 360.0 * n));
+    const double borderLon = (x + 1) / n * 360.0 - 180.0;
+    v.lon[0] = borderLon - 40.0 / (111195.0 * std::cos(v.lat[0] * M_PI / 180.0));
+    const double latR = v.lat[0] * M_PI / 180.0;
+    const int32_t y = static_cast<int32_t>(std::floor((1.0 - std::log(std::tan(latR) + 1.0 / std::cos(latR)) / M_PI) / 2.0 * n));
+    const Out west = renderAt(v, z, x, y, sa::Area::Rural, 128);
+    const Out east = renderAt(v, z, x + 1, y, sa::Area::Rural, 128);
+    int compared = 0, worse = 0;
+    double worstExcess = 0.0;
+    for (int row = 0; row < 256; ++row) {
+        const size_t r = static_cast<size_t>(row) * 256;
+        if (west.rsrp[r + 255] == 0 || east.rsrp[r] == 0) continue;
+        const double step = std::abs(west.rsrp[r + 255] - east.rsrp[r]) * 0.5;
+        const double inner = std::max(std::abs(west.rsrp[r + 254] - west.rsrp[r + 253]), std::abs(east.rsrp[r + 1] - east.rsrp[r + 2])) * 0.5;
+        ++compared;
+        worstExcess = std::max(worstExcess, step - inner);
+        if (step > inner + 0.5) ++worse;
+    }
+    std::printf("[ seam ] near-site z16 edge: %d rows, %d steeper than the local gradient (worst excess %.1f dB)\n", compared,
+                worse, worstExcess);
+    ASSERT_GT(compared, 100);
+    EXPECT_EQ(worse, 0);
+}
+
 // A carrier with an out-of-range class value falls back to the tile's class, exactly as with no array.
 TEST(Seam, OutOfRangeCarrierAreaFallsBackToTheTileClass) {
     Vec v = loadVec("tile_canberra_z13.json");
