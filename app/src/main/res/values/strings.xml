@@ -238,4 +238,11 @@
         <item quantity="one">%1$d active filter</item>
         <item quantity="other">%1$d active filters</item>
     </plurals>
+    <string name="pattern_title">Radiation pattern</string>
+    <string name="pattern_hint">Where each sector sends its signal. The line marks its direction; rings are 10, 20 and 30 dB down.</string>
+    <string name="pattern_sector_label">%1$s · %2$s°</string>
+    <string name="pattern_omni_label">%1$s · all directions</string>
+    <string name="pattern_source_acma">From ACMA antenna pattern data.</string>
+    <string name="pattern_source_typical">Typical pattern from the antenna\'s beamwidth. Download antenna patterns in Tower data for exact shapes.</string>
+    <string name="site_show_coverage">Show predicted coverage for %1$s</string>
 </resources>

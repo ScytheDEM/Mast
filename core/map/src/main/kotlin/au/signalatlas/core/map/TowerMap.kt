@@ -53,7 +53,11 @@ import org.maplibre.android.style.expressions.Expression.step
 import org.maplibre.android.style.expressions.Expression.stop
 import org.maplibre.android.style.expressions.Expression.zoom
 import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.PropertyFactory.fillAntialias
+import org.maplibre.android.style.layers.PropertyFactory.fillColor
+import org.maplibre.android.style.layers.PropertyFactory.fillOpacity
 import org.maplibre.android.style.layers.PropertyFactory.circleColor
 import org.maplibre.android.style.layers.PropertyFactory.circleOpacity
 import org.maplibre.android.style.layers.PropertyFactory.circleStrokeOpacity
@@ -152,6 +156,8 @@ private const val LAYER_CLUSTERS = "sites-clusters"
 private const val LAYER_CLUSTER_COUNT = "sites-cluster-count"
 private const val LAYER_POINTS = "sites-points"
 private const val LAYER_SELECTED = "sites-selected"
+private const val BEAMS_SOURCE = "site-beams"
+private const val LAYER_BEAMS = "site-beams-fill"
 private const val CONNECTED_SOURCE = "connected"
 private const val LAYER_CONNECTED_LINE = "connected-line"
 private const val LAYER_CONNECTED_NEIGHBOURS = "connected-neighbours"
@@ -195,6 +201,11 @@ fun TowerMap(
     onMapTap: () -> Unit = {},
     /** The connected tower: pulse ring, line from [userLocation], faint neighbours. Null = none. */
     connected: ConnectedHighlight? = null,
+    /** The open site's sector beams, drawn as translucent wedges of [beamLengthM]; null = none. */
+    siteBeams: SiteBeams? = null,
+    beamLengthM: Double = SectorBeams.lengthMetersForZoom(null),
+    /** True while the coverage overlay still has tiles being calculated (see [CoverageLoadTracker]). */
+    onCoverageLoading: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -204,6 +215,7 @@ fun TowerMap(
     val currentOnZoom by rememberUpdatedState(onZoom)
     val currentOnLongPress by rememberUpdatedState(onLongPress)
     val currentOnMapTap by rememberUpdatedState(onMapTap)
+    val currentOnCoverageLoading by rememberUpdatedState(onCoverageLoading)
 
     val mapView = remember { createMapView(context, camera) }
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
@@ -248,6 +260,28 @@ fun TowerMap(
         onDispose { }
     }
 
+    // Coverage tiles are calculated on request; outstanding requests of the overlay's sources mean "calculating".
+    DisposableEffect(mapView) {
+        val tracker = CoverageLoadTracker()
+        var reported = false
+        fun report(now: Boolean) {
+            if (now != reported) {
+                reported = now
+                currentOnCoverageLoading(now)
+            }
+        }
+        val onTile = MapView.OnTileActionListener { op, x, y, z, _, _, source ->
+            report(tracker.onTile(op.toTileEvent(), z, x, y, source))
+        }
+        val onIdle = MapView.OnDidBecomeIdleListener { report(tracker.onIdle()) }
+        mapView.addOnTileActionListener(onTile)
+        mapView.addOnDidBecomeIdleListener(onIdle)
+        onDispose {
+            mapView.removeOnTileActionListener(onTile)
+            mapView.removeOnDidBecomeIdleListener(onIdle)
+        }
+    }
+
     LaunchedEffect(map, dark, basemapKey) {
         val m = map ?: return@LaunchedEffect
         val json = withContext(Dispatchers.IO) { StyleLoader.load(context, dark, basemapKey) }
@@ -289,6 +323,24 @@ fun TowerMap(
             t++
             delay(PULSE_FRAME_MS)
         }
+    }
+
+    // The open site's beams: a layer of its own, re-inserted under the tower dots (above the coverage overlay).
+    LaunchedEffect(style, siteBeams, beamLengthM) {
+        val st = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
+        val json = siteBeams?.let { withContext(Dispatchers.Default) { SectorBeams.toGeoJson(it, beamLengthM) } }
+        st.removeLayer(LAYER_BEAMS)
+        st.removeSource(BEAMS_SOURCE)
+        if (json == null) return@LaunchedEffect
+        st.addSource(GeoJsonSource(BEAMS_SOURCE, json))
+        val netFill = match(
+            get("net"), color(0xFF9AA0A6.toInt()),
+            *Network.entries.map { stop(it.name, color(NetworkColors.argb(it))) }.toTypedArray(),
+        )
+        st.addLayerBelow(
+            FillLayer(LAYER_BEAMS, BEAMS_SOURCE).withProperties(fillColor(netFill), fillOpacity(get("op")), fillAntialias(true)),
+            LAYER_CLUSTERS,
+        )
     }
 
     LaunchedEffect(Identity(sites)) {

@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import au.signalatlas.app.connected.ConnectedController
 import au.signalatlas.app.connected.ReadOnlyCellMap
+import au.signalatlas.app.data.RepositoryPatternAccess
 import au.signalatlas.app.data.AppStorage
 import au.signalatlas.app.data.CalibrationPrefs
 import au.signalatlas.app.data.CalibrationSettings
@@ -259,6 +260,7 @@ class AppContainer(context: Context) {
 
     fun mapViewModel() = MapViewModel(
         towerData, ManagerUpdates(updateManager), LocatorBasemapKeys(basemap), location, ServiceCoverage(coverage, repo, patterns),
+        patterns = RepositoryPatternAccess(patterns),
     )
 
     private companion object {

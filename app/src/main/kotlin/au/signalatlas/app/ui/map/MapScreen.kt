@@ -92,7 +92,9 @@ import au.signalatlas.app.ui.coverage.IncreaseResolutionSheet
 import au.signalatlas.app.ui.coverage.PointReadout
 import au.signalatlas.app.ui.nearby.NearbyContent
 import au.signalatlas.core.map.MapCameraState
+import au.signalatlas.core.map.SectorBeams
 import au.signalatlas.core.map.TowerMap
+import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SiteSummary
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -122,6 +124,9 @@ class ConnectedActions(
 private val CONNECTED_BAR_INSET = 60.dp
 
 private const val SITE_ZOOM = 14.0
+
+/** Roughly the 10 km a tower's predicted coverage reaches. */
+private const val COVERAGE_FIT_ZOOM = 12.0
 
 /** Room the labelled toolbar takes at the bottom start, so the round buttons stack above it on narrow windows. */
 private val TOOLBAR_INSET = 72.dp
@@ -325,6 +330,17 @@ fun MapScreen(
         closePane()
     }
 
+    val siteBeams = remember(state.selected, state.selectedPlots) {
+        state.selected?.let { siteBeams(it.site.lat, it.site.lon, state.selectedPlots) }
+    }
+    val onShowCoverage: (Network) -> Unit = { n ->
+        state.selected?.site?.let { camera.animateTo(it.lat, it.lon, COVERAGE_FIT_ZOOM) }
+        coverageOptionsOpen = true
+        vm.showCoverageFor(n)
+        // The modal sheet would hide the map; the side pane sits beside it and stays.
+        if (!expanded) vm.selectSite(null)
+    }
+
     Box(Modifier.fillMaxSize()) {
         // 1. The map: always first, always full size.
         if (renderMap && state.basemapResolved) {
@@ -347,6 +363,8 @@ fun MapScreen(
                 userLocation = state.location.takeIf { state.locationGranted },
                 userLocationColor = MaterialTheme.colorScheme.primary.toArgb(),
                 connected = connected?.highlight,
+                siteBeams = siteBeams,
+                beamLengthM = SectorBeams.lengthMetersForZoom(state.zoom),
             )
         }
 
@@ -375,7 +393,9 @@ fun MapScreen(
         }
         val paneContent: @Composable (Pane) -> Unit = { p ->
             when (p) {
-                Pane.Site -> state.selected?.let { SiteSheetContent(it, onClose = { vm.selectSite(null) }) }
+                Pane.Site -> state.selected?.let {
+                    SiteSheetContent(it, onClose = { vm.selectSite(null) }, plots = state.selectedPlots, onShowCoverage = onShowCoverage)
+                }
                 Pane.Filters -> FiltersContent(
                     filter = state.filter,
                     availableBands = state.availableBands,

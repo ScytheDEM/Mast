@@ -20,6 +20,8 @@ data class MapUiState(
     val availableBands: List<String> = emptyList(),
     val selectedId: Int? = null,
     val selected: SiteDetail? = null,
+    /** The selected site's sector radiation patterns (one per sector). */
+    val selectedPlots: List<SectorPlot> = emptyList(),
     val search: SearchUiState = SearchUiState(),
     val update: UpdateStatus = UpdateStatus.Unknown,
     val basemapKey: String? = null,

@@ -20,7 +20,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +56,10 @@ fun SiteSheetContent(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(bottom = 24.dp),
+    /** One radiation-pattern plot per sector. */
+    plots: List<SectorPlot> = emptyList(),
+    /** "Show predicted coverage for {network}"; null hides the button. */
+    onShowCoverage: ((Network) -> Unit)? = null,
 ) {
     val site = detail.site
     val groups = detail.sectors.groupBy { it.network }.toSortedMap(compareBy { it.ordinal })
@@ -79,6 +86,7 @@ fun SiteSheetContent(
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, stringResource(R.string.close)) }
             }
         }
+        if (plots.isNotEmpty()) item(key = "pattern") { RadiationPatternSection(plots) }
         groups.forEach { (network, sectors) ->
             item(key = "net-${network.name}") {
                 Surface(
@@ -95,6 +103,16 @@ fun SiteSheetContent(
                         sectors.forEachIndexed { i, sector ->
                             if (i > 0) HorizontalDivider(Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
                             SectorBlock(sector)
+                        }
+                        if (onShowCoverage != null && network in MapViewModel.COVERAGE_NETWORKS) {
+                            FilledTonalButton(
+                                onClick = { onShowCoverage(network) },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).testTag("show-coverage-${network.name}"),
+                            ) {
+                                Icon(painterResource(R.drawable.ic_coverage), null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(stringResource(R.string.site_show_coverage, networkName(network)), maxLines = 2)
+                            }
                         }
                     }
                 }
