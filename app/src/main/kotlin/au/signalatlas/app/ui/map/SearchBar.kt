@@ -27,6 +27,8 @@ import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -158,5 +161,22 @@ private fun SearchResults(query: String, results: List<SiteSummary>?, onResultCl
                 modifier = Modifier.clickable { onResultClick(site) },
             )
         }
+    }
+}
+
+/**
+ * Folding or unfolding changes the window size class and swaps the search bar between its docked and full-screen
+ * variants. Whenever [sizeKey] changes (and once at start) the search is collapsed, unfocused and the keyboard hidden,
+ * so a fold never opens the keyboard or a results list the user did not ask for.
+ */
+@Composable
+fun CollapseSearchOnWindowChange(sizeKey: Any, onCollapse: () -> Unit) {
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val collapse by rememberUpdatedState(onCollapse)
+    LaunchedEffect(sizeKey) {
+        collapse()
+        focus.clearFocus()
+        keyboard?.hide()
     }
 }

@@ -151,7 +151,10 @@ fun MapScreen(
 
     var showNearby by rememberSaveable { mutableStateOf(false) }
     var showBands by rememberSaveable { mutableStateOf(false) }
-    var searchExpanded by rememberSaveable { mutableStateOf(false) }
+    // Not saved: a fold/unfold or recreation must never bring back an expanded (focused) search.
+    var searchExpanded by remember { mutableStateOf(false) }
+    val windowClass = currentWindowAdaptiveInfo().windowSizeClass
+    CollapseSearchOnWindowChange(windowClass.minWidthDp to windowClass.minHeightDp) { searchExpanded = false }
     var coverageOptionsOpen by rememberSaveable { mutableStateOf(true) }
     var rationaleFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var afterGrant by remember { mutableStateOf<(() -> Unit)?>(null) }
