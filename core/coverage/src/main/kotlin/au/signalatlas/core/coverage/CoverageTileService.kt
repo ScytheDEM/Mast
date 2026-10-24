@@ -94,12 +94,24 @@ class CoverageTileService internal constructor(
 
     /**
      * [prepared] is null when the batch exceeded the engine's carrier cap (it is then never cached). [calibration] is the
-     * per-row sector terms it was prepared with (null = uncalibrated), reused for its terrain-prepared variants.
+     * per-row sector terms it was prepared with (null = uncalibrated) and [areas] each row's area class (rule 5), both
+     * reused for its terrain-prepared variants.
      */
     private class Region(
         val key: RegionKey, val prepared: PreparedRegion?, val batch: CarrierBatch,
-        val calibration: ((Int) -> SectorTerms?)? = null,
+        val calibration: ((Int) -> SectorTerms?)? = null, val areas: Array<AreaClass?>? = null,
     )
+
+    /** A site position of one tower DB (rule 5 counts sites around it). */
+    private data class SiteKey(val stamp: String, val lat: Double, val lon: Double)
+
+    /**
+     * Site counts within 3 km of a site, shared by every region that contains the site (regions overlap by 80 km).
+     * Guarded by itself.
+     */
+    private val siteCounts = object : LinkedHashMap<SiteKey, Int>(1024, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<SiteKey, Int>) = size > MAX_SITE_COUNTS
+    }
 
     /** A region prepared with the terrain tables of one [TerrainSnapshot] version. */
     private data class TerrainPrepKey(val region: RegionKey, val terrain: TerrainKey, val version: Long)
@@ -435,17 +447,24 @@ class CoverageTileService internal constructor(
 
     private fun render(key: TileKey, sel: CoverageSelection, cancel: CancelToken): RenderedTile? {
         val region = region(key, sel)
-        val area = areaOf(key.towerStamp, key.z, key.x, key.y)
         // The rasters must come from the snapshot the key names (the region was prepared from it, see buildRegion).
         val view = cal.current()
         if (view.regionVersion(key.z, key.x, key.y) != key.calibrationVersion) throw TileCancelledException()
         val rasters = if (key.calibrationVersion == 0L) emptyList() else view.rasters(key.z, key.x, key.y)
-        return renderer.render(preparedFor(key, sel, region, cancel), key.z, key.x, key.y, area, THRESHOLD_DBM, cancel, rasters)
+        return renderer.render(preparedFor(key, sel, region, cancel), key.z, key.x, key.y, FALLBACK_AREA, THRESHOLD_DBM, cancel, rasters)
     }
 
-    private fun areaOf(stamp: String, z: Int, x: Int, y: Int): AreaClass = towers.withTowers { t ->
+    /**
+     * Rule 5 (amended 2026-10-24): every row's area class from the sites within 3 km of its own site, so a carrier uses
+     * the same path-loss model on every tile (a per-tile class made 10-25 dB seams at tile borders).
+     */
+    private fun carrierAreas(stamp: String, batch: CarrierBatch): Array<AreaClass?> = towers.withTowers { t ->
         if (t.stamp != stamp) throw StaleTileException()
-        AreaClassifier.classify(t.siteCountWithin(TileMath.centreLat(z, y), TileMath.centreLon(z, x), AreaClassifier.RADIUS_M))
+        AreaClassifier.perSite(batch) { lat, lon, radius ->
+            val k = SiteKey(stamp, lat, lon)
+            synchronized(siteCounts) { siteCounts[k] }
+                ?: t.siteCountWithin(lat, lon, radius).also { synchronized(siteCounts) { siteCounts[k] = it } }
+        }
     } ?: throw StaleTileException()
 
     /**
@@ -457,7 +476,7 @@ class CoverageTileService internal constructor(
         if (!tc.needsDemand(tr)) return true
         val prepared = region.prepared ?: return true.also { tc.setDemand(tr, region.batch, IntArray(0)) }
         val k = tr.key
-        val sample = renderer.render(prepared, k.zf, k.rx, k.ry, areaOf(key.towerStamp, k.zf, k.rx, k.ry), THRESHOLD_DBM, cancel)
+        val sample = renderer.render(prepared, k.zf, k.rx, k.ry, FALLBACK_AREA, THRESHOLD_DBM, cancel)
         if (sample == null || cancel.isCancelled) return false
         val pixels = HashMap<Int, Int>()
         for (i in 0 until RenderedTile.PIXELS) {
@@ -494,7 +513,7 @@ class CoverageTileService internal constructor(
                 val store = patterns.value
                 if ((store?.etag ?: "none") != key.patternsEtag) throw StaleTileException()
                 val provider = { row: Int -> tc.tableKey(tr, region.batch, row)?.let { snap.tables[it] } }
-                mine.complete(renderer.prepare(region.batch, store, sel.indoor, provider, region.calibration))
+                mine.complete(renderer.prepare(region.batch, store, sel.indoor, provider, region.calibration, region.areas?.let { a -> a::get }))
             } catch (t: Throwable) {
                 synchronized(terrainPrepared) { terrainPrepared.remove(pk, mine) }
                 mine.completeExceptionally(t)
@@ -586,7 +605,8 @@ class CoverageTileService internal constructor(
         val view = cal.current()
         if (view.regionVersion(rk.zf, rk.rx, rk.ry) != rk.calibration) throw TileCancelledException()
         val terms = if (rk.calibration == 0L) null else view.termsFor(batch)
-        return Region(rk, renderer.prepare(batch, patternStore, sel.indoor, calibration = terms), batch, terms)
+        val areas = carrierAreas(rk.stamp, batch)
+        return Region(rk, renderer.prepare(batch, patternStore, sel.indoor, calibration = terms, area = areas::get), batch, terms, areas)
     }
 
     private fun <T> failed(e: Throwable): CompletableFuture<T> = CompletableFuture<T>().also { it.completeExceptionally(e) }
@@ -600,6 +620,9 @@ class CoverageTileService internal constructor(
         private const val MAX_REGIONS = 16
         private const val MAX_OVERFLOW_HINTS = 512
         private const val MAX_TERRAIN_PREPARED = 8
+        private const val MAX_SITE_COUNTS = 100_000
+        /** Rule 5's class for a carrier without its own (none in practice: every usable row gets one). */
+        private val FALLBACK_AREA = AreaClass.SUBURBAN
         private const val MAX_CARRIERS = 65535 // PreparedCarriers.MAX_CARRIERS
         private const val MAX_LEVEL = 2
         private const val FALLBACK_ZOOM = 10

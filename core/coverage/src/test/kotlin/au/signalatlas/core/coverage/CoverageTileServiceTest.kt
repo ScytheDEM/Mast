@@ -91,11 +91,33 @@ class CoverageTileServiceTest {
         assertThat(r.renderer.renders).hasSize(1)
     }
 
-    @Test fun areaClassComesFromTheSiteCountAroundTheTileCentre() {
+    /**
+     * Rule 5 as amended 2026-10-24 (tile-seam bug): the class belongs to each carrier, from the sites around its own
+     * site, never to the tile, so adjacent tiles evaluate every carrier with the same path-loss model.
+     */
+    @Test fun areaClassComesFromTheSiteCountAroundEachCarriersSite() {
         val r = rig()
-        r.towers.sites = 45
+        // fakeBatch: row 0 at (-33.9, 151.2) in a dense area, row 1 at (-33.8, 151.3) in a rural one.
+        r.towers.sitesAt = { lat, _ -> if (lat < -33.85) 45 else 2 }
         r.tile(10, 900, 600).await()
-        assertThat(r.renderer.renders.single().area).isEqualTo(AreaClass.DENSE_URBAN)
+        assertThat(r.renderer.preparedAreas.single()).containsExactly(AreaClass.DENSE_URBAN, AreaClass.RURAL).inOrder()
+        assertThat(r.towers.siteCountQueries).containsExactly(-33.9 to 151.2, -33.8 to 151.3)
+    }
+
+    @Test fun adjacentTilesAcrossADensityStepShareTheCarriersClasses() {
+        val r = rig()
+        // The tile-centre class would differ between these neighbours; the carriers' classes must not.
+        r.towers.sitesAt = { _, lon -> if (lon < 151.25) 45 else 2 }
+        val west = TileMath.locate(-33.85, 151.249, 13)!!
+        r.tile(13, west.x, west.y).await()
+        r.tile(13, west.x + 1, west.y).await()
+        assertThat(r.renderer.renders).hasSize(2)
+        assertThat(r.renderer.renders.map { it.prepared }.distinct()).hasSize(1)  // one prepared region, one class per carrier
+        assertThat(r.renderer.preparedAreas.single()).containsExactly(AreaClass.DENSE_URBAN, AreaClass.RURAL).inOrder()
+        // Site counts are cached per site: a second region over the same sites asks no more.
+        val asked = r.towers.siteCountQueries.size
+        r.tile(13, west.x + 40, west.y + 40).await()
+        assertThat(r.towers.siteCountQueries.size).isEqualTo(asked)
     }
 
     @Test fun setVisibleCancelsRendersForTilesThatAreNotVisible() {

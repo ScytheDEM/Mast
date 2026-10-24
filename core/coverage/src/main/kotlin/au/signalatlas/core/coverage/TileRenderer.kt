@@ -26,14 +26,18 @@ interface PreparedRegion {
 interface TileRenderer {
     /**
      * [terrain] is asked once per kept carrier, with its row in [batch], for its terrain table (null = quick model);
-     * [calibration] likewise for its sector's terms (null = uncalibrated).
+     * [calibration] likewise for its sector's terms (null = uncalibrated), and [area] for its own area class (rule 5;
+     * null = the area passed to [render]).
      */
     fun prepare(
         batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)? = null,
-        calibration: ((batchRow: Int) -> SectorTerms?)? = null,
+        calibration: ((batchRow: Int) -> SectorTerms?)? = null, area: ((batchRow: Int) -> AreaClass?)? = null,
     ): PreparedRegion
 
-    /** Null if [cancel] fired. [residuals] are the tile's residual rasters (Calibration rule 5). */
+    /**
+     * Null if [cancel] fired. [area] is only the fallback for carriers prepared without their own class. [residuals] are
+     * the tile's residual rasters (Calibration rule 5).
+     */
     fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
         residuals: List<ResidualRaster> = emptyList(),
@@ -56,8 +60,8 @@ class EngineTileRenderer(private val engine: CoverageEngine) : TileRenderer {
 
     override fun prepare(
         batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)?,
-        calibration: ((batchRow: Int) -> SectorTerms?)?,
-    ): PreparedRegion = Prepared(engine.prepare(batch, patterns, indoor, terrain, calibration))
+        calibration: ((batchRow: Int) -> SectorTerms?)?, area: ((batchRow: Int) -> AreaClass?)?,
+    ): PreparedRegion = Prepared(engine.prepare(batch, patterns, indoor, terrain, calibration, area))
 
     override fun buildTerrainTable(
         dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,

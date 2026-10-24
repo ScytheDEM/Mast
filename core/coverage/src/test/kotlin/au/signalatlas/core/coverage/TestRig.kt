@@ -50,6 +50,9 @@ fun bigBatch(n: Int, farEvery: Int = 0): CarrierBatch {
 }
 
 internal class FakeTowers(var stampValue: String? = "stamp1", var sites: Int = 0) : TowerData {
+    /** Overrides [sites] by position: the site count within the radius of (lat, lon). */
+    var sitesAt: ((lat: Double, lon: Double) -> Int)? = null
+    val siteCountQueries = CopyOnWriteArrayList<Pair<Double, Double>>()
     /** Overrides the batch returned for a query. */
     var batchFor: (GeoBounds) -> CarrierBatch = { fakeBatch() }
     val queries = CopyOnWriteArrayList<GeoBounds>()
@@ -64,7 +67,10 @@ internal class FakeTowers(var stampValue: String? = "stamp1", var sites: Int = 0
                 networkQueries += networks
                 return batchFor(b)
             }
-            override fun siteCountWithin(lat: Double, lon: Double, radiusM: Double) = sites
+            override fun siteCountWithin(lat: Double, lon: Double, radiusM: Double): Int {
+                siteCountQueries += lat to lon
+                return sitesAt?.invoke(lat, lon) ?: sites
+            }
         })
     }
 }
@@ -91,10 +97,14 @@ class FakeRenderer : TileRenderer {
     /** Sector terms handed to each prepare, by batch row (empty map = uncalibrated). */
     val preparedTerms = CopyOnWriteArrayList<Map<Int, SectorTerms>>()
 
+    /** Area classes handed to each prepare, by batch row (null entry = none; empty list = no area function). */
+    val preparedAreas = CopyOnWriteArrayList<List<AreaClass?>>()
+
     override fun prepare(
         batch: CarrierBatch, patterns: PatternStore?, indoor: Boolean, terrain: ((batchRow: Int) -> TerrainTable?)?,
-        calibration: ((batchRow: Int) -> SectorTerms?)?,
+        calibration: ((batchRow: Int) -> SectorTerms?)?, area: ((batchRow: Int) -> AreaClass?)?,
     ): PreparedRegion {
+        preparedAreas += if (area == null) emptyList() else (0 until batch.size).map(area)
         prepares.incrementAndGet()
         preparedTerms += if (calibration == null) emptyMap() else (0 until batch.size).mapNotNull { r -> calibration(r)?.let { r to it } }.toMap()
         preparedSizes += batch.size

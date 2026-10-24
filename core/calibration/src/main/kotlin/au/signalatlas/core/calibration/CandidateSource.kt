@@ -56,9 +56,13 @@ internal class PointPrediction(val row: Int, val rsrpDbm: Float, val rMaxKm: Flo
 
 /** The engine side of rule 2, behind a seam so the matcher's inputs can be tested without the native library. */
 internal fun interface PointPredictor {
-    /** Predictions for the usable carriers of [batch] at ([lat], [lon]); [terrain] gives a carrier's table by batch row. */
+    /**
+     * Predictions for the usable carriers of [batch] at ([lat], [lon]); [terrain] gives a carrier's table by batch row
+     * and [carrierAreas] its area class (rule 5, as the map uses it); [area] is the fallback for a row without one.
+     */
     fun predict(
         batch: CarrierBatch, terrain: ((batchRow: Int) -> TerrainTable?)?, lat: Double, lon: Double, area: AreaClass,
+        carrierAreas: Array<AreaClass?>,
     ): List<PointPrediction>
 }
 
@@ -73,7 +77,8 @@ fun interface TerrainTablesAt {
 /**
  * Rule 1 against the tower DB and rule 2's predicted RSRP from the engine: carriers of the SIM's network (plus the
  * Optus/TPG regional joint venture, which serves both) and the serving technology within +-0.15 MHz of the channel
- * frequency on sites within 40 km, predicted uncalibrated at the fix (outdoor) for the fix's area class. [terrain]
+ * frequency on sites within 40 km, predicted uncalibrated at the fix (outdoor) with each carrier's own area class (rule 5
+ * as amended 2026-10-24, the same model the map renders; the fix's class is recorded with the sample). [terrain]
  * supplies the terrain tables the coverage side has ready around the fix, so predictions include L_terr for the
  * carriers that have a table and use the quick model for the rest (and everywhere without [terrain]).
  */
@@ -100,7 +105,8 @@ class EngineCandidateSource internal constructor(
         if (rows.isEmpty()) return CandidateSet(emptyList(), area)
         val sub = batch.rows(rows.toIntArray())
         val lookup = terrain?.at(lat, lon)
-        val predictions = predictor.predict(sub, lookup?.let { t -> { row: Int -> t(sub, row) } }, lat, lon, area)
+        val carrierAreas = AreaClassifier.perSite(sub, towers::siteCountWithin)
+        val predictions = predictor.predict(sub, lookup?.let { t -> { row: Int -> t(sub, row) } }, lat, lon, area, carrierAreas)
         val idents = towers.identitiesOf(sub.sectorId.toList())
         val out = predictions.mapNotNull { p ->
             val row = p.row
@@ -125,8 +131,8 @@ class EngineCandidateSource internal constructor(
 }
 
 private fun enginePredictor(engine: CoverageEngine, patterns: () -> PatternStore?) =
-    PointPredictor { batch, terrain, lat, lon, area ->
-        val prepared = engine.prepare(batch, patterns(), indoor = false, terrain = terrain)
+    PointPredictor { batch, terrain, lat, lon, area, carrierAreas ->
+        val prepared = engine.prepare(batch, patterns(), indoor = false, terrain = terrain, area = carrierAreas::get)
         val rsrp = engine.predictPoint(prepared, lat, lon, area, indoor = false)
         (0 until prepared.size).map { k -> PointPrediction(prepared.batchIndex(k), rsrp[k], prepared.rMaxKm(k)) }
     }

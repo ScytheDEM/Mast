@@ -23,7 +23,8 @@ class EngineCandidateSourceTest {
 
     private val towers = object : TowerQuery {
         override fun carriersIn(b: GeoBounds, networks: Set<Network>, techs: Set<Tech>) = batch
-        override fun siteCountWithin(lat: Double, lon: Double, radiusM: Double) = 5
+        // 45 sites around the carriers' sites (1+ km north), 5 around the fix.
+        override fun siteCountWithin(lat: Double, lon: Double, radiusM: Double) = if (lat > -35.275) 45 else 5
         override fun identitiesOf(sectorIds: Collection<Int>) = sectorIds.associateWith { "s$it" }
         override fun sectorIdsOf(idents: Collection<String>) = emptyMap<String, Int>()
     }
@@ -32,10 +33,15 @@ class EngineCandidateSourceTest {
         var terrainSeen: ((Int) -> TerrainTable?)? = null
         var called = false
         var area: AreaClass? = null
-        override fun predict(batch: CarrierBatch, terrain: ((Int) -> TerrainTable?)?, lat: Double, lon: Double, area: AreaClass): List<PointPrediction> {
+        var carrierAreas: List<AreaClass?> = emptyList()
+        override fun predict(
+            batch: CarrierBatch, terrain: ((Int) -> TerrainTable?)?, lat: Double, lon: Double, area: AreaClass,
+            carrierAreas: Array<AreaClass?>,
+        ): List<PointPrediction> {
             called = true
             terrainSeen = terrain
             this.area = area
+            this.carrierAreas = carrierAreas.toList()
             return (0 until batch.size).map { PointPrediction(it, -90f - it, 20f) }
         }
     }
@@ -57,7 +63,14 @@ class EngineCandidateSourceTest {
         assertThat(set.candidates.map { it.sectorId }).containsExactly(10, 11, 12).inOrder()
         assertThat(set.candidates.map { it.predictedDbm }).containsExactly(-90.0, -91.0, -92.0).inOrder()
         assertThat(set.area).isEqualTo(rec.area)
-        assertThat(rec.area).isNotNull()
+        assertThat(rec.area).isEqualTo(AreaClass.SUBURBAN)  // the fix's class (recorded with the sample)
+    }
+
+    /** Rule 5 as amended 2026-10-24: predictions use each carrier's class from its own site, like the map tiles. */
+    @Test fun predictionsUseEachCarriersOwnAreaClass() {
+        val rec = Recorder()
+        EngineCandidateSource(towers, rec, null).candidates(Network.TELSTRA, Tech.LTE, 758.0, -35.28, 149.13)!!
+        assertThat(rec.carrierAreas).containsExactly(AreaClass.DENSE_URBAN, AreaClass.DENSE_URBAN, AreaClass.DENSE_URBAN)
     }
 
     @Test fun withoutTablesTheQuickModelIsUsed() {
