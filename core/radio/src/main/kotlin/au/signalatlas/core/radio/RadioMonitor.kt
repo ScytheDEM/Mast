@@ -50,7 +50,22 @@ class RadioMonitor(
     private val _subscriptions = MutableStateFlow<List<SimInfo>>(emptyList())
     val subscriptions: StateFlow<List<SimInfo>> = _subscriptions.asStateFlow()
 
+    private val _states = MutableStateFlow<Map<Int, RadioState>>(emptyMap())
+
+    /**
+     * The state of every active subscription, by subscription id (dual SIM). The selected subscription's entry is the
+     * same value as [state]; the others have no display-override ("5G" for LTE+NR NSA) information.
+     */
+    val states: StateFlow<Map<Int, RadioState>> = _states.asStateFlow()
+
+    private val _dataSubId = MutableStateFlow<Int?>(null)
+
+    /** The default data subscription (the primary SIM in a dual-SIM phone); null when unknown. */
+    val dataSubscriptionId: StateFlow<Int?> = _dataSubId.asStateFlow()
+
     private val lock = Any()
+    /** Last cell list delivered by requestCellInfoUpdate for the subscriptions other than the selected one. */
+    private val otherFresh = HashMap<Int, List<CellInfo>>()
     private var started = false
     private var selectedSubId: Int? = null
     private var displayOverride = TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NONE
@@ -189,6 +204,21 @@ class RadioMonitor(
         } catch (_: RuntimeException) {
             publish(null)
         }
+        // The other SIM(s) of a dual-SIM phone are polled too, so every row of the cellular details stays live.
+        val selected = _state.value.sim?.subId ?: resolveSubId()
+        for (sub in _subscriptions.value) {
+            if (sub.subId == selected) continue
+            try {
+                forSub(sub.subId).requestCellInfoUpdate(executor, object : TelephonyManager.CellInfoCallback() {
+                    override fun onCellInfo(cellInfo: MutableList<CellInfo>) {
+                        synchronized(lock) { otherFresh[sub.subId] = cellInfo.toList() }
+                        refresh()
+                    }
+                    override fun onError(errorCode: Int, detail: Throwable?) = Unit
+                })
+            } catch (_: RuntimeException) {
+            }
+        }
     }
 
     private fun telephonyManager(): TelephonyManager {
@@ -261,14 +291,42 @@ class RadioMonitor(
             }
             cells = raw.orEmpty().mapNotNull { CellMapper.map(it) }
         }
+        val main = buildState(permission, airplane, sim, cells, displayOverride)
+        _state.value = main
+
+        _dataSubId.value = SubscriptionManager.getDefaultDataSubscriptionId().takeIf { it != SubscriptionManager.INVALID_SUBSCRIPTION_ID }
+        val all = LinkedHashMap<Int, RadioState>()
+        for (info in subs) {
+            all[info.subId] = if (info.subId == sim?.subId) {
+                main
+            } else {
+                val others = if (permission == Permission.GRANTED && !airplane) otherCells(info.subId) else emptyList()
+                buildState(permission, airplane, info, others, TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NONE)
+            }
+        }
+        _states.value = all
+    }
+
+    private fun otherCells(subId: Int): List<ObservedCell> {
+        val raw = synchronized(lock) { otherFresh[subId] } ?: try {
+            forSub(subId).allCellInfo
+        } catch (_: SecurityException) {
+            null
+        } catch (_: RuntimeException) {
+            null
+        }
+        return raw.orEmpty().mapNotNull { CellMapper.map(it) }
+    }
+
+    private fun buildState(permission: Permission, airplane: Boolean, sim: SimInfo?, cells: List<ObservedCell>, override: Int): RadioState {
         val split = CellMapper.split(cells)
-        _state.value = RadioState(
+        return RadioState(
             permission = permission,
             sim = sim,
             serving = split.serving,
             neighbours = split.neighbours,
             nrSecondaries = split.nrSecondaries,
-            displayFiveG = !airplane && CellMapper.displayFiveG(split.serving, displayOverride),
+            displayFiveG = !airplane && CellMapper.displayFiveG(split.serving, override),
             airplane = airplane,
             updatedAtElapsedMs = clock(),
         )
