@@ -10,22 +10,23 @@ import java.util.zip.CRC32
 
 /**
  * Identity of one terrain table: the tower extract it was built for ([stamp]), the site (position in 1e-5 degrees,
- * about 1 m), the Terrain rule 6 frequency key (MHz, 10 MHz steps) and antenna height key (m), and [demId], which
- * names the DEM rectangle the table was computed from (the table's mask depends on it).
+ * about 1 m), the Terrain rule 6 frequency key ([fkey], kHz: the 3GPP band centre, see [TerrainKeys]) and antenna
+ * height key ([hkey], m, steps of 2), and [demId], which names the DEM rectangle the table was computed from (the
+ * table's mask depends on it).
  */
 internal data class TableKey(
     val stamp: String, val latE5: Int, val lonE5: Int, val fkey: Int, val hkey: Int, val demId: Long,
 ) {
     val siteId: String get() = "${latE5}x$lonE5"
-    val fileName: String get() = "${siteId}_${fkey}_${hkey}_${java.lang.Long.toHexString(demId)}.tbl"
+    val fileName: String get() = "${siteId}_k${fkey}_h${hkey}_${java.lang.Long.toHexString(demId)}.tbl"
 }
 
 /**
  * Terrain tables of the current tower extract: a memory LRU of [memoryTables] tables (about 100 KiB each) over a disk
- * cache `dir/<stamp>/<siteId>_<fkey>_<hkey>_<demId>.tbl`, kept under [diskBytes] by evicting the least recently used file.
+ * cache `dir/<stamp>/<siteId>_k<fkey>_h<hkey>_<demId>.tbl`, kept under [diskBytes] by evicting the least recently used file.
  *
  * File layout (little-endian): magic `"SATB"`, version int, demId long, the 92,160 table bytes, the 11,520 mask
- * bytes, CRC32 of everything before it. A file that fails magic, version, length or CRC is a miss and is deleted. The
+ * bytes, CRC32 of everything before it. A file that fails magic, version, length or CRC is a miss and is deleted (so does any file named by an older scheme). The
  * DEM rectangle ([TableKey.demId]) is in the file name, so rectangles never overwrite each other, and checked in the header.
  * Writes are atomic (temp file, rename). The first use of a stamp deletes the directories of other stamps. Thread-safe;
  * file IO happens outside the locks.
@@ -124,7 +125,7 @@ class TerrainTableStore(
         val files = ArrayList<Pair<String, File>>()
         dir.listFiles()?.forEach { sub ->
             if (sub.isDirectory) sub.listFiles()?.forEach { f ->
-                // Leftover temp files and tables named by an older scheme (no DEM id) are deleted.
+                // Leftover temp files and tables named by an older scheme (no DEM id, fine keys) are deleted.
                 if (f.name.endsWith(".tmp") || (f.name.endsWith(".tbl") && !CURRENT_NAME.matches(f.name))) f.delete()
                 else if (f.name.endsWith(".tbl")) files += "${sub.name}/${f.name}" to f
             }
@@ -170,8 +171,8 @@ class TerrainTableStore(
     internal companion object {
         const val FILE_BYTES = 8 + 8 + TerrainTable.CELLS + TerrainTable.MASK_BYTES + 4
         private const val MAGIC = 0x42544153 // "SATB" little-endian
-        private const val VERSION = 1
-        private val CURRENT_NAME = Regex("""-?\d+x-?\d+_\d+_\d+_[0-9a-f]+\.tbl""")
+        private const val VERSION = 2 // v2: coarse keys (band centre, 2 m); older tables are ignored and deleted
+        private val CURRENT_NAME = Regex("""-?\d+x-?\d+_k\d+_h\d+_[0-9a-f]+\.tbl""")
 
         fun encode(demId: Long, t: TerrainTable): ByteArray {
             val buf = ByteBuffer.allocate(FILE_BYTES).order(ByteOrder.LITTLE_ENDIAN)

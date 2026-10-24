@@ -15,6 +15,14 @@ class BandPlanTest {
         assertThat(BandPlan.classify(28_900_000_000, Network.NBN)!!.band).isEqualTo("n257")
     }
 
+    @Test fun bandCentreIsTheMidpointOfTheDlRange() {
+        assertThat(BandPlan.centreMhz(778.0)).isEqualTo(780.5)
+        assertThat(BandPlan.centreMhz(3410.0)).isEqualTo(3550.0)
+        assertThat(BandPlan.centreMhz(1850.0)).isEqualTo(1842.5)
+        assertThat(BandPlan.centreMhz(3920.0)).isEqualTo(4000.0)
+        assertThat(BandPlan.centreMhz(100.0)).isNull()
+    }
+
     @Test fun classifiesB26N26AndN77() {
         assertThat(BandPlan.classify(862_000_000, Network.TELSTRA)).isEqualTo(BandInfo("n26", Tech.NR))
         assertThat(BandPlan.classify(862_000_000, Network.OPTUS)).isEqualTo(BandInfo("B26", Tech.LTE))

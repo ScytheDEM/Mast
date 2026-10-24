@@ -70,7 +70,7 @@ internal class TerrainRegion(val key: TerrainKey, val bounds: GeoBounds, val chu
  * - **Availability.** Chunks = `ChunkMath.chunksFor(bounds, 40 km)`. All stored: the region is available and builds
  *   tables; otherwise it is quick-only and its [versionOf] is 0. Newly stored chunks ([onChunksChanged]) make it
  *   available and change its version.
- * - **Tables.** Wanted tables ([Demand]: the 128 nearest sites' (site, frequency key, height key) triples whose carriers
+ * - **Tables.** Wanted tables ([Demand]: the 128 nearest sites' (site, band-centre frequency, 2 m height) triples whose carriers
  *   reach the region) are built as [RenderPool] jobs one priority below visible renders, deduplicated per key, read
  *   from / written to [TerrainTableStore]. The DEM mosaic is opened by the first build and closed when the region
  *   has nothing pending (or is evicted). A mosaic with a missing chunk (evicted since the check) is dropped and the
@@ -250,7 +250,7 @@ internal class TerrainCoordinator(
         if (!f.isFinite() || f <= 0f) return null
         return TableKey(
             tr.key.stamp, (b.siteLat[row] * E5).roundToInt(), (b.siteLon[row] * E5).roundToInt(),
-            TerrainTable.frequencyKeyMhz(f), TerrainTable.heightKeyM(b.heightM[row]), tr.demId,
+            TerrainKeys.frequencyKhz(f), TerrainKeys.heightM(b.heightM[row]), tr.demId,
         )
     }
 
@@ -349,7 +349,7 @@ internal class TerrainCoordinator(
                 if (table == null) {
                     val dem = openDem(tr)
                     if (dem != null && !cancel.isCancelled) {
-                        table = renderer.buildTerrainTable(dem, d.lat, d.lon, d.key.hkey.toFloat(), d.key.fkey.toFloat(), cancel)
+                        table = renderer.buildTerrainTable(dem, d.lat, d.lon, d.key.hkey.toFloat(), d.key.fkey / 1000f, cancel)
                         if (table != null) support.tables.put(d.key, table)
                     }
                 }

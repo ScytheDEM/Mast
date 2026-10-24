@@ -256,8 +256,13 @@ reference (eqs. 52–55) and dropped the eq. 49 correction. Units exactly as in 
   b1 = (b0 + 1) mod 360; bilinear in (bearing, u) of code·0.25. r < 50 m → (0, complete); r > 80 km → (0,
   incomplete); any of the four cells incomplete → (0, incomplete). The renderer uses the haversine d2D and
   initial bearing it already computes (M2 rule 8).
-- **Table key** (rule 6, B3): (site, frequency rounded half up to 10 MHz, antenna height AGL clamped to ≥ 3 m
-  then rounded half up to 1 m). The table is built with the key height and λ = c / key frequency.
+- **Table key** (rule 6, B3; coarsened by Ruling UU so dense city centres fit the 128-table region cap): (site,
+  3GPP band centre frequency, antenna height AGL clamped to ≥ 3 m then rounded half up to 2 m). The band centre is
+  the midpoint of the band's DL range (B28 → 780.5 MHz, n78 → 3550 MHz; `BandPlan.centreMhz`); a frequency outside
+  every known band keeps the old key (rounded half up to 10 MHz). The table is built with the key height and
+  λ = c / key frequency (so ≤ ~1 dB diffraction error against the carrier's own λ). The key lives on the Kotlin
+  coverage side (`TerrainKeys`); `polar_table` and `height_key_m` here take/produce whatever the caller keys on, and
+  the vectors still use the 10 MHz / 1 m keys. Disk tables carry format version 2: version-1 files are ignored.
 - **Tile accuracy.** A pixel counts as terrain-complete when its best server (the nearest grid sample, as for
   `best`) had a complete lookup; `accuracy` is TERRAIN when ≥ 95% of covered pixels (RSRP code > 0) are.
 

@@ -19,6 +19,15 @@ object BandPlan {
         Range(27500.0, 29500.0, "n257", Tech.NR),
     )
 
+    /**
+     * The centre (MHz, rounded to 0.5 MHz) of the 3GPP band holding [freqMhz]: the midpoint of the band's DL range
+     * (B28 -> 780.5, n78 -> 3550). Null for a frequency outside every known band.
+     */
+    fun centreMhz(freqMhz: Double): Double? {
+        val r = ranges.firstOrNull { freqMhz >= it.lowMhz && freqMhz <= it.highMhz } ?: return null
+        return Math.round((r.lowMhz + r.highMhz) / 2 * 2) / 2.0
+    }
+
     fun classify(freqHz: Long, network: Network): BandInfo? {
         val mhz = freqHz / 1e6
         val r = ranges.firstOrNull { mhz >= it.lowMhz && mhz <= it.highMhz } ?: return null

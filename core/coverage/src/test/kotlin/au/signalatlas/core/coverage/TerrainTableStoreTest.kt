@@ -12,7 +12,7 @@ import java.nio.ByteBuffer
 class TerrainTableStoreTest {
     @get:Rule val tmp = TemporaryFolder()
 
-    private fun key(site: Int = 1, stamp: String = "s1", dem: Long = 7) = TableKey(stamp, site, -site, 3500, 30, dem)
+    private fun key(site: Int = 1, stamp: String = "s1", dem: Long = 7) = TableKey(stamp, site, -site, 3550000, 30, dem)
 
     private fun table(seed: Int): TerrainTable {
         val t = ByteBuffer.allocateDirect(TerrainTable.CELLS)
@@ -33,7 +33,7 @@ class TerrainTableStoreTest {
         val dir = tmp.newFolder()
         TerrainTableStore(dir).put(key(), table(1))
         val file = tbl(dir).single()
-        assertThat(file.name).isEqualTo("1x-1_3500_30_7.tbl")
+        assertThat(file.name).isEqualTo("1x-1_k3550000_h30_7.tbl")
         assertThat(file.parentFile.name).isEqualTo("s1")
         assertThat(file.length()).isEqualTo(TerrainTableStore.FILE_BYTES.toLong())
         same(TerrainTableStore(dir).get(key())!!, table(1))
@@ -112,14 +112,26 @@ class TerrainTableStoreTest {
         assertThat(tbl(dir)).hasSize(1)
     }
 
+    @Test fun tablesOfTheFineKeyFormatAreDeletedAndAV1FileIsAMiss() {
+        val dir = tmp.newFolder()
+        val old = File(dir, "s1").apply { mkdirs() }.let { File(it, "1x-1_3500_30_7.tbl") } // 10 MHz / 1 m keys
+        old.writeBytes(ByteArray(TerrainTableStore.FILE_BYTES))
+        val s = TerrainTableStore(dir)
+        s.put(key(2), table(2))
+        assertThat(old.exists()).isFalse()
+        val bytes = TerrainTableStore.encode(7, table(1))
+        bytes[4] = 1 // format version 1 (CRC is now wrong too, but the version check comes first)
+        assertThat(TerrainTableStore.decode(7, bytes)).isNull()
+    }
+
     @Test fun tablesWithNegativeSiteAndDemIdsSurviveReindexing() {
         val dir = tmp.newFolder()
-        TerrainTableStore(dir).put(TableKey("s1", -3387000, -15121000, 3500, 30, -5L), table(3))
-        TerrainTableStore(dir).put(TableKey("s1", 3387000, 15121000, 700, 30, Long.MIN_VALUE), table(4))
+        TerrainTableStore(dir).put(TableKey("s1", -3387000, -15121000, 3550000, 30, -5L), table(3))
+        TerrainTableStore(dir).put(TableKey("s1", 3387000, 15121000, 700000, 30, Long.MIN_VALUE), table(4))
         assertThat(tbl(dir)).hasSize(2)
         val fresh = TerrainTableStore(dir) // re-index
-        assertThat(fresh.get(TableKey("s1", -3387000, -15121000, 3500, 30, -5L))).isNotNull()
-        assertThat(fresh.get(TableKey("s1", 3387000, 15121000, 700, 30, Long.MIN_VALUE))).isNotNull()
+        assertThat(fresh.get(TableKey("s1", -3387000, -15121000, 3550000, 30, -5L))).isNotNull()
+        assertThat(fresh.get(TableKey("s1", 3387000, 15121000, 700000, 30, Long.MIN_VALUE))).isNotNull()
         assertThat(tbl(dir)).hasSize(2)
     }
 

@@ -133,3 +133,28 @@ fun sydneyBatch(freqs: FloatArray, heights: FloatArray, sameSite: Boolean = fals
         FloatArray(n) { 15f }, IntArray(n) { it }, LongArray(n) { it.toLong() }, ByteArray(n), listOf("B28"),
     )
 }
+
+/**
+ * A dense city-centre carrier set around the Sydney tile (the Canberra CBD shape, Ruling UU): [sites] sites within about
+ * 1.5 km, three sectors each, every sector carrying the same 3 operators x 7 band carriers at different frequencies inside
+ * their bands; sector heights are the site's base height (18-45 m) plus 0, 0 and 3 m.
+ */
+fun cbdBatch(sites: Int = 8): CarrierBatch {
+    val bands = listOf(
+        listOf(763f, 773f, 788f), listOf(875f, 880f, 890f), listOf(1815f, 1840f, 1865f), listOf(2125f, 2140f, 2160f),
+        listOf(2310f, 2350f, 2380f), listOf(2630f, 2650f, 2680f), listOf(3425f, 3510f, 3690f),
+    )
+    class Row(val site: Int, val sector: Int, val f: Float, val h: Float, val op: Int)
+    val rows = ArrayList<Row>()
+    for (s in 0 until sites) for (sec in 0 until 3) for ((b, fs) in bands.withIndex()) for ((op, f) in fs.withIndex()) {
+        rows += Row(s, sec, f, 18f + (s * 7) % 28 + floatArrayOf(0f, 0f, 3f)[sec] + 0.3f * b, op)
+    }
+    val n = rows.size
+    return CarrierBatch(
+        n, DoubleArray(n) { -33.87 + 0.004 * ((rows[it].site % 5) - 2) }, DoubleArray(n) { 151.21 + 0.004 * ((rows[it].site / 5) - 1) },
+        FloatArray(n) { rows[it].h }, FloatArray(n) { rows[it].sector * 120f }, FloatArray(n) { 0f }, FloatArray(n) { 60f },
+        FloatArray(n) { rows[it].f }, IntArray(n) { 10_000_000 }, ByteArray(n) { 1 }, ByteArray(n) { rows[it].op.toByte() },
+        FloatArray(n) { 65f }, FloatArray(n) { 25f }, FloatArray(n) { 15f }, IntArray(n) { it }, LongArray(n) { it.toLong() },
+        ByteArray(n), listOf("B28"),
+    )
+}

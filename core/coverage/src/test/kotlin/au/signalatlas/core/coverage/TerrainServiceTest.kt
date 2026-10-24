@@ -89,7 +89,7 @@ class TerrainServiceTest {
         assertThat(r.cache.getMemory(key0)).isNotSameInstanceAs(r.cache.getMemory(key1))
         val tables = r.renderer.preparedTables.last()
         assertThat(tables.map { it.first }).containsExactly(0, 1)
-        assertThat(tables.map { it.second }).containsExactly(r.renderer.tableFor[3500f to 30f], r.renderer.tableFor[700f to 30f])
+        assertThat(tables.map { it.second }).containsExactly(r.renderer.tableFor[3550f to 30f], r.renderer.tableFor[700f to 30f])
     }
 
     @Test fun theVersionStaysPutWhilstTablesArePendingSoNoTileMixesTableSets() {
@@ -115,12 +115,12 @@ class TerrainServiceTest {
         for (cx in 0..1) for (cy in 0..1) r.render(11, r.at.x * 2 + cx, r.at.y * 2 + cy)
         r.service.setVisible(setOf(r.tile))
         Thread.sleep(150)
-        assertThat(r.renderer.buildCalls.sortedBy { it.first }).containsExactly(700f to 30f, 3500f to 30f).inOrder()
+        assertThat(r.renderer.buildCalls.sortedBy { it.first }).containsExactly(700f to 30f, 3550f to 30f).inOrder()
         assertThat(r.renderer.builds).hasSize(2)
     }
 
     @Test fun theBuildGetsTheCarriersKeyFrequencyAndKeyHeightAndRowsMapToTheirTables() {
-        // 3512.4 MHz -> 3510, 29.6 m -> 30; 2599.9 -> 2600, 2 m -> 3 (the 3 m floor); 3504 shares 3510's key at 30 m.
+        // 3512.4 MHz -> n78 centre 3550, 29.6 m -> 30; 2599.9 (no band) -> 2600, 2 m -> 4 (3 m floor, then 2 m steps); 3514 shares the n78 key.
         val towers = FakeTowers().apply {
             batchFor = { sydneyBatch(floatArrayOf(3512.4f, 2599.9f, 3514f), floatArrayOf(29.6f, 2f, 30.4f), sameSite = true) }
         }
@@ -128,13 +128,13 @@ class TerrainServiceTest {
         val key0 = r.key()
         r.render()
         r.awaitEpochAbove(0)
-        assertThat(r.renderer.buildCalls).containsExactly(3510f to 30f, 2600f to 3f)
+        assertThat(r.renderer.buildCalls).containsExactly(3550f to 30f, 2600f to 4f)
         r.render()
         assertThat(r.key()).isNotEqualTo(key0)
         val tables = r.renderer.preparedTables.last().toMap()
         assertThat(tables.keys).containsExactly(0, 1, 2)
-        assertThat(tables.getValue(0)).isSameInstanceAs(r.renderer.tableFor[3510f to 30f])
-        assertThat(tables.getValue(1)).isSameInstanceAs(r.renderer.tableFor[2600f to 3f])
+        assertThat(tables.getValue(0)).isSameInstanceAs(r.renderer.tableFor[3550f to 30f])
+        assertThat(tables.getValue(1)).isSameInstanceAs(r.renderer.tableFor[2600f to 4f])
         assertThat(tables.getValue(2)).isSameInstanceAs(tables.getValue(0)) // same key: one table, shared
     }
 
@@ -404,11 +404,39 @@ class TerrainServiceTest {
         }
         val r = rig(towers = towers)
         // Every pixel is served by prepared carrier 1 = batch row n - 2 (FakeRenderer), last in distance order.
-        val server = TerrainTable.frequencyKeyMhz(700f + 10 * (n - 2)).toFloat()
+        val server = TerrainKeys.frequencyKhz(700f + 10 * (n - 2)) / 1000f
         r.render()
         waitUntil(timeoutMs = 20_000, what = "all tables") { r.renderer.builds.size == TerrainCoordinator.MAX_TABLES_PER_REGION }
         assertThat(r.renderer.buildCalls.map { it.first }).contains(server)
         assertThat(r.renderer.buildCalls.first().first).isEqualTo(server)
+    }
+
+    /**
+     * Ruling UU: in a dense centre the old (site, 10 MHz, 1 m) keys needed far more than 128 tables per region, so the
+     * 95% rule could never be met; the (site, band centre, 2 m) keys of the same carriers fit, and every carrier then has
+     * its table.
+     */
+    @Test fun aDenseCityCentreFitsTheTableBudgetAndMeetsTheNinetyFivePercentRule() {
+        val batch = cbdBatch()
+        val oldKeys = (0 until batch.size).map {
+            Triple(batch.siteLat[it] to batch.siteLon[it], TerrainTable.frequencyKeyMhz(batch.freqMhz[it]), TerrainTable.heightKeyM(batch.heightM[it]))
+        }.toSet()
+        val newKeys = (0 until batch.size).map {
+            Triple(batch.siteLat[it] to batch.siteLon[it], TerrainKeys.frequencyKhz(batch.freqMhz[it]), TerrainKeys.heightM(batch.heightM[it]))
+        }.toSet()
+        assertThat(oldKeys.size).isGreaterThan(TerrainCoordinator.MAX_TABLES_PER_REGION)
+        assertThat(newKeys.size).isLessThan(TerrainCoordinator.MAX_TABLES_PER_REGION)
+
+        val r = rig(towers = FakeTowers().apply { batchFor = { batch } })
+        r.render()
+        waitUntil(timeoutMs = 20_000, what = "all ${newKeys.size} tables built") { r.renderer.builds.size == newKeys.size }
+        r.awaitEpochAbove(0)
+        Thread.sleep(100)
+        assertThat(r.renderer.buildCalls).hasSize(newKeys.size)
+        val key = r.key()
+        r.render()
+        assertThat(r.renderer.preparedTables.last()).hasSize(batch.size) // every carrier has its (shared) table
+        assertThat(accuracyOf(r, key)).isEqualTo(Accuracy.TERRAIN)
     }
 
     @Test fun onlyTheNearestTablesPerRegionAreBuilt() {
@@ -584,7 +612,7 @@ class TerrainServiceTest {
         assertThat(ran.await(5, TimeUnit.SECONDS)).isTrue()
         assertThat(r.service.hasTerrainRegion(r.tile.first, r.tile.second, r.tile.third)).isTrue() // the job recreated it
         waitUntil(what = "the recreated region's tables built") { r.renderer.builds.size == 2 }
-        assertThat(r.renderer.buildCalls).containsExactly(3500f to 30f, 700f to 30f)
+        assertThat(r.renderer.buildCalls).containsExactly(3550f to 30f, 700f to 30f)
         r.awaitEpochAbove(0)
     }
 
