@@ -107,7 +107,9 @@ class RadioMonitor(
 
     private fun registerAll() {
         try {
-            subManager.addOnSubscriptionsChangedListener(executor, subsListener)
+            // The Executor overload is API 30; API 29 only has the looper-bound one (the listener's constructing thread).
+            if (Build.VERSION.SDK_INT >= 30) subManager.addOnSubscriptionsChangedListener(executor, subsListener)
+            else subManager.addOnSubscriptionsChangedListener(subsListener)
         } catch (_: SecurityException) {
         }
         val tm = telephonyManager()
