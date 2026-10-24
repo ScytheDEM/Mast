@@ -51,18 +51,41 @@ fun TowerRepository.asTowerQuery(): TowerQuery = object : TowerQuery {
         runBlocking { withStore { it.sectorIdsByIdentity(idents) } } ?: emptyMap()
 }
 
+/** A carrier's predicted RSRP (dBm, NaN = unusable) at the fix: [row] indexes the batch handed to [PointPredictor.predict]. */
+internal class PointPrediction(val row: Int, val rsrpDbm: Float, val rMaxKm: Float)
+
+/** The engine side of rule 2, behind a seam so the matcher's inputs can be tested without the native library. */
+internal fun interface PointPredictor {
+    /** Predictions for the usable carriers of [batch] at ([lat], [lon]); [terrain] gives a carrier's table by batch row. */
+    fun predict(
+        batch: CarrierBatch, terrain: ((batchRow: Int) -> TerrainTable?)?, lat: Double, lon: Double, area: AreaClass,
+    ): List<PointPrediction>
+}
+
+/**
+ * Terrain tables the coverage side has ready around a fix: the carrier lookup (batch, row) -> table for the terrain
+ * region of ([lat], [lon]), or null when it has none there (coverage off, no elevation data, no tables built yet).
+ */
+fun interface TerrainTablesAt {
+    fun at(lat: Double, lon: Double): ((batch: CarrierBatch, row: Int) -> TerrainTable?)?
+}
+
 /**
  * Rule 1 against the tower DB and rule 2's predicted RSRP from the engine: carriers of the SIM's network (plus the
  * Optus/TPG regional joint venture, which serves both) and the serving technology within +-0.15 MHz of the channel
  * frequency on sites within 40 km, predicted uncalibrated at the fix (outdoor) for the fix's area class. [terrain]
- * supplies a carrier's terrain table when one is ready (batch, row) -> table; without it the quick model is used.
+ * supplies the terrain tables the coverage side has ready around the fix, so predictions include L_terr for the
+ * carriers that have a table and use the quick model for the rest (and everywhere without [terrain]).
  */
-class EngineCandidateSource(
+class EngineCandidateSource internal constructor(
     private val towers: TowerQuery,
-    private val engine: CoverageEngine,
-    private val patterns: () -> PatternStore?,
-    private val terrain: ((batch: CarrierBatch, row: Int) -> TerrainTable?)? = null,
+    private val predictor: PointPredictor,
+    private val terrain: TerrainTablesAt?,
 ) : CandidateSource {
+    constructor(
+        towers: TowerQuery, engine: CoverageEngine, patterns: () -> PatternStore?, terrain: TerrainTablesAt? = null,
+    ) : this(towers, enginePredictor(engine, patterns), terrain)
+
     override fun candidates(network: Network, tech: Tech, freqMhz: Double, lat: Double, lon: Double): CandidateSet? {
         val r = CalibrationMath.CANDIDATE_RADIUS_KM * 1000.0
         val dLat = Math.toDegrees(r / 6371008.8)
@@ -76,16 +99,16 @@ class EngineCandidateSource(
         }
         if (rows.isEmpty()) return CandidateSet(emptyList(), area)
         val sub = batch.rows(rows.toIntArray())
-        val prepared = engine.prepare(sub, patterns(), indoor = false, terrain = terrain?.let { t -> { row: Int -> t(batch, rows[row]) } })
-        val rsrp = engine.predictPoint(prepared, lat, lon, area, indoor = false)
+        val lookup = terrain?.at(lat, lon)
+        val predictions = predictor.predict(sub, lookup?.let { t -> { row: Int -> t(sub, row) } }, lat, lon, area)
         val idents = towers.identitiesOf(sub.sectorId.toList())
-        val out = (0 until prepared.size).mapNotNull { k ->
-            val row = prepared.batchIndex(k)
+        val out = predictions.mapNotNull { p ->
+            val row = p.row
             val ident = idents[sub.sectorId[row]] ?: return@mapNotNull null
-            rsrp[k].takeIf { it.isFinite() }?.let { p ->
+            p.rsrpDbm.takeIf { it.isFinite() }?.let { rsrp ->
                 Candidate(
                     sub.sectorId[row], sub.sddId[row], ident, Network.entries[sub.network[row].toInt()], sub.siteLat[row],
-                    sub.siteLon[row], sub.freqMhz[row].toDouble(), p.toDouble(), prepared.rMaxKm(k).toDouble(),
+                    sub.siteLon[row], sub.freqMhz[row].toDouble(), rsrp.toDouble(), p.rMaxKm.toDouble(),
                     sub.bandwidthHz[row] / 1e6,
                 )
             }
@@ -100,6 +123,13 @@ class EngineCandidateSource(
         }
     }
 }
+
+private fun enginePredictor(engine: CoverageEngine, patterns: () -> PatternStore?) =
+    PointPredictor { batch, terrain, lat, lon, area ->
+        val prepared = engine.prepare(batch, patterns(), indoor = false, terrain = terrain)
+        val rsrp = engine.predictPoint(prepared, lat, lon, area, indoor = false)
+        (0 until prepared.size).map { k -> PointPrediction(prepared.batchIndex(k), rsrp[k], prepared.rMaxKm(k)) }
+    }
 
 internal fun CarrierBatch.rows(rows: IntArray): CarrierBatch = CarrierBatch(
     rows.size,

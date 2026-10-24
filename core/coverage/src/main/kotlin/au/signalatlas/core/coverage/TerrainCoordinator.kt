@@ -244,6 +244,17 @@ internal class TerrainCoordinator(
 
     fun snapshot(tr: TerrainRegion): TerrainSnapshot = synchronized(lock) { tr.snapshot }
 
+    /**
+     * The terrain tables the kept region [k] has published, as a lookup by (carrier batch, row); null when the region is
+     * not kept (never created here) or has no tables. Creates and loads nothing.
+     */
+    fun tableLookup(k: TerrainKey?): ((CarrierBatch, Int) -> TerrainTable?)? {
+        if (k == null) return null
+        val (tr, snap) = synchronized(lock) { regions[k]?.let { it to it.snapshot } } ?: return null
+        if (snap.tables.isEmpty()) return null
+        return { b, row -> tableKey(tr, b, row)?.let { snap.tables[it] } }
+    }
+
     /** The table key of batch row [row] in [tr], or null for a carrier without a usable frequency. */
     fun tableKey(tr: TerrainRegion, b: CarrierBatch, row: Int): TableKey? {
         val f = b.freqMhz[row]

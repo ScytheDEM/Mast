@@ -9,6 +9,7 @@ import au.signalatlas.engine.AreaClass
 import au.signalatlas.engine.AreaClassifier
 import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.CoverageEngine
+import au.signalatlas.engine.TerrainTable
 import au.signalatlas.engine.RenderedTile
 import au.signalatlas.engine.SectorTerms
 import android.util.Log
@@ -246,6 +247,20 @@ class CoverageTileService internal constructor(
         return TileKey(
             z, x, y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, x, y, create = true), calVersion(z, x, y),
         )
+    }
+
+    /**
+     * The terrain tables ready around ([lat], [lon]) for the current selection and data, as a (carrier batch, row) ->
+     * table lookup that keys the tables exactly as the tile renderer does; null when there are none (coverage off, no
+     * terrain support, the area's elevation not stored, or no table built yet). Reads only: it never starts a download
+     * or a build, so a point query uses terrain only where the map has already been shown with it.
+     */
+    fun terrainTablesAt(lat: Double, lon: Double): ((CarrierBatch, Int) -> TerrainTable?)? {
+        val tc = terrain ?: return null
+        val sel = selection.value ?: return null
+        val stamp = towers.stamp() ?: return null
+        val at = TileMath.locate(lat, lon, TerrainCoordinator.TERRAIN_ZOOM) ?: return null
+        return tc.tableLookup(tc.keyFor(sel.cacheId(), stamp, patternsEtag(), TerrainCoordinator.TERRAIN_ZOOM, at.x, at.y))
     }
 
     /** Tiles the viewport needs; other queued or running renders are cancelled. */

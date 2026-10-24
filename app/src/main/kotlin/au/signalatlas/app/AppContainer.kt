@@ -17,6 +17,7 @@ import au.signalatlas.core.calibration.CalibrationDb
 import au.signalatlas.core.calibration.CalibrationStore
 import au.signalatlas.core.calibration.CellMatcher
 import au.signalatlas.core.calibration.EngineCandidateSource
+import au.signalatlas.core.calibration.TerrainTablesAt
 import au.signalatlas.core.calibration.SampleLogger
 import au.signalatlas.core.calibration.asTowerQuery
 import au.signalatlas.core.model.CalibrationSnapshot
@@ -160,7 +161,7 @@ class AppContainer(context: Context) {
 
     val radio = RadioMonitor(app, appScope)
 
-    private val candidates = EngineCandidateSource(towerQuery, CoverageEngine(), { patterns.patterns.value })
+    private val candidates = EngineCandidateSource(towerQuery, CoverageEngine(), { patterns.patterns.value }, TerrainTablesAt(coverage::terrainTablesAt))
 
     private val sampleLogger by lazy {
         SampleLogger(

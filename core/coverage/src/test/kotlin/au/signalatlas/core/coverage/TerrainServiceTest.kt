@@ -1,6 +1,8 @@
 package au.signalatlas.core.coverage
 
 import au.signalatlas.core.geo.InsufficientStorageException
+import au.signalatlas.core.data.CarrierBatch
+import au.signalatlas.core.model.Network
 import au.signalatlas.engine.TerrainTable
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.toList
@@ -90,6 +92,37 @@ class TerrainServiceTest {
         val tables = r.renderer.preparedTables.last()
         assertThat(tables.map { it.first }).containsExactly(0, 1)
         assertThat(tables.map { it.second }).containsExactly(r.renderer.tableFor[3550f to 30f], r.renderer.tableFor[700f to 30f])
+    }
+
+    /** Task: the calibration matcher predicts with the tables the map already has (any batch, keyed like the renderer's). */
+    @Test fun aPointQueryGetsTheTablesTheRegionHasReadyAndNothingBefore() {
+        val r = rig()
+        val here = -33.87 to 151.21
+        assertThat(r.service.terrainTablesAt(here.first, here.second)).isNull() // region not created yet
+        r.render()
+        r.renderer.holdBuilds = true
+        r.service.setVisible(setOf(r.tile))
+        assertThat(r.service.terrainTablesAt(here.first, here.second)).isNull() // region kept, no table published
+        r.renderer.holdBuilds = false
+        settled(r, tables = 2)
+
+        val lookup = r.service.terrainTablesAt(here.first, here.second)!!
+        val batch = fakeBatch() // the batch the tiles were rendered from: rows 0 and 1 have tables
+        assertThat(lookup(batch, 0)).isSameInstanceAs(r.renderer.tableFor[3550f to 30f])
+        assertThat(lookup(batch, 1)).isSameInstanceAs(r.renderer.tableFor[700f to 30f])
+        // Another batch (the matcher's own query) resolves by key: row 0's site at another n78 frequency shares its
+        // table, the same site at another height or in another band has none.
+        val b = fakeBatch()
+        val other = CarrierBatch(
+            3, DoubleArray(3) { b.siteLat[0] }, DoubleArray(3) { b.siteLon[0] }, floatArrayOf(30f, 12f, 30f), FloatArray(3), FloatArray(3),
+            FloatArray(3) { 60f }, floatArrayOf(3410f, 3410f, 2140f), IntArray(3) { 10_000_000 }, ByteArray(3) { 1 },
+            ByteArray(3) { Network.TELSTRA.ordinal.toByte() }, FloatArray(3) { 65f }, FloatArray(3) { 25f }, FloatArray(3) { 15f },
+            IntArray(3) { it }, LongArray(3) { it.toLong() }, ByteArray(3), listOf("n78"),
+        )
+        assertThat(lookup(other, 0)).isSameInstanceAs(r.renderer.tableFor[3550f to 30f])
+        assertThat(lookup(other, 1)).isNull()
+        assertThat(lookup(other, 2)).isNull()
+        assertThat(r.service.terrainTablesAt(-30.0, 140.0)).isNull() // another region
     }
 
     @Test fun theVersionStaysPutWhilstTablesArePendingSoNoTileMixesTableSets() {
