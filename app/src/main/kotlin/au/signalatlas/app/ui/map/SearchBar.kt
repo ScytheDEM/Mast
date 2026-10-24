@@ -36,6 +36,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
@@ -64,6 +66,21 @@ fun TowerSearchBar(
     modifier: Modifier = Modifier,
 ) {
     val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    // The field only expands when the user touched the bar: a fold/unfold recomposes it and the system may hand it
+    // focus, which must neither expand it nor raise the keyboard.
+    var touched by remember { mutableStateOf(false) }
+    val requestExpanded: (Boolean) -> Unit = { want ->
+        if (!want) {
+            touched = false
+            onExpandedChange(false)
+        } else if (touched || expanded) {
+            onExpandedChange(true)
+        } else {
+            focus.clearFocus()
+            keyboard?.hide()
+        }
+    }
     var text by rememberSaveable { mutableStateOf(search.query) }
     val setText = { q: String ->
         text = q
@@ -76,7 +93,7 @@ fun TowerSearchBar(
             onQueryChange = setText,
             onSearch = { results?.firstOrNull()?.let(onResultClick); focus.clearFocus() },
             expanded = expanded,
-            onExpandedChange = onExpandedChange,
+            onExpandedChange = requestExpanded,
             placeholder = { Text(stringResource(R.string.search_hint), maxLines = 1, overflow = TextOverflow.Ellipsis) },
             leadingIcon = {
                 if (expanded) {
@@ -103,8 +120,8 @@ fun TowerSearchBar(
         DockedSearchBar(
             inputField = input,
             expanded = expanded,
-            onExpandedChange = onExpandedChange,
-            modifier = modifier,
+            onExpandedChange = requestExpanded,
+            modifier = modifier.touchGate { touched = true },
             colors = colors,
             shadowElevation = 3.dp,
         ) { content() }
@@ -112,8 +129,8 @@ fun TowerSearchBar(
         SearchBar(
             inputField = input,
             expanded = expanded,
-            onExpandedChange = onExpandedChange,
-            modifier = modifier,
+            onExpandedChange = requestExpanded,
+            modifier = modifier.touchGate { touched = true },
             colors = colors,
             shadowElevation = if (expanded) 0.dp else 3.dp,
         ) { content() }
@@ -178,5 +195,15 @@ fun CollapseSearchOnWindowChange(sizeKey: Any, onCollapse: () -> Unit) {
         collapse()
         focus.clearFocus()
         keyboard?.hide()
+    }
+}
+
+/** Calls [onTouch] when a pointer goes down anywhere on this element, without consuming it. */
+private fun Modifier.touchGate(onTouch: () -> Unit): Modifier = pointerInput(Unit) {
+    awaitPointerEventScope {
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.any { it.pressed }) onTouch()
+        }
     }
 }
