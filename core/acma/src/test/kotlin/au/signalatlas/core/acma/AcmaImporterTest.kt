@@ -60,13 +60,15 @@ class AcmaImporterTest {
     }
 
     /** Copies [src], passing device_details.csv through [rewrite]. */
-    private fun rewriteDevices(src: File, rewrite: (String) -> String): File {
+    private fun rewriteDevices(src: File, rewrite: (String) -> String): File = rewriteEntry(src, "device_details.csv", rewrite)
+
+    private fun rewriteEntry(src: File, entry: String, rewrite: (String) -> String): File {
         val dst = File(tmp.root, "rewritten-${System.nanoTime()}.zip")
         ZipFile(src).use { zf ->
             ZipOutputStream(dst.outputStream()).use { zos ->
                 for (e in zf.entries()) {
                     var bytes = zf.getInputStream(e).readBytes()
-                    if (e.name == "device_details.csv") {
+                    if (e.name == entry) {
                         bytes = rewrite(String(bytes, Charsets.ISO_8859_1)).toByteArray(Charsets.ISO_8859_1)
                     }
                     zos.putNextEntry(ZipEntry(e.name))
@@ -238,10 +240,31 @@ class AcmaImporterTest {
     }
 
     @Test
+    fun siteKindDefaultsToMacroOnTheFixture() {
+        // tools/acma/reference.py site_kinds(): 4 sites, all MACRO.
+        val (_, out) = importFixture()
+        withDb(out) { db -> assertThat(db.scalarText("SELECT COUNT(*) FROM site WHERE site_kind = 0")).isEqualTo("4") }
+    }
+
+    @Test
+    fun siteKindFollowsNameRules() {
+        val zip = rewriteEntry(fixture, "site.csv") { csv ->
+            csv.replace("CMTS Site Computer Associates House", "Optus IBC Harbour Tunnel")
+                .replace("National Science and Technology Centre", "Westfield Belconnen")
+        }
+        val (_, out) = importFixture(zip)
+        withDb(out) { db ->
+            assertThat(db.scalarText("SELECT site_kind FROM site WHERE id = 101160")).isEqualTo("2")
+            assertThat(db.scalarText("SELECT site_kind FROM site WHERE id = 41428")).isEqualTo("1")
+            assertThat(db.scalarText("SELECT site_kind FROM site WHERE id = 9019760")).isEqualTo("0")
+        }
+    }
+
+    @Test
     fun metaWritten() {
         val (report, out) = importFixture()
         withDb(out) { db ->
-            assertThat(db.scalarText("SELECT value FROM meta WHERE key = 'schema_version'")).isEqualTo("1")
+            assertThat(db.scalarText("SELECT value FROM meta WHERE key = 'schema_version'")).isEqualTo("2")
             assertThat(db.scalarText("SELECT value FROM meta WHERE key = 'extract_stamp'")).isEqualTo("202610221934")
             assertThat(db.scalarText("SELECT value FROM meta WHERE key = 'zip_etag'")).isEqualTo("\"etag-1\"")
             val importedAt = db.scalarText("SELECT value FROM meta WHERE key = 'imported_at'")!!
@@ -324,7 +347,7 @@ class AcmaImporterTest {
         assertThat(logged.all { line.matches(it) }).isTrue()
         assertThat(logged.map { line.matchEntire(it)!!.groupValues[1] }).containsExactly(
             "client", "licence", "devices", "sites", "antennas",
-            "finalise.eirp", "finalise.indexes", "finalise.prune", "finalise.renumber", "finalise.summary",
+            "finalise.eirp", "finalise.indexes", "finalise.prune", "finalise.renumber", "finalise.kind", "finalise.summary",
             "finalise.report", "finalise", "total",
         ).inOrder()
     }

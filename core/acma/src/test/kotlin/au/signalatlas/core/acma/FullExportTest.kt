@@ -70,6 +70,13 @@ class FullExportTest {
                 ),
             ),
         )
+        // Rule 12 counts from tools/acma/reference.py site_kinds() on the same export.
+        val kinds = androidx.sqlite.driver.bundled.BundledSQLiteDriver().open(out.path).use { c ->
+            c.prepare("SELECT site_kind, COUNT(*) FROM site GROUP BY site_kind ORDER BY site_kind").use { st ->
+                buildMap { while (st.step()) put(st.getLong(0).toInt(), st.getLong(1).toInt()) }
+            }
+        }
+        assertThat(kinds).containsExactly(0, 23308, 1, 1854, 2, 197)
         assertThat(peakMb).isLessThan(160.0)
     }
 }

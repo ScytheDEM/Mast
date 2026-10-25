@@ -110,14 +110,14 @@ class TowerStoreTest {
     @Test fun openRejectsAnotherSchemaVersion() {
         val copy = File(tmp.newFolder(), "towers.db").also { db.copyTo(it) }
         BundledSQLiteDriver().open(copy.path).use { c ->
-            c.execSQL("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+            c.execSQL("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
         }
         try {
             TowerStore.open(copy)
             error("expected SchemaMismatchException")
         } catch (e: SchemaMismatchException) {
-            assertThat(e.found).isEqualTo(2)
-            assertThat(e.expected).isEqualTo(1)
+            assertThat(e.found).isEqualTo(3)
+            assertThat(e.expected).isEqualTo(2)
         }
     }
 

@@ -58,6 +58,27 @@ power units, omni sectors, null antennas, rounding and skip precedence (band -> 
   an invalid SITE_ID is a missing site. Rows in site.csv/antenna.csv/client.csv with invalid IDs are ignored.
 - `antennas` counts distinct non-blank antenna IDs on kept sectors that exist in antenna.csv.
 
+## Rule 12: DAS site classification (tower DB schema v2, `site.site_kind`)
+
+`site_kind` is 0 MACRO, 1 DAS_BUILDING, 2 DAS_TUNNEL (Kotlin `SiteKind` / `SiteClassifier`, Python `site_kind()` /
+`site_kinds()`), computed per kept site after pruning from its trimmed `NAME` and its kept sectors/carriers:
+
+1. `NAME` matches (case-insensitive, ASCII word boundaries) `\b(tunnel|tunl)\b` -> DAS_TUNNEL.
+2. Else, after blanking the macro look-alikes below, `NAME` matches
+   `\b(ibc|in[- ]?building|das|distributed antenna|shopping (centre|center)|westfield|stadium|arena|station|airport terminal|hospital|university|plaza|tower \d+|level \d+|carpark)\b`
+   (`tower`/`level` numbers not followed by `.digit`), OR all sectors have height <= 6 m AND the maximum carrier EIRP
+   is <= 40 dBm AND every sector is omni (null azimuth) or has an antenna with `H_BEAMWIDTH` >= 90 -> DAS_BUILDING.
+3. Else MACRO.
+
+Look-alikes blanked before step 2 (tuned on the real export, where "Lattice Tower 21 ...", "Station Pier" and
+"Repeater Station Road" were the obvious false positives): `(lattice|monopole|guyed|mast|pole|steel|<n>m) tower`,
+`station (road|rd|street|st|avenue|ave|pier|drive|dr|lane|ln|way|parade|pde|creek|hill|point)` and
+`(repeater|pump|pumping|fire|police|petrol|service|power|cattle|sheep|weather) station`.
+
+Export 2026-10-22: MACRO 23 308, DAS_BUILDING 1 854 (30 by geometry alone), DAS_TUNNEL 197 of 25 359 sites;
+Kotlin (`FullExportTest`) and Python agree. A 20-name spot-check of the tunnel tags and 50 of the building tags
+found no systematic false positives left (residual: rural "Mount ... Station", hospital sites that are really macro).
+
 ## Full export (Task 12 reference)
 
 Export 2026-10-22, extract stamp 202610221934 (`spectra_rrl.zip`, 68 MB), with band plan including B26/n26 and n77

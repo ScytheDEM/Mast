@@ -41,6 +41,9 @@ class DbValidator(
         val sites = long(conn, "SELECT COUNT(*) FROM site")
         if (sites < minSites) return Validation.Invalid("site count $sites below minimum $minSites")
 
+        val badKind = long(conn, "SELECT COUNT(*) FROM site WHERE site_kind NOT BETWEEN 0 AND 2")
+        if (badKind > 0) return Validation.Invalid("$badKind site(s) with an unknown site_kind")
+
         val orphanSectors = long(conn, "SELECT COUNT(*) FROM sector WHERE site_id NOT IN (SELECT id FROM site)")
         if (orphanSectors > 0) return Validation.Invalid("orphan sector: $orphanSectors sector(s) without a site")
 
