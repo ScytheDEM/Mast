@@ -4,21 +4,12 @@ import au.signalatlas.core.model.GeoBounds
 
 enum class PackKind { STATE, METRO, CORRIDOR, CUSTOM }
 
-/**
- * A pack that can be downloaded. [basemapFill] is the share of the area's tile count that really holds data
- * (a state's bounding box is mostly empty outback and ocean), used only for the size estimate.
- */
-data class PackDef(
-    val id: String,
-    val name: String,
-    val kind: PackKind,
-    val area: PackArea,
-    val basemapFill: Double = 1.0,
-)
+/** A pack that can be downloaded. */
+data class PackDef(val id: String, val name: String, val kind: PackKind, val area: PackArea)
 
 object PackCatalogue {
     private fun box(id: String, name: String, kind: PackKind, s: Double, w: Double, n: Double, e: Double, fill: Double = 1.0) =
-        PackDef(id, name, kind, PackArea.Box(GeoBounds(s, w, n, e)), fill)
+        PackDef(id, name, kind, PackArea.Box(GeoBounds(s, w, n, e), fill))
 
     private fun road(id: String, name: String, vararg pts: Double) =
         PackDef(id, name, PackKind.CORRIDOR, PackArea.Corridor(pts.toList().chunked(2).map { LatLon(it[0], it[1]) }))

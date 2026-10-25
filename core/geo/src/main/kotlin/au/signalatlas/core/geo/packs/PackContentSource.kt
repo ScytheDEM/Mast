@@ -72,5 +72,5 @@ object PackSizes {
     /** Mean size of one Protomaps vector tile over z0..14 where there is data. */
     const val AVG_TILE_BYTES = 12_000L
 
-    fun basemapBytes(def: PackDef): Long = (TileCounts.total(def.area.basemapBoxes()) * def.basemapFill * AVG_TILE_BYTES).toLong()
+    fun basemapBytes(area: PackArea): Long = (TileCounts.total(area.basemapBoxes()) * area.basemapFill * AVG_TILE_BYTES).toLong()
 }

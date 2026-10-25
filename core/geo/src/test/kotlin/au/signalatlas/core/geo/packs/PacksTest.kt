@@ -82,12 +82,12 @@ class PacksTest {
         val sydney = PackCatalogue.byId("metro-sydney")!!
         val tiles = TileCounts.total(sydney.area.basemapBoxes())
         assertThat(tiles).isGreaterThan(1000)
-        assertThat(PackSizes.basemapBytes(sydney)).isEqualTo(tiles * PackSizes.AVG_TILE_BYTES)
+        assertThat(PackSizes.basemapBytes(sydney.area)).isEqualTo(tiles * PackSizes.AVG_TILE_BYTES)
         // A state scales with its area and is discounted by its fill factor.
         val nsw = PackCatalogue.byId("state-nsw")!!
-        assertThat(PackSizes.basemapBytes(nsw)).isGreaterThan(PackSizes.basemapBytes(sydney) * 10)
+        assertThat(PackSizes.basemapBytes(nsw.area)).isGreaterThan(PackSizes.basemapBytes(sydney.area) * 10)
         val unfilled = TileCounts.total(nsw.area.basemapBoxes()) * PackSizes.AVG_TILE_BYTES
-        assertThat(PackSizes.basemapBytes(nsw).toDouble()).isWithin(2.0).of(unfilled * nsw.basemapFill)
+        assertThat(PackSizes.basemapBytes(nsw.area).toDouble()).isWithin(2.0).of(unfilled * nsw.area.basemapFill)
     }
 
     @Test fun `areas round trip through JSON`() {
@@ -98,7 +98,7 @@ class PacksTest {
 
     private fun chunk(id: ChunkId) = DemChunk(id, ShortArray(301 * 301) { (it % 97).toShort() })
 
-    @Test fun `pinning protects a pack's chunks from eviction until it is removed`() = runBlocking {
+    @Test fun `pinning protects a pack's chunks from eviction until it is removed`() = runBlocking<Unit> {
         val store = DemChunkStore(tmp.newFolder("dem"), { 0L }) // a budget of zero evicts anything unprotected
         val area = PackArea.Box(GeoBounds(-33.9, 151.0, -33.8, 151.1))
         val ids = area.demChunks()

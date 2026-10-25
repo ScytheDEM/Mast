@@ -29,17 +29,22 @@ sealed interface PackArea {
      */
     fun basemapBoxes(): List<GeoBounds>
 
+    /** Share (0..1) of the base map tiles over [bounds] that hold data; only scales the size estimate. */
+    val basemapFill: Double
+
     fun toJson(): JSONObject
 
-    data class Box(val box: GeoBounds) : PackArea {
+    data class Box(val box: GeoBounds, override val basemapFill: Double = 1.0) : PackArea {
         override val bounds get() = box
         override fun demChunks() = ChunkMath.chunksFor(box, DEM_MARGIN_KM)
         override fun basemapBoxes() = listOf(box)
         override fun toJson() = JSONObject().put("type", "box")
-            .put("s", box.south).put("w", box.west).put("n", box.north).put("e", box.east)
+            .put("s", box.south).put("w", box.west).put("n", box.north).put("e", box.east).put("fill", basemapFill)
     }
 
     data class Corridor(val points: List<LatLon>, val bufferKm: Double = CORRIDOR_BUFFER_KM) : PackArea {
+        override val basemapFill get() = 1.0
+
         init { require(points.size >= 2) { "A corridor needs at least two points" } }
 
         override val bounds: GeoBounds get() = boundsOf(points).grow(bufferKm)
@@ -92,7 +97,7 @@ sealed interface PackArea {
         private const val KM_PER_DEG = 111.195
 
         fun fromJson(o: JSONObject): PackArea = when (o.getString("type")) {
-            "box" -> Box(GeoBounds(o.getDouble("s"), o.getDouble("w"), o.getDouble("n"), o.getDouble("e")))
+            "box" -> Box(GeoBounds(o.getDouble("s"), o.getDouble("w"), o.getDouble("n"), o.getDouble("e")), o.optDouble("fill", 1.0))
             "corridor" -> {
                 val a = o.getJSONArray("points")
                 Corridor(List(a.length()) { LatLon(a.getJSONArray(it).getDouble(0), a.getJSONArray(it).getDouble(1)) }, o.getDouble("buffer"))
