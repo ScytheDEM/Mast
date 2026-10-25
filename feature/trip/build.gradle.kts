@@ -31,6 +31,7 @@ dependencies {
     api(project(":core:calibration"))
     api(project(":core:data"))
     api(project(":core:model"))
+    api(project(":core:roads"))
     api(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
 

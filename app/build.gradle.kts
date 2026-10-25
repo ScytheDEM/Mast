@@ -65,6 +65,7 @@ dependencies {
     implementation(project(":core:map"))
     implementation(project(":core:coverage"))
     implementation(project(":core:geo"))
+    implementation(project(":core:roads"))
     implementation(project(":core:radio"))
     implementation(project(":core:calibration"))
     implementation(project(":feature:trip"))
