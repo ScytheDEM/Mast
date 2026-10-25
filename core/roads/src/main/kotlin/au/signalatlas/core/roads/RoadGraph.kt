@@ -11,7 +11,15 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /** A position on the graph: [alongM] metres from the edge's first node, travelling [forward] (first to second node) or not. */
-class RoadMatch(val edge: Int, val forward: Boolean, val alongM: Double, val distanceM: Double, val headingDiffDeg: Double)
+class RoadMatch(
+    val edge: Int,
+    val forward: Boolean,
+    val alongM: Double,
+    val distanceM: Double,
+    val headingDiffDeg: Double,
+    /** The matched edge is a tunnel (Protomaps `is_tunnel`). */
+    val isTunnel: Boolean = false,
+)
 
 /** [points] every `stepM` metres from the matched position, [roadLengthM] being how far the graph itself carried the path (the rest is straight). */
 class RoadPath(val points: List<LatLon>, val roadLengthM: Double)
@@ -62,6 +70,8 @@ class RoadGraph private constructor(
     private val elen: DoubleArray,
     private val adj: Array<IntArray>,
     private val index: SegmentIndex,
+    private val etunnel: BooleanArray,
+    private val tunnelIndex: SegmentIndex,
 ) {
     private val cosLat = cos(Math.toRadians(originLat))
 
@@ -101,10 +111,44 @@ class RoadGraph private constructor(
             val backDiff = angleDiff(bearing + 180.0, headingDeg)
             val forward = fwdDiff <= backDiff
             val diff = min(fwdDiff, backDiff)
-            if (diff <= maxHeadingDiffDeg) found += RoadMatch(e, forward, t * elen[e], d, diff)
+            if (diff <= maxHeadingDiffDeg) found += RoadMatch(e, forward, t * elen[e], d, diff, etunnel[e])
         }
         val nearest = found.minOfOrNull { it.distanceM } ?: return null
         return found.filter { it.distanceM <= nearest + TIE_M }.minByOrNull { it.headingDiffDeg }
+    }
+
+    /** Distance in metres from the point to the nearest tunnel edge, or null when none lies within [maxM]. */
+    fun tunnelDistanceM(lat: Double, lon: Double, maxM: Double): Double? {
+        val (px, py) = toXY(lat, lon)
+        var best = Double.MAX_VALUE
+        for (e in tunnelIndex.query(px, py, maxM)) best = min(best, segmentDistance(e, px, py).first)
+        return best.takeIf { it <= maxM }
+    }
+
+    /**
+     * The point on the graph nearest to the given one within [maxM] (only tunnel edges when [tunnelOnly]), with the
+     * match for following the road on from it; null when nothing is that close.
+     */
+    fun nearestOnRoad(lat: Double, lon: Double, maxM: Double, tunnelOnly: Boolean = false): Pair<LatLon, RoadMatch>? {
+        val (px, py) = toXY(lat, lon)
+        var best: Triple<Int, Double, Double>? = null // edge, distance, t
+        for (e in (if (tunnelOnly) tunnelIndex else index).query(px, py, maxM)) {
+            val (d, t) = segmentDistance(e, px, py)
+            if (d <= maxM && (best == null || d < best.second)) best = Triple(e, d, t)
+        }
+        val (e, d, t) = best ?: return null
+        val x = nx[ea[e]] + (nx[eb[e]] - nx[ea[e]]) * t
+        val y = ny[ea[e]] + (ny[eb[e]] - ny[ea[e]]) * t
+        return toLatLon(x, y) to RoadMatch(e, true, t * elen[e], d, 0.0, etunnel[e])
+    }
+
+    /** Distance from (px, py) to edge [e] and the fraction along it of the closest point. */
+    private fun segmentDistance(e: Int, px: Double, py: Double): Pair<Double, Double> {
+        val ax = nx[ea[e]]; val ay = ny[ea[e]]
+        val dx = nx[eb[e]] - ax; val dy = ny[eb[e]] - ay
+        val len2 = dx * dx + dy * dy
+        val t = if (len2 == 0.0) 0.0 else (((px - ax) * dx + (py - ay) * dy) / len2).coerceIn(0.0, 1.0)
+        return hypot(px - (ax + dx * t), py - (ay + dy * t)) to t
     }
 
     /**
@@ -230,12 +274,16 @@ class RoadGraph private constructor(
             }
 
             val edges = HashMap<Long, Int>()
+            val tunnels = HashMap<Long, Boolean>() // an edge is a tunnel only if every way over it is
             fun key(a: Int, b: Int) = (min(a, b).toLong() shl 32) or max(a, b).toLong()
             for (w in ways) {
                 var prev = -1
                 for (p in w.points) {
                     val n = node(Math.toRadians(p.lon - originLon) * cos0 * EARTH_R, Math.toRadians(p.lat - originLat) * EARTH_R)
-                    if (prev >= 0 && n != prev) edges.merge(key(prev, n), w.roadClass.rank) { p, q -> max(p, q) }
+                    if (prev >= 0 && n != prev) {
+                        edges.merge(key(prev, n), w.roadClass.rank) { p, q -> max(p, q) }
+                        tunnels.merge(key(prev, n), w.isTunnel) { p, q -> p && q }
+                    }
                     prev = n
                 }
             }
@@ -244,12 +292,13 @@ class RoadGraph private constructor(
             val a = ArrayList<Int>(edges.size)
             val b = ArrayList<Int>(edges.size)
             val r = ArrayList<Int>(edges.size)
+            val tn = ArrayList<Boolean>(edges.size)
             val deg = IntArray(xs.size)
             val idx = SegmentIndex()
             for ((k, rank) in edges) {
                 val u = (k ushr 32).toInt(); val v = (k and 0xFFFFFFFFL).toInt()
                 idx.add(a.size, xs[u], ys[u], xs[v], ys[v])
-                a += u; b += v; r += rank
+                a += u; b += v; r += rank; tn += tunnels.getValue(k)
                 deg[u]++; deg[v]++
             }
             for (n in xs.indices) {
@@ -264,30 +313,38 @@ class RoadGraph private constructor(
                     if (t <= 0.0 || t >= 1.0 || hypot(xs[n] - (xs[u] + dx * t), ys[n] - (ys[u] + dy * t)) > SNAP_M) continue
                     b[e] = n
                     idx.add(a.size, xs[n], ys[n], xs[v], ys[v])
-                    a += n; b += v; r += r[e]
+                    a += n; b += v; r += r[e]; tn += tn[e]
                     break
                 }
             }
 
             val unique = HashMap<Long, Int>()
-            for (i in a.indices) if (a[i] != b[i]) unique.merge(key(a[i], b[i]), r[i]) { p, q -> max(p, q) }
+            val uniqueTunnel = HashMap<Long, Boolean>()
+            for (i in a.indices) if (a[i] != b[i]) {
+                unique.merge(key(a[i], b[i]), r[i]) { p, q -> max(p, q) }
+                uniqueTunnel.merge(key(a[i], b[i]), tn[i]) { p, q -> p && q }
+            }
             val m = unique.size
             val fa = IntArray(m); val fb = IntArray(m); val fr = IntArray(m); val fl = DoubleArray(m)
+            val ft = BooleanArray(m)
             val index = SegmentIndex()
+            val tunnelIndex = SegmentIndex()
             val counts = IntArray(xs.size)
             var i = 0
             for ((k, rank) in unique) {
                 val u = (k ushr 32).toInt(); val v = (k and 0xFFFFFFFFL).toInt()
                 fa[i] = u; fb[i] = v; fr[i] = rank
                 fl[i] = hypot(xs[v] - xs[u], ys[v] - ys[u])
+                ft[i] = uniqueTunnel.getValue(k)
                 index.add(i, xs[u], ys[u], xs[v], ys[v])
+                if (ft[i]) tunnelIndex.add(i, xs[u], ys[u], xs[v], ys[v])
                 counts[u]++; counts[v]++
                 i++
             }
             val adj = Array(xs.size) { IntArray(counts[it]) }
             val fill = IntArray(xs.size)
             for (e in 0 until m) { adj[fa[e]][fill[fa[e]]++] = e; adj[fb[e]][fill[fb[e]]++] = e }
-            return RoadGraph(originLat, originLon, xs.toDoubleArray(), ys.toDoubleArray(), fa, fb, fr, fl, adj, index)
+            return RoadGraph(originLat, originLon, xs.toDoubleArray(), ys.toDoubleArray(), fa, fb, fr, fl, adj, index, ft, tunnelIndex)
         }
     }
 }

@@ -40,6 +40,14 @@ class FiltersTest {
         assertThat(TowerFilter().toggleNetwork(Network.OPTUS).toggleTech(Tech.NR).reset().activeCount()).isEqualTo(0)
     }
 
+    @Test fun dasChipTogglesAndCounts() {
+        val f = TowerFilter().toggleDas()
+        assertThat(f.dasOnly).isTrue()
+        assertThat(f.activeCount()).isEqualTo(1)
+        assertThat(f.reset().dasOnly).isFalse()
+        assertThat(f.toggleDas().dasOnly).isFalse()
+    }
+
     @Test fun overflowIconBadgeShowsTheCountAndHidesAtZero() {
         var count by mutableStateOf(2)
         var opened = 0

@@ -78,6 +78,7 @@ import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory.textHaloColor
 import org.maplibre.android.style.layers.PropertyFactory.textHaloWidth
 import org.maplibre.android.style.layers.PropertyFactory.textOptional
+import org.maplibre.android.style.layers.PropertyFactory.textOffset
 import org.maplibre.android.style.layers.PropertyFactory.textPadding
 import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
@@ -168,6 +169,8 @@ private const val SITES_SOURCE = "sites"
 private const val LAYER_CLUSTERS = "sites-clusters"
 private const val LAYER_CLUSTER_COUNT = "sites-cluster-count"
 private const val LAYER_POINTS = "sites-points"
+private const val LAYER_DAS_RING = "sites-das-ring"
+private const val LAYER_DAS_GLYPH = "sites-das-glyph"
 private const val LAYER_SELECTED = "sites-selected"
 private const val BEAMS_SOURCE = "site-beams"
 private const val LAYER_BEAMS = "site-beams-fill"
@@ -513,6 +516,37 @@ private fun addTowerLayers(style: Style, dark: Boolean) {
             circleStrokeWidth(1.5f),
         ),
     )
+    // DAS (in-building / tunnel) sites: a coloured ring around the dot plus a D / T glyph once zoomed in.
+    val dasColor = match(
+        get("das"), color(TowerLayer.DAS_BUILDING_ARGB),
+        stop(2, color(TowerLayer.DAS_TUNNEL_ARGB)),
+    )
+    style.addLayer(
+        CircleLayer(LAYER_DAS_RING, SITES_SOURCE)
+            .withFilter(org.maplibre.android.style.expressions.Expression.all(not(has("point_count")), TowerLayer.dasFilter()))
+            .withProperties(
+                circleColor(0x00000000),
+                circleRadius(interpolate(linear(), zoom(), stop(8, 8), stop(16, 14))),
+                circleStrokeColor(dasColor),
+                circleStrokeWidth(3f),
+            ),
+    )
+    style.addLayer(
+        SymbolLayer(LAYER_DAS_GLYPH, SITES_SOURCE)
+            .withFilter(org.maplibre.android.style.expressions.Expression.all(not(has("point_count")), TowerLayer.dasFilter()))
+            .withProperties(
+                textField(match(get("das"), literal("D"), stop(2, literal("T")))),
+                textFont(arrayOf("Noto Sans Medium")),
+                textSize(11f),
+                textColor(dasColor),
+                textHaloColor(0xFFFFFFFF.toInt()),
+                textHaloWidth(1.5f),
+                textOffset(arrayOf(0f, -1.6f)),
+                textAllowOverlap(true),
+                textIgnorePlacement(true),
+            ),
+    )
+    style.getLayerAs<SymbolLayer>(LAYER_DAS_GLYPH)?.minZoom = 12f
     // Drawn on top; its filter is the only thing that changes when the selection does.
     style.addLayer(
         CircleLayer(LAYER_SELECTED, SITES_SOURCE)

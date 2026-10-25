@@ -68,3 +68,36 @@ class MvtTest {
         assertThat(Mvt.decode(ByteArray(0))).isEmpty()
     }
 }
+
+/** Hand-encoded MVT: one `roads` layer with a single east-west line feature carrying the given (key, value) properties. */
+internal object TestMvt {
+    private fun varint(v: Long): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        var x = v
+        while (x >= 0x80) { out.write(((x and 0x7F) or 0x80).toInt()); x = x ushr 7 }
+        out.write(x.toInt())
+        return out.toByteArray()
+    }
+
+    private fun field(num: Int, wire: Int, payload: ByteArray): ByteArray =
+        varint((num shl 3 or wire).toLong()) + (if (wire == 2) varint(payload.size.toLong()) else byteArrayOf()) + payload
+
+    private fun packed(vararg v: Int) = v.fold(byteArrayOf()) { acc, i -> acc + varint(i.toLong()) }
+
+    private fun value(v: Any): ByteArray = when (v) {
+        is String -> field(1, 2, v.toByteArray())
+        is Boolean -> field(7, 0, varint(if (v) 1 else 0))
+        else -> error("unsupported $v")
+    }
+
+    fun roadsTile(props: List<Pair<String, Any>>): ByteArray {
+        val tags = props.indices.flatMap { listOf(it, it) }.toIntArray()
+        val feature = field(2, 2, packed(*tags)) + field(3, 0, varint(2)) +
+            field(4, 2, packed(9, 0, 4096, 10, 8192, 0))
+        var layer = field(1, 2, "roads".toByteArray()) + field(2, 2, feature)
+        props.forEach { layer += field(3, 2, it.first.toByteArray()) }
+        props.forEach { layer += field(4, 2, value(it.second)) }
+        layer += field(5, 0, varint(4096)) + field(15, 0, varint(2))
+        return field(3, 2, layer)
+    }
+}

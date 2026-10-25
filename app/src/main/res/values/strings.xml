@@ -241,6 +241,11 @@
     </plurals>
     <string name="filters_networks">Networks</string>
     <string name="filters_technology">Technology</string>
+    <string name="filters_site_type">Site type</string>
+    <string name="filters_das">In-building / tunnel (DAS)</string>
+    <string name="das_in_building">DAS · in-building</string>
+    <string name="das_tunnel">DAS · tunnel</string>
+    <string name="das_badge">DAS</string>
     <string name="filters_bands">Bands</string>
     <string name="filters_button">Filters</string>
     <plurals name="filters_badge_description">
