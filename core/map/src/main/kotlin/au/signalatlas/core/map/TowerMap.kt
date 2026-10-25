@@ -75,6 +75,10 @@ import org.maplibre.android.style.layers.PropertyFactory.textFont
 import org.maplibre.android.style.layers.PropertyFactory.textIgnorePlacement
 import org.maplibre.android.style.layers.PropertyFactory.textSize
 import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.layers.PropertyFactory.textHaloColor
+import org.maplibre.android.style.layers.PropertyFactory.textHaloWidth
+import org.maplibre.android.style.layers.PropertyFactory.textOptional
+import org.maplibre.android.style.layers.PropertyFactory.textPadding
 import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 
@@ -90,7 +94,11 @@ class MapCameraState(initialLat: Double = -27.0, initialLon: Double = 134.0, ini
     /** The last settled zoom (the initial one before the map has been touched). */
     val currentZoom: Double get() = zoom
 
-    fun animateTo(lat: Double, lon: Double, zoom: Double) {
+    /**
+     * Centres ([lat], [lon]) at [zoom] in the part of the map not covered by [bottomInsetPx] (e.g. an open bottom sheet).
+     * The inset stays the camera's padding until the next call.
+     */
+    fun animateTo(lat: Double, lon: Double, zoom: Double, bottomInsetPx: Int = 0) {
         val m = map
         if (m == null) {
             pending = Triple(lat, lon, zoom)
@@ -98,7 +106,12 @@ class MapCameraState(initialLat: Double = -27.0, initialLon: Double = 134.0, ini
             this.lon = lon
             this.zoom = zoom
         } else {
-            m.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lon), zoom), ANIMATION_MS)
+            val position = CameraPosition.Builder()
+                .target(LatLng(lat, lon))
+                .zoom(zoom)
+                .padding(0.0, 0.0, 0.0, bottomInsetPx.toDouble())
+                .build()
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(position), ANIMATION_MS)
         }
     }
 
@@ -158,6 +171,8 @@ private const val LAYER_POINTS = "sites-points"
 private const val LAYER_SELECTED = "sites-selected"
 private const val BEAMS_SOURCE = "site-beams"
 private const val LAYER_BEAMS = "site-beams-fill"
+private const val LAYER_BEAMS_LINE = "site-beams-line"
+private const val LAYER_BEAMS_LABEL = "site-beams-label"
 private const val CONNECTED_SOURCE = "connected"
 private const val LAYER_CONNECTED_LINE = "connected-line"
 private const val LAYER_CONNECTED_NEIGHBOURS = "connected-neighbours"
@@ -201,9 +216,11 @@ fun TowerMap(
     onMapTap: () -> Unit = {},
     /** The connected tower: pulse ring, line from [userLocation], faint neighbours. Null = none. */
     connected: ConnectedHighlight? = null,
-    /** The open site's sector beams, drawn as translucent wedges of [beamLengthM]; null = none. */
+    /** The selected site's sector lobes, drawn translucent at [beamLengthM]; null = none. */
     siteBeams: SiteBeams? = null,
     beamLengthM: Double = SectorBeams.lengthMetersForZoom(null),
+    /** Show the lobes' labels at every zoom (else only from [SectorBeams.LABEL_MIN_ZOOM]). */
+    beamLabelsAlways: Boolean = false,
     /** True while the coverage overlay still has tiles being calculated (see [CoverageLoadTracker]). */
     onCoverageLoading: (Boolean) -> Unit = {},
 ) {
@@ -325,22 +342,46 @@ fun TowerMap(
         }
     }
 
-    // The open site's beams: a layer of its own, re-inserted under the tower dots (above the coverage overlay).
+    // The selected site's lobes: layers of their own, re-inserted under the tower dots (above the coverage overlay).
     LaunchedEffect(style, siteBeams, beamLengthM) {
         val st = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
         val json = siteBeams?.let { withContext(Dispatchers.Default) { SectorBeams.toGeoJson(it, beamLengthM) } }
+        st.removeLayer(LAYER_BEAMS_LABEL)
+        st.removeLayer(LAYER_BEAMS_LINE)
         st.removeLayer(LAYER_BEAMS)
         st.removeSource(BEAMS_SOURCE)
         if (json == null) return@LaunchedEffect
         st.addSource(GeoJsonSource(BEAMS_SOURCE, json))
-        val netFill = match(
+        val netColor = match(
             get("net"), color(0xFF9AA0A6.toInt()),
             *Network.entries.map { stop(it.name, color(NetworkColors.argb(it))) }.toTypedArray(),
         )
+        val lobes = eq(get("kind"), literal("lobe"))
         st.addLayerBelow(
-            FillLayer(LAYER_BEAMS, BEAMS_SOURCE).withProperties(fillColor(netFill), fillOpacity(get("op")), fillAntialias(true)),
+            FillLayer(LAYER_BEAMS, BEAMS_SOURCE).withFilter(lobes)
+                .withProperties(fillColor(netColor), fillOpacity(SectorBeams.FILL_OPACITY), fillAntialias(true)),
             LAYER_CLUSTERS,
         )
+        st.addLayerBelow(
+            LineLayer(LAYER_BEAMS_LINE, BEAMS_SOURCE).withFilter(lobes)
+                .withProperties(lineColor(netColor), lineWidth(1.5f), lineOpacity(SectorBeams.OUTLINE_OPACITY)),
+            LAYER_CLUSTERS,
+        )
+        st.addLayer(
+            SymbolLayer(LAYER_BEAMS_LABEL, BEAMS_SOURCE).withFilter(eq(get("kind"), literal("label"))).withProperties(
+                textField(get("text")),
+                textFont(arrayOf("Noto Sans Medium")),
+                textSize(12f),
+                textColor(netColor),
+                textHaloColor(if (dark) 0xE6000000.toInt() else 0xF2FFFFFF.toInt()),
+                textHaloWidth(1.6f),
+                textPadding(2f),
+                textOptional(true),
+            ).apply { if (!beamLabelsAlways) minZoom = SectorBeams.LABEL_MIN_ZOOM },
+        )
+    }
+    LaunchedEffect(style, beamLabelsAlways) {
+        style?.getLayer(LAYER_BEAMS_LABEL)?.let { it.minZoom = if (beamLabelsAlways) 0f else SectorBeams.LABEL_MIN_ZOOM }
     }
 
     LaunchedEffect(Identity(sites)) {

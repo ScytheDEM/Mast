@@ -60,6 +60,9 @@ fun SiteSheetContent(
     plots: List<SectorPlot> = emptyList(),
     /** "Show predicted coverage for {network}"; null hides the button. */
     onShowCoverage: ((Network) -> Unit)? = null,
+    /** The radiation-pattern plots are shown; the caller remembers the choice. */
+    patternExpanded: Boolean = true,
+    onPatternExpandedChange: (Boolean) -> Unit = {},
 ) {
     val site = detail.site
     val groups = detail.sectors.groupBy { it.network }.toSortedMap(compareBy { it.ordinal })
@@ -86,7 +89,7 @@ fun SiteSheetContent(
                 IconButton(onClick = onClose) { Icon(Icons.Filled.Close, stringResource(R.string.close)) }
             }
         }
-        if (plots.isNotEmpty()) item(key = "pattern") { RadiationPatternSection(plots) }
+        if (plots.isNotEmpty()) item(key = "pattern") { RadiationPatternSection(plots, patternExpanded, onPatternExpandedChange) }
         groups.forEach { (network, sectors) ->
             item(key = "net-${network.name}") {
                 Surface(

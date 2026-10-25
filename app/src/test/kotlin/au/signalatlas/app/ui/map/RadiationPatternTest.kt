@@ -5,9 +5,12 @@ import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import au.signalatlas.app.data.HrpPattern
 import au.signalatlas.app.data.PatternAccess
 import au.signalatlas.app.ui.theme.SignalAtlasTheme
@@ -88,15 +91,69 @@ class RadiationPatternTest {
     @Test fun plotsUseAcmaPatternsWhenInstalledAndTypicalOnesOtherwise() {
         val access = PatternAccess { sdd -> if (sdd == 11L) HrpPattern(ramp(), 0) else null }
         val plots = sectorPlots(detail, access)
-        assertThat(plots.map { it.sectorId }).containsExactly(1, 2, 3).inOrder()
-        val byId = plots.associateBy { it.sectorId }
-        assertThat(byId.getValue(1).source).isEqualTo(PatternSource.ACMA)
-        assertThat(byId.getValue(1).attenuationDb[10]).isEqualTo(10f)
-        assertThat(byId.getValue(2).source).isEqualTo(PatternSource.TYPICAL)
-        assertThat(byId.getValue(2).attenuationDb[120 + 180]).isEqualTo(30f) // the antenna's own front-to-back
-        assertThat(byId.getValue(3).attenuationDb.all { it == 0f }).isTrue() // omni
-        assertThat(siteBeams(-35.3, 149.1, plots)!!.beams).hasSize(3)
-        assertThat(siteBeams(-35.3, 149.1, emptyList())).isNull()
+        assertThat(plots.map { it.key }).containsExactly("TELSTRA-0", "TELSTRA-120", "OPTUS-omni").inOrder()
+        val byKey = plots.associateBy { it.key }
+        assertThat(byKey.getValue("TELSTRA-0").source).isEqualTo(PatternSource.ACMA)
+        assertThat(byKey.getValue("TELSTRA-0").attenuationDb[10]).isEqualTo(10f)
+        assertThat(byKey.getValue("TELSTRA-120").source).isEqualTo(PatternSource.TYPICAL)
+        assertThat(byKey.getValue("TELSTRA-120").attenuationDb[120 + 180]).isEqualTo(30f) // the antenna's own front-to-back
+        assertThat(byKey.getValue("OPTUS-omni").attenuationDb.all { it == 0f }).isTrue() // omni
+        assertThat(siteBeams(-35.3, 149.1, plots, "Omni")!!.beams.map { it.label })
+            .containsExactly("0° n78", "120° n78", "Omni n78").inOrder()
+        assertThat(siteBeams(-35.3, 149.1, emptyList(), "Omni")).isNull()
+    }
+
+    private fun carrier(sdd: Long, band: String, tech: Tech, mhz: Long) =
+        Carrier(sdd, mhz * 1_000_000, 10_000_000, 60.0, 0.0, BandInfo(band, tech), "L", "R")
+
+    @Test fun sectorsPointingTheSameWayAreOneLobeWithTheirBandsIn4gThen5gFrequencyOrder() {
+        val d = SiteDetail(
+            Site(2, -35.0, 149.0, "Grouped", null, null, null),
+            listOf(
+                Sector(10, 2, Network.TELSTRA, null, 45.0, 30.0, listOf(carrier(1, "n78", Tech.NR, 3600), carrier(2, "B7", Tech.LTE, 2600))),
+                Sector(11, 2, Network.TELSTRA, null, 45.2, 25.0, listOf(carrier(3, "B3", Tech.LTE, 1800), carrier(4, "B1", Tech.LTE, 2100))),
+                Sector(12, 2, Network.TELSTRA, null, 165.0, 30.0, listOf(carrier(5, "B28", Tech.LTE, 760))),
+                Sector(13, 2, Network.OPTUS, null, 45.0, 30.0, listOf(carrier(6, "B28", Tech.LTE, 770))),
+            ),
+        )
+        val plots = sectorPlots(d, PatternAccess.None)
+        assertThat(plots.map { it.key }).containsExactly("TELSTRA-45", "TELSTRA-165", "OPTUS-45").inOrder()
+        assertThat(plots[0].sectorIds).containsExactly(10, 11)
+        assertThat(plots[0].bands).containsExactly("B3", "B1", "B7", "n78").inOrder()
+        assertThat(sectorBandsLine("Telstra", plots[0], "Omni")).isEqualTo("Telstra · 45° · B3 · B1 · B7 · n78")
+        assertThat(mapLabel(plots[0], "Omni")).isEqualTo("45° B3 B1 B7 n78")
+        val many = SectorPlot("k", Network.TPG, 10.0, listOf("B28", "B3", "B1", "B7", "n78", "n258"), PatternSource.TYPICAL, FloatArray(360), listOf(1))
+        assertThat(mapLabel(many, "Omni")).isEqualTo("10° B28 B3 B1 B7 +2")
+    }
+
+    @Test fun aFlatOrMisdirectedMeasuredPatternIsIgnoredForADirectionalSector() {
+        val flat = HrpPattern(ByteArray(360), peakBearing = 0) // ACMA's one-row "0–360°, one POWER" devices
+        val misdirected = HrpPattern(ramp(), peakBearing = 200) // peaks 155° away from the azimuth
+        val good = HrpPattern(ramp(), peakBearing = 50)
+        assertThat(usableFor(flat, 45.0)).isFalse()
+        assertThat(usableFor(flat, null)).isTrue()
+        assertThat(usableFor(misdirected, 45.0)).isFalse()
+        assertThat(usableFor(good, 45.0)).isTrue()
+        val d = SiteDetail(
+            Site(3, -35.0, 149.0, "Flat", null, null, null),
+            listOf(Sector(1, 3, Network.TELSTRA, null, 45.0, 30.0, listOf(carrier(1, "B3", Tech.LTE, 1800), carrier(2, "B1", Tech.LTE, 2100)))),
+        )
+        val onlyFlat = sectorPlots(d, PatternAccess { flat }).single()
+        assertThat(onlyFlat.source).isEqualTo(PatternSource.TYPICAL) // a typical panel, not a circle
+        assertThat(onlyFlat.attenuationDb[225]).isEqualTo(DEFAULT_FRONT_TO_BACK_DB.toFloat())
+        val mixed = sectorPlots(d, PatternAccess { if (it == 1L) flat else good }).single()
+        assertThat(mixed.source).isEqualTo(PatternSource.ACMA)
+        assertThat(mixed.attenuationDb[50]).isEqualTo(0f)
+        assertThat(mixed.attenuationDb[60]).isEqualTo(10f) // the good pattern, not the flat one's 0 dB
+    }
+
+    @Test fun theEnvelopeTakesTheSmallestAttenuationPerBearing() {
+        val a = FloatArray(360) { 10f }.also { it[0] = 0f }
+        val b = FloatArray(360) { 20f }.also { it[90] = 1f }
+        val e = envelope(listOf(a, b))
+        assertThat(e[0]).isEqualTo(0f)
+        assertThat(e[90]).isEqualTo(1f)
+        assertThat(e[180]).isEqualTo(10f)
     }
 
     @Test fun sheetShowsThePatternSectionAndTheCoverageButton() {
@@ -108,9 +165,26 @@ class RadiationPatternTest {
             }
         }
         compose.onNodeWithText("Radiation pattern").assertIsDisplayed()
-        compose.onNodeWithTag("pattern-2").assertIsDisplayed()
+        compose.onNodeWithTag("pattern-TELSTRA-120").assertExists()
+        compose.onNodeWithContentDescription("Telstra · 120° · n78").assertExists()
+        compose.onNodeWithText("Pattern: estimated from beamwidth").assertExists()
         compose.onNode(hasScrollAction()).performScrollToNode(hasTestTag("show-coverage-TELSTRA"))
         compose.onNodeWithTag("show-coverage-TELSTRA").performClick()
         assertThat(shown).isEqualTo(Network.TELSTRA)
+    }
+
+    @Test fun thePatternSectionCollapsesAndRemembersIt() {
+        val plots = sectorPlots(detail, PatternAccess.None)
+        var expanded by androidx.compose.runtime.mutableStateOf(true)
+        compose.setContent {
+            SignalAtlasTheme {
+                RadiationPatternSection(plots, expanded = expanded, onExpandedChange = { expanded = it })
+            }
+        }
+        compose.onNodeWithTag("pattern-TELSTRA-120").assertExists()
+        compose.onNodeWithTag("pattern-toggle").performClick()
+        assertThat(expanded).isFalse()
+        compose.onNodeWithTag("pattern-TELSTRA-120").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Telstra · 120° · n78").assertIsDisplayed() // the per-sector list stays
     }
 }

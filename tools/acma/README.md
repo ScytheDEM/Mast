@@ -206,3 +206,17 @@ then discards the zip and its sidecar (`<zip>.etag`: ETag, Content-Length, Last-
 `If-Match` and `If-Unmodified-Since`; a 412 discards the partial file and restarts from byte 0. A response whose
 ETag, Last-Modified or length differs from the HEAD discards the file (`RemoteChangedException`); `HrpWorker` then
 HEADs again and downloads from 0, up to 3 times per run, before retrying later.
+
+# Site patterns (`site_patterns.py`)
+
+One site's carriers with their quantised HRPs, for `app/src/test/resources/site_<id>_patterns.json` (BartonPatternTest).
+
+```
+cut -d, -f1 <site devices> | sed 's/^/^/; s/$/,/' > sdds.txt   # the site's SDD_IDs from device_details.csv (SITE_ID column)
+unzip -p <scratch>/hrp/spectra_licence_hrp.zip LICENCE_.csv | LC_ALL=C grep -E -f sdds.txt > rows.csv   # ~40 s
+python3 -I tools/acma/site_patterns.py <scratch>/acma/spectra_rrl.zip rows.csv 101160 app/src/test/resources/site_101160_patterns.json
+```
+
+Barton 101160 (2026-10-22 RRL, 2026-10-21 HRP): 111 carriers in 69 sector rows, all with patterns. Every directional
+device peaks within 12° of its licensed azimuth (ACMA angles are compass bearings), front-to-back 25–45 dB; antenna
+40081 (6 Telstra carriers) is filed as a single flat 0–360° row.
