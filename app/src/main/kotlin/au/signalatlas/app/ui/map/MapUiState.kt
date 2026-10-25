@@ -10,6 +10,16 @@ import au.signalatlas.core.update.HrpStatus
 import au.signalatlas.core.update.UpdateStatus
 import java.time.Instant
 
+/** The floating navigation bar's destinations. */
+enum class MapSection {
+    /** The tower map; a tapped tower shows its sheet and sector lobes. */
+    HOME,
+    /** The predicted-coverage layer with its controls; leaving it turns the layer off. */
+    COVERAGE,
+    /** The nearest towers (full screen on compact windows, a side pane on expanded ones). */
+    NEARBY,
+}
+
 data class MapUiState(
     /** True until the repository has looked for an installed DB (avoids a first-run flash). */
     val loading: Boolean = true,
@@ -39,6 +49,7 @@ data class MapUiState(
     val zoom: Double? = null,
     /** The antenna-pattern import (Updates screen). */
     val patterns: HrpStatus = HrpStatus(null, 0, null),
+    val section: MapSection = MapSection.HOME,
 )
 
 /** The coverage controls and what they produced. */

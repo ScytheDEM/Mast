@@ -260,4 +260,68 @@ class MapViewModelTest {
         advanceUntilIdle()
         assertThat(vm.state.value.locationEnabled).isTrue()
     }
+
+    @Test fun sections_coverageTurnsTheLayerOnAndLeavingItTurnsItOff() = runTest(dispatcher) {
+        val coverage = FakeCoverage()
+        val vm = vm(coverage = coverage)
+        advanceUntilIdle()
+        assertThat(vm.state.value.section).isEqualTo(MapSection.HOME)
+        assertThat(vm.state.value.coverage.on).isFalse()
+        vm.selectSection(MapSection.COVERAGE)
+        assertThat(vm.state.value.section).isEqualTo(MapSection.COVERAGE)
+        assertThat(vm.state.value.coverage.on).isTrue()
+        assertThat(coverage.selections.last()).isNotNull()
+        vm.selectSection(MapSection.NEARBY)
+        assertThat(vm.state.value.coverage.on).isFalse()
+        assertThat(coverage.selections.last()).isNull()
+        vm.selectSection(MapSection.COVERAGE)
+        vm.selectSection(MapSection.HOME)
+        assertThat(vm.state.value.section).isEqualTo(MapSection.HOME)
+        assertThat(vm.state.value.coverage.on).isFalse()
+    }
+
+    @Test fun sections_showCoverageForASiteNetworkOpensTheCoverageSection() = runTest(dispatcher) {
+        val vm = vm()
+        advanceUntilIdle()
+        vm.selectSite(101160)
+        advanceUntilIdle()
+        vm.showCoverageFor(Network.OPTUS)
+        assertThat(vm.state.value.section).isEqualTo(MapSection.COVERAGE)
+        assertThat(vm.state.value.coverage.on).isTrue()
+        assertThat(vm.state.value.coverage.network).isEqualTo(Network.OPTUS)
+        assertThat(vm.state.value.selectedId).isEqualTo(101160) // the site stays selected
+    }
+
+    @Test fun sections_theSelectionSurvivesSwitchingSections() = runTest(dispatcher) {
+        val vm = vm()
+        advanceUntilIdle()
+        vm.selectSite(101160)
+        advanceUntilIdle()
+        vm.selectSection(MapSection.COVERAGE)
+        vm.selectSection(MapSection.HOME)
+        advanceUntilIdle()
+        assertThat(vm.state.value.selectedId).isEqualTo(101160)
+    }
+
+    @Test fun siteTapped_sameTowerTogglesOffAnotherReplaces() = runTest(dispatcher) {
+        val vm = vm()
+        advanceUntilIdle()
+        vm.onSiteTapped(101160)
+        advanceUntilIdle()
+        assertThat(vm.state.value.selectedId).isEqualTo(101160)
+        assertThat(vm.state.value.selected?.site?.id).isEqualTo(101160)
+        vm.onSiteTapped(200)
+        advanceUntilIdle()
+        assertThat(vm.state.value.selectedId).isEqualTo(200)
+        vm.onSiteTapped(200)
+        advanceUntilIdle()
+        assertThat(vm.state.value.selectedId).isNull()
+        assertThat(vm.state.value.selected).isNull()
+        assertThat(vm.state.value.selectedPlots).isEmpty()
+        // A tap on empty map does not clear the selection.
+        vm.onSiteTapped(300)
+        advanceUntilIdle()
+        vm.onMapTap()
+        assertThat(vm.state.value.selectedId).isEqualTo(300)
+    }
 }

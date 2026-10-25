@@ -3,17 +3,23 @@ package au.signalatlas.app.ui.map
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.gestures.animateTo
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
@@ -21,6 +27,7 @@ import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -28,7 +35,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -72,11 +78,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.min
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LifecycleStartEffect
@@ -86,6 +96,7 @@ import au.signalatlas.app.R
 import au.signalatlas.app.connected.CalibrationHooks
 import au.signalatlas.app.connected.ConnectedStatus
 import au.signalatlas.app.connected.ConnectedUi
+import au.signalatlas.app.connected.ServingStabiliser
 import au.signalatlas.app.ui.connected.CellularDetailsContent
 import au.signalatlas.app.ui.connected.ConnectedInfoBar
 import au.signalatlas.app.data.UiHints
@@ -118,6 +129,7 @@ class MapCameraHolder : ViewModel() {
     val camera = MapCameraState()
 }
 
+/** What the side pane (expanded) or a modal sheet (compact: filters and cellular only) shows. */
 private enum class Pane { None, Site, Cellular, Filters, Nearby }
 
 /** What the connected-tower feature needs from the map screen's lifecycle and permission flow. */
@@ -132,25 +144,38 @@ class ConnectedActions(
     }
 }
 
-/** Room the bottom info bar takes: bar height plus its margin. */
-private val CONNECTED_BAR_INSET = 92.dp
+/** Room the bottom info bar takes: bar height plus its gap. */
+private val CONNECTED_BAR_INSET = 100.dp
 
 /** Further room per extra SIM row in the bar. */
-private val CONNECTED_ROW_INSET = 40.dp
+private val CONNECTED_ROW_INSET = 41.dp
+
+/** The floating navigation bar, its bottom margin and the gap above it. */
+private val NAV_AREA = FLOATING_NAV_HEIGHT + FLOATING_NAV_MARGIN + 8.dp
+
+/** The compact site sheet collapsed: drag handle plus the site's name, id line and network pills. */
+private val SITE_PEEK = 156.dp
+
+/** The compact site sheet open: at most this much, and never more than [SITE_SHEET_FRACTION] of the window. */
+private val SITE_SHEET_MAX = 560.dp
+private const val SITE_SHEET_FRACTION = 0.58f
 
 private const val SITE_ZOOM = 14.0
 
 /** Roughly the 10 km a tower's predicted coverage reaches. */
 private const val COVERAGE_FIT_ZOOM = 12.0
 
-/** Room the labelled toolbar takes at the bottom start, so the round buttons stack above it on narrow windows. */
-private val TOOLBAR_INSET = 72.dp
-
 /**
  * The map fills the window edge to edge and is always the first child of the root [Box], so its
  * MapView survives switching between the compact (bottom sheet) and expanded (side pane)
  * layouts when a foldable is folded or unfolded.
+ *
+ * A floating navigation bar switches between Home (towers; a tapped tower shows its sheet and sector lobes), Coverage
+ * (the predicted-coverage layer and its controls, plus Trip) and Nearby (the nearest towers). The selected site stays
+ * selected, its lobes on the map, until its tower is tapped again or the sheet's close button is pressed; on compact
+ * windows its sheet collapses to a peek instead of closing.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapScreen(
     state: MapUiState,
@@ -171,12 +196,12 @@ fun MapScreen(
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     val context = LocalContext.current
+    val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val expanded = currentWindowAdaptiveInfo().windowSizeClass
         .isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_EXPANDED_LOWER_BOUND)
 
-    var showNearby by rememberSaveable { mutableStateOf(false) }
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var showCellular by rememberSaveable { mutableStateOf(false) }
     // Not saved: a fold/unfold or recreation must never bring back an expanded (focused) search.
@@ -184,19 +209,37 @@ fun MapScreen(
     val windowClass = currentWindowAdaptiveInfo().windowSizeClass
     CollapseSearchOnWindowChange(windowClass.minWidthDp to windowClass.minHeightDp) { searchExpanded = false }
     var explainerSeen by remember { mutableStateOf(hints.coverageExplainerSeen()) }
+    var patternExpanded by remember { mutableStateOf(hints.patternExpanded()) }
     var coverageOptionsOpen by rememberSaveable { mutableStateOf(true) }
     var rationaleFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var afterGrant by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     var phoneRationale by remember { mutableStateOf(false) }
 
+    // The bar shows calmed serving info (hysteresis on bands/tech, smoothed RSRP); the details sheet stays raw.
+    val stabiliser = remember { ServingStabiliser() }
+    val barUi = remember(connected) { connected?.let { stabiliser.update(it, SystemClock.elapsedRealtime()) } }
+
+    val section = state.section
+    val compactSite = !expanded && state.selected != null
     val pane = when {
-        state.selected != null -> Pane.Site
-        showCellular && connected?.cells != null -> Pane.Cellular
         showFilters -> Pane.Filters
-        showNearby -> Pane.Nearby
+        showCellular && connected?.cells != null -> Pane.Cellular
+        state.selected != null -> Pane.Site
+        section == MapSection.NEARBY -> Pane.Nearby
         else -> Pane.None
     }
+    // On compact windows only the filters and cellular details are modal sheets; the site has its peek sheet and
+    // Nearby is a full-screen section.
+    val modalPane = if (pane == Pane.Filters || pane == Pane.Cellular) pane else Pane.None
+
+    val windowHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() }
+    val sheetMax = min(SITE_SHEET_MAX, windowHeight * SITE_SHEET_FRACTION)
+    val sheetState = rememberPeekSheetState()
+    val sheetExpanded = compactSite && sheetState.targetValue == PeekValue.Expanded
+    ExpandOnNewKey(sheetState, state.selectedId)
+    /** The map area a sheet covers, so the camera centres a site in what is left. */
+    val cameraInsetPx = if (expanded) 0 else with(density) { (sheetMax + NAV_AREA).roundToPx() }
 
     // The camera may have been restored (recreation) before the map reports its first idle.
     LaunchedEffect(Unit) { vm.onZoom(camera.currentZoom) }
@@ -250,7 +293,6 @@ fun MapScreen(
             s.status == ConnectedStatus.NEEDS_PHONE || s.status == ConnectedStatus.NEEDS_LOCATION -> phoneRationale = true
             s.cells != null -> {
                 showFilters = false
-                showNearby = false
                 showCellular = true
             }
         }
@@ -328,14 +370,13 @@ fun MapScreen(
             }
         }
     }
-    val onNearby = {
-        withLocation { scope.launch { location.currentFix() } }
+    val selectSection: (MapSection) -> Unit = { s ->
+        if (s == MapSection.NEARBY) withLocation { scope.launch { location.currentFix() } }
         showFilters = false
         showCellular = false
-        showNearby = true
+        vm.selectSection(s)
     }
     val onFilters = {
-        showNearby = false
         showCellular = false
         showFilters = !showFilters
     }
@@ -344,8 +385,10 @@ fun MapScreen(
         keyboard?.hide()
         focusManager.clearFocus()
         searchExpanded = false
-        camera.animateTo(s.lat, s.lon, SITE_ZOOM)
+        camera.animateTo(s.lat, s.lon, SITE_ZOOM, bottomInsetPx = cameraInsetPx)
         vm.selectSite(s.id)
+        // Nearby covers the map on compact windows: show the site on it.
+        if (!expanded && section == MapSection.NEARBY) vm.selectSection(MapSection.HOME)
     }
 
     val coverageActions = CoverageActions(
@@ -365,23 +408,40 @@ fun MapScreen(
             Pane.Site -> vm.selectSite(null)
             Pane.Filters -> showFilters = false
             Pane.Cellular -> showCellular = false
-            else -> showNearby = false
+            Pane.Nearby -> vm.selectSection(MapSection.HOME)
+            Pane.None -> Unit
         }
     }
-    BackHandler(enabled = pane != Pane.None && !searchExpanded) {
-        closePane()
+    // Back: a modal sheet first, then an open site sheet collapses, then the site, then back to Home.
+    val backTarget = when {
+        searchExpanded -> null
+        modalPane != Pane.None || (expanded && pane != Pane.None) -> "pane"
+        compactSite && sheetState.currentValue == PeekValue.Expanded -> "collapse"
+        compactSite -> "site"
+        section != MapSection.HOME -> "home"
+        else -> null
+    }
+    BackHandler(enabled = backTarget != null) {
+        when (backTarget) {
+            "pane" -> closePane()
+            "collapse" -> scope.launch { sheetState.animateTo(PeekValue.Peek, tween()) }
+            "site" -> vm.selectSite(null)
+            "home" -> vm.selectSection(MapSection.HOME)
+        }
     }
 
-    val siteBeams = remember(state.selected, state.selectedPlots) {
-        state.selected?.let { siteBeams(it.site.lat, it.site.lon, state.selectedPlots) }
+    val omniLabel = stringResource(R.string.pattern_omni)
+    val siteBeams = remember(state.selected, state.selectedPlots, omniLabel) {
+        state.selected?.let { siteBeams(it.site.lat, it.site.lon, state.selectedPlots, omniLabel) }
     }
     val onShowCoverage: (Network) -> Unit = { n ->
         state.selected?.site?.let { camera.animateTo(it.lat, it.lon, COVERAGE_FIT_ZOOM) }
         coverageOptionsOpen = true
         vm.showCoverageFor(n)
-        // The modal sheet would hide the map; the side pane sits beside it and stays.
-        if (!expanded) vm.selectSite(null)
+        // The open sheet would hide the map: collapse it to its peek (the site stays selected).
+        if (!expanded) scope.launch { sheetState.animateTo(PeekValue.Peek, tween()) }
     }
+    val onPatternExpanded: (Boolean) -> Unit = { patternExpanded = it; hints.setPatternExpanded(it) }
 
     Box(Modifier.fillMaxSize()) {
         // 1. The map: always first, always full size.
@@ -392,7 +452,7 @@ fun MapScreen(
                 dark = isSystemInDarkTheme(),
                 basemapKey = state.basemapKey,
                 camera = camera,
-                onSiteClick = { vm.selectSite(it) },
+                onSiteClick = vm::onSiteTapped,
                 onCameraIdle = { },
                 coverageUrlTemplate = state.coverage.urlTemplate.takeIf { state.coverage.on },
                 coverageView = state.coverage.view,
@@ -408,6 +468,7 @@ fun MapScreen(
                 connected = connected?.highlight,
                 siteBeams = siteBeams,
                 beamLengthM = SectorBeams.lengthMetersForZoom(state.zoom),
+                beamLabelsAlways = expanded || sheetExpanded,
             )
         }
 
@@ -421,35 +482,56 @@ fun MapScreen(
                 onQueryChange = vm::search,
                 onResultClick = openSite,
                 filterCount = state.filter.activeCount(),
-                filtersOpen = pane == Pane.Filters,
                 onFilters = onFilters,
                 onOpenUpdates = onOpenUpdates,
                 onMyLocation = onMyLocation,
-                onNearby = onNearby,
                 onIncrease = vm::openIncreaseResolution,
                 coverageOptionsOpen = coverageOptionsOpen,
                 showExplainer = state.coverage.on && !explainerSeen,
                 onDismissExplainer = { explainerSeen = true; hints.markCoverageExplainerSeen() },
                 coverage = coverageActions,
                 snackbar = snackbar,
-                connected = connected,
+                connected = barUi,
                 onConnectedBar = onConnectedBar,
                 tripRunning = tripState is TripState.Running,
                 tripBanner = (tripState as? TripState.Running)?.stats?.banner,
                 onTrip = onTrip,
+                onSelectSection = selectSection,
+                // On compact windows a selected site's peek sheet takes the bottom; the bar and controls make way.
+                sitePeek = compactSite,
             )
+        }
+        val nearbyContent: @Composable (Modifier, PaddingValues) -> Unit = { modifier, padding ->
+            NearbyContent(
+                locationGranted = state.locationGranted,
+                locationEnabled = state.locationEnabled,
+                hasLocation = state.location != null,
+                onOpenLocationSettings = openLocationSettings,
+                nearby = state.nearby,
+                onSiteClick = openSite,
+                onRequestPermission = { withLocation { } },
+                onClose = { vm.selectSection(MapSection.HOME) },
+                modifier = modifier,
+                contentPadding = padding,
+            )
+        }
+        val siteContent: @Composable (PaddingValues) -> Unit = { padding ->
+            state.selected?.let {
+                SiteSheetContent(
+                    it, onClose = { vm.selectSite(null) }, plots = state.selectedPlots, onShowCoverage = onShowCoverage,
+                    patternExpanded = patternExpanded, onPatternExpandedChange = onPatternExpanded, contentPadding = padding,
+                )
+            }
         }
         val paneContent: @Composable (Pane) -> Unit = { p ->
             when (p) {
-                Pane.Site -> state.selected?.let {
-                    SiteSheetContent(it, onClose = { vm.selectSite(null) }, plots = state.selectedPlots, onShowCoverage = onShowCoverage)
-                }
+                Pane.Site -> siteContent(PaddingValues(bottom = 24.dp))
                 Pane.Cellular -> connected?.let { ui ->
                     CellularDetailsContent(
                         ui = ui,
                         calibration = calibration,
                         onOpenTower = { id ->
-                            ui.highlight?.serving?.let { (lat, lon) -> camera.animateTo(lat, lon, SITE_ZOOM) }
+                            ui.highlight?.serving?.let { (lat, lon) -> camera.animateTo(lat, lon, SITE_ZOOM, bottomInsetPx = cameraInsetPx) }
                             showCellular = false
                             vm.selectSite(id)
                         },
@@ -462,16 +544,7 @@ fun MapScreen(
                     onFilter = vm::setFilter,
                     onClose = { showFilters = false },
                 )
-                Pane.Nearby -> NearbyContent(
-                    locationGranted = state.locationGranted,
-                    locationEnabled = state.locationEnabled,
-                    hasLocation = state.location != null,
-                    onOpenLocationSettings = openLocationSettings,
-                    nearby = state.nearby,
-                    onSiteClick = openSite,
-                    onRequestPermission = { withLocation { } },
-                    onClose = { showNearby = false },
-                )
+                Pane.Nearby -> nearbyContent(Modifier, PaddingValues(bottom = 24.dp))
                 Pane.None -> Unit
             }
         }
@@ -479,10 +552,29 @@ fun MapScreen(
             ExpandedPanes(pane, controls, paneContent)
         } else {
             controls(false)
+            // Nearby: full screen over the map, under the navigation bar.
+            AnimatedVisibility(section == MapSection.NEARBY, enter = fadeIn(), exit = fadeOut()) {
+                Surface(color = MaterialTheme.colorScheme.surfaceContainerLowest, modifier = Modifier.fillMaxSize()) {
+                    val navInset = WindowInsets.navigationBars.let { with(density) { it.getBottom(density).toDp() } }
+                    nearbyContent(Modifier.fillMaxSize().statusBarsPadding().padding(top = 8.dp), PaddingValues(bottom = NAV_AREA + navInset + 16.dp))
+                }
+            }
+            // The selected site: a peek sheet that never hides the lobes it is about.
+            AnimatedVisibility(
+                state.selected != null && section != MapSection.NEARBY,
+                enter = slideInVertically { it }, exit = slideOutVertically { it },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            ) {
+                val navInset = WindowInsets.navigationBars.let { with(density) { it.getBottom(density).toDp() } }
+                PeekSheet(sheetState, peekHeight = SITE_PEEK, maxHeight = sheetMax, bottomInset = NAV_AREA + navInset) {
+                    siteContent(PaddingValues(bottom = 16.dp))
+                }
+            }
+            NavBarHost(section, selectSection, tripState is TripState.Running, Modifier.align(Alignment.BottomCenter))
             // A different pane gets a fresh sheet: a modal sheet whose content changes height while open can lose its anchors.
-            var lastPane by remember { mutableStateOf(pane) }
-            if (pane != Pane.None) lastPane = pane
-            key(lastPane) { CompactSheet(pane, onDismiss = closePane, paneContent) }
+            var lastPane by remember { mutableStateOf(modalPane) }
+            if (modalPane != Pane.None) lastPane = modalPane
+            key(lastPane) { CompactSheet(modalPane, onDismiss = closePane, paneContent) }
         }
     }
 
@@ -640,6 +732,15 @@ private fun EnsureOpened(sheetState: SheetState, wanted: Boolean) {
 
 private const val MAX_OPEN_RETRIES = 3
 
+/** The floating navigation bar, centred above the system navigation bar. */
+@Composable
+private fun NavBarHost(section: MapSection, onSelect: (MapSection) -> Unit, tripRunning: Boolean, modifier: Modifier = Modifier) {
+    FloatingNavBar(
+        section, onSelect, tripRunning = tripRunning,
+        modifier = modifier.navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = FLOATING_NAV_MARGIN),
+    )
+}
+
 @Composable
 private fun MapControls(
     state: MapUiState,
@@ -649,11 +750,9 @@ private fun MapControls(
     onQueryChange: (String) -> Unit,
     onResultClick: (SiteSummary) -> Unit,
     filterCount: Int,
-    filtersOpen: Boolean,
     onFilters: () -> Unit,
     onOpenUpdates: () -> Unit,
     onMyLocation: () -> Unit,
-    onNearby: () -> Unit,
     onIncrease: () -> Unit,
     coverageOptionsOpen: Boolean,
     showExplainer: Boolean,
@@ -665,28 +764,28 @@ private fun MapControls(
     tripRunning: Boolean,
     tripBanner: String?,
     onTrip: () -> Unit,
+    onSelectSection: (MapSection) -> Unit,
+    sitePeek: Boolean,
 ) {
-    // The info bar sits along the bottom; the buttons above it move up by its height.
-    val barInset = if (connected != null) CONNECTED_BAR_INSET + CONNECTED_ROW_INSET * connected.otherSims.size else 0.dp
+    val inCoverage = state.section == MapSection.COVERAGE
+    // Bottom up: the navigation bar, then the info bar (or a site's peek sheet), then the buttons and coverage controls.
+    val showBar = connected != null && !sitePeek
+    val barInset = if (showBar) CONNECTED_BAR_INSET + CONNECTED_ROW_INSET * connected!!.otherSims.size else 0.dp
+    val stackInset: Dp = NAV_AREA + (if (sitePeek) SITE_PEEK + 8.dp else barInset)
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth()) {
-            if (docked) {
+            val search: @Composable (Modifier) -> Unit = { m ->
                 TowerSearchBar(
                     search = state.search,
                     expanded = searchExpanded, onExpandedChange = onSearchExpandedChange,
                     onQueryChange = onQueryChange, onResultClick = onResultClick, onOpenUpdates = onOpenUpdates,
-                    docked = true,
-                    modifier = Modifier.statusBarsPadding().padding(start = 16.dp, top = 12.dp).widthIn(max = 420.dp),
+                    docked = docked, filterCount = filterCount, onFilters = onFilters, modifier = m,
                 )
+            }
+            if (docked) {
+                search(Modifier.statusBarsPadding().padding(start = 16.dp, top = 12.dp).widthIn(max = 420.dp))
             } else {
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-                    TowerSearchBar(
-                        search = state.search,
-                        expanded = searchExpanded, onExpandedChange = onSearchExpandedChange,
-                        onQueryChange = onQueryChange, onResultClick = onResultClick, onOpenUpdates = onOpenUpdates,
-                        docked = false,
-                    )
-                }
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) { search(Modifier) }
             }
             if (!searchExpanded || docked) {
                 Spacer(Modifier.height(10.dp))
@@ -719,54 +818,43 @@ private fun MapControls(
                 }
             }
         }
-        Column(
-            Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + barInset + (if (docked) 0.dp else TOOLBAR_INSET)),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+        SmallFloatingActionButton(
+            onClick = onMyLocation,
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
+            contentColor = MaterialTheme.colorScheme.primary,
+            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = stackInset + 4.dp),
+        ) { Icon(painterResource(R.drawable.ic_my_location), stringResource(R.string.fab_my_location)) }
+        // The Coverage section's controls, bottom start, above the info bar.
+        AnimatedVisibility(
+            inCoverage,
+            enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(start = 16.dp, end = 72.dp, bottom = stackInset),
         ) {
-            SmallFloatingActionButton(
-                onClick = onMyLocation,
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
-                contentColor = MaterialTheme.colorScheme.primary,
-                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
-            ) { Icon(painterResource(R.drawable.ic_my_location), stringResource(R.string.fab_my_location)) }
-            FloatingActionButton(
-                onClick = onNearby,
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
-            ) { Icon(painterResource(R.drawable.ic_near_me), stringResource(R.string.fab_nearby)) }
-        }
-        Column(
-            Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + barInset),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            if (state.coverage.on) {
-                AnimatedVisibility(showExplainer, enter = fadeIn(), exit = fadeOut()) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                AnimatedVisibility(showExplainer && !sitePeek, enter = fadeIn(), exit = fadeOut()) {
                     CoverageExplainerCard(onDismissExplainer)
                 }
-                AnimatedVisibility(coverageOptionsOpen, enter = fadeIn(), exit = fadeOut()) {
+                AnimatedVisibility(coverageOptionsOpen && !sitePeek, enter = fadeIn(), exit = fadeOut()) {
                     CoverageControlsCard(state.coverage, coverage)
                 }
                 CoverageLegend(state.coverage.view)
+                CoverageToolbar(
+                    optionsOpen = coverageOptionsOpen && !sitePeek,
+                    onOptions = coverage.onOptions,
+                    tripRunning = tripRunning,
+                    onTrip = onTrip,
+                )
             }
-            CoverageToolbar(
-                on = state.coverage.on,
-                optionsOpen = coverageOptionsOpen,
-                actions = coverage,
-                filterCount = filterCount,
-                filtersOpen = filtersOpen,
-                onFilters = onFilters,
-                tripRunning = tripRunning,
-                onTrip = onTrip,
-            )
         }
-        if (connected != null) {
+        if (showBar) {
             ConnectedInfoBar(
-                connected, onClick = onConnectedBar,
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                connected!!, onClick = onConnectedBar,
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, bottom = NAV_AREA).widthIn(max = 560.dp),
             )
         }
-        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 88.dp + barInset))
+        if (docked) NavBarHost(state.section, onSelectSection, tripRunning, Modifier.align(Alignment.BottomCenter))
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = stackInset + 56.dp))
     }
 }

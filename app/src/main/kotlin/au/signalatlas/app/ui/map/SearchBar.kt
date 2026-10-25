@@ -14,6 +14,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DockedSearchBar
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -40,6 +42,9 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -64,6 +69,9 @@ fun TowerSearchBar(
     onOpenUpdates: () -> Unit,
     docked: Boolean,
     modifier: Modifier = Modifier,
+    /** Active filters (badges the overflow icon); [onFilters] opens the filters from the overflow menu. */
+    filterCount: Int = 0,
+    onFilters: () -> Unit = {},
 ) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -109,7 +117,7 @@ fun TowerSearchBar(
                     text.isNotEmpty() -> IconButton(onClick = { setText("") }) {
                         Icon(Icons.Filled.Close, stringResource(R.string.clear))
                     }
-                    !expanded -> OverflowMenu(onOpenUpdates)
+                    !expanded -> OverflowMenu(onOpenUpdates, filterCount, onFilters)
                 }
             },
         )
@@ -138,13 +146,31 @@ fun TowerSearchBar(
 }
 
 @Composable
-private fun OverflowMenu(onOpenUpdates: () -> Unit) {
+private fun OverflowMenu(onOpenUpdates: () -> Unit, filterCount: Int, onFilters: () -> Unit) {
     var open by remember { mutableStateOf(false) }
+    val description = if (filterCount > 0) {
+        stringResource(R.string.more_options) + ", " + pluralStringResource(R.plurals.filters_badge_description, filterCount, filterCount)
+    } else {
+        stringResource(R.string.more_options)
+    }
     Box {
-        IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, stringResource(R.string.more_options)) }
+        IconButton(onClick = { open = true }, modifier = Modifier.testTag("overflow-button")) {
+            BadgedBox(badge = { if (filterCount > 0) Badge(Modifier.testTag("filters-badge")) { Text(filterCount.toString()) } }) {
+                Icon(Icons.Filled.MoreVert, description)
+            }
+        }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             DropdownMenuItem(
+                text = {
+                    Text(if (filterCount > 0) stringResource(R.string.menu_filters_active, filterCount) else stringResource(R.string.menu_filters))
+                },
+                leadingIcon = { Icon(painterResource(R.drawable.ic_tune), null) },
+                onClick = { open = false; onFilters() },
+                modifier = Modifier.testTag("menu-filters"),
+            )
+            DropdownMenuItem(
                 text = { Text(stringResource(R.string.menu_tower_data)) },
+                leadingIcon = { Icon(painterResource(R.drawable.ic_cell_tower), null) },
                 onClick = { open = false; onOpenUpdates() },
             )
         }

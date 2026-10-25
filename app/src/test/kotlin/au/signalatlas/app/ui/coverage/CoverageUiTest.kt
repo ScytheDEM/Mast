@@ -99,12 +99,16 @@ class CoverageUiTest {
         assertThat(calls).containsExactly("net OPTUS", "5g true", "view PROBABILITY").inOrder()
     }
 
-    @Test fun toolbarButtonTogglesCoverage() {
-        val calls = mutableListOf<Boolean>()
-        val noop = CoverageActions({ calls += it }, {}, {}, {}, {}, {})
-        compose.setContent { SignalAtlasTheme { CoverageToolbar(on = false, optionsOpen = false, actions = noop) } }
-        compose.onNodeWithText("Coverage").performClick()
-        assertThat(calls).containsExactly(true)
+    @Test fun toolbarTogglesOptionsAndTrip() {
+        var options = 0
+        var trips = 0
+        compose.setContent {
+            SignalAtlasTheme { CoverageToolbar(optionsOpen = true, onOptions = { options++ }, onTrip = { trips++ }) }
+        }
+        compose.onNodeWithText("Options").performClick()
+        compose.onNodeWithText("Trip").performClick()
+        assertThat(options).isEqualTo(1)
+        assertThat(trips).isEqualTo(1)
     }
 
     @Test fun patternsLineSaysWhenTheyWereLastUpdated() {

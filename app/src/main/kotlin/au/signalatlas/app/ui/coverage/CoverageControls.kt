@@ -1,6 +1,5 @@
 package au.signalatlas.app.ui.coverage
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,19 +9,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.pluralStringResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -54,52 +47,29 @@ class CoverageActions(
 )
 
 /**
- * The floating toolbar: "Filters" (with a badge counting the active filters; only when [onFilters] is given), a labelled
- * "Coverage" toggle and, while coverage is on, a button that shows or hides the options.
+ * The Coverage section's floating toolbar: "Options" shows or hides the control card, and "Trip" (only when [onTrip] is
+ * given) starts or stops trip mode (checked while a trip runs). The section itself is the coverage on/off switch.
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun CoverageToolbar(
-    on: Boolean,
     optionsOpen: Boolean,
-    actions: CoverageActions,
+    onOptions: () -> Unit,
     modifier: Modifier = Modifier,
-    filterCount: Int = 0,
-    filtersOpen: Boolean = false,
-    onFilters: (() -> Unit)? = null,
-    /** The "Trip" button (only when given): checked while a trip runs. */
     tripRunning: Boolean = false,
     onTrip: (() -> Unit)? = null,
 ) {
     HorizontalFloatingToolbar(expanded = true, modifier = modifier) {
+        ToggleButton(checked = optionsOpen, onCheckedChange = { onOptions() }, modifier = Modifier.testTag("coverage-options")) {
+            Icon(painterResource(R.drawable.ic_coverage_options), null, Modifier.size(ToggleButtonDefaults.IconSize))
+            Spacer(Modifier.width(ToggleButtonDefaults.IconSpacing))
+            Text(stringResource(R.string.coverage_options_short))
+        }
         if (onTrip != null) {
             ToggleButton(checked = tripRunning, onCheckedChange = { onTrip() }, modifier = Modifier.testTag("trip-button")) {
                 Icon(painterResource(R.drawable.ic_trip), null, Modifier.size(ToggleButtonDefaults.IconSize))
                 Spacer(Modifier.width(ToggleButtonDefaults.IconSpacing))
                 Text(stringResource(R.string.trip_button))
-            }
-        }
-        if (onFilters != null) {
-            val badgeDescription = if (filterCount > 0) pluralStringResource(R.plurals.filters_badge_description, filterCount, filterCount) else null
-            ToggleButton(checked = filtersOpen, onCheckedChange = { onFilters() }, modifier = Modifier.testTag("filters-button")) {
-                BadgedBox(
-                    badge = { if (filterCount > 0) Badge(Modifier.testTag("filters-badge")) { Text(filterCount.toString()) } },
-                    modifier = Modifier.semantics { badgeDescription?.let { contentDescription = it } },
-                ) {
-                    Icon(painterResource(R.drawable.ic_tune), null, Modifier.size(ToggleButtonDefaults.IconSize))
-                }
-                Spacer(Modifier.width(ToggleButtonDefaults.IconSpacing))
-                Text(stringResource(R.string.filters_button))
-            }
-        }
-        ToggleButton(checked = on, onCheckedChange = actions.onToggle, modifier = Modifier.testTag("coverage-button")) {
-            Icon(painterResource(R.drawable.ic_coverage), null, Modifier.size(ToggleButtonDefaults.IconSize))
-            Spacer(Modifier.width(ToggleButtonDefaults.IconSpacing))
-            Text(stringResource(R.string.coverage_toolbar))
-        }
-        AnimatedVisibility(on) {
-            IconToggleButton(checked = optionsOpen, onCheckedChange = { actions.onOptions() }) {
-                Icon(painterResource(R.drawable.ic_coverage_options), stringResource(R.string.coverage_options))
             }
         }
     }

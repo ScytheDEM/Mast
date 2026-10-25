@@ -6,7 +6,6 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertIsDisplayed
-import au.signalatlas.app.ui.coverage.CoverageActions
 import au.signalatlas.app.ui.coverage.CoverageToolbar
 import au.signalatlas.app.ui.theme.SignalAtlasTheme
 import au.signalatlas.feature.trip.TechFloor
@@ -37,12 +36,11 @@ class TripUiTest {
 
     @Test fun toolbarShowsTheTripButtonAndTheBannerShowsItsText() {
         var taps = 0
-        val noop = CoverageActions({}, {}, {}, {}, {}, {})
         compose.setContent {
             SignalAtlasTheme {
                 androidx.compose.foundation.layout.Column {
                     TripBanner("Trip · Telstra 4G · No dead zones ahead")
-                    CoverageToolbar(on = false, optionsOpen = false, actions = noop, tripRunning = true, onTrip = { taps++ })
+                    CoverageToolbar(optionsOpen = false, onOptions = {}, tripRunning = true, onTrip = { taps++ })
                 }
             }
         }

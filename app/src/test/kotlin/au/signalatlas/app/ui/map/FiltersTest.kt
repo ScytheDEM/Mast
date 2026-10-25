@@ -15,10 +15,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.core.app.ApplicationProvider
 import au.signalatlas.app.location.DeviceLocationSource
-import au.signalatlas.app.ui.coverage.CoverageActions
-import au.signalatlas.app.ui.coverage.CoverageToolbar
 import au.signalatlas.app.ui.theme.SignalAtlasTheme
-import au.signalatlas.core.coverage.CoverageSelection
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Tech
 import au.signalatlas.core.model.TowerFilter
@@ -43,19 +40,22 @@ class FiltersTest {
         assertThat(TowerFilter().toggleNetwork(Network.OPTUS).toggleTech(Tech.NR).reset().activeCount()).isEqualTo(0)
     }
 
-    @Test fun toolbarBadgeShowsTheCountAndHidesAtZero() {
+    @Test fun overflowIconBadgeShowsTheCountAndHidesAtZero() {
         var count by mutableStateOf(2)
         var opened = 0
         compose.setContent {
             SignalAtlasTheme {
-                CoverageToolbar(
-                    on = false, optionsOpen = false, actions = NOOP, filterCount = count, onFilters = { opened++ },
+                TowerSearchBar(
+                    SearchUiState(), expanded = false, onExpandedChange = {}, onQueryChange = {}, onResultClick = {},
+                    onOpenUpdates = {}, docked = true, filterCount = count, onFilters = { opened++ },
                 )
             }
         }
         compose.onNodeWithTag("filters-badge", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithText("2", useUnmergedTree = true).assertIsDisplayed()
-        compose.onNodeWithTag("filters-button").performClick()
+        compose.onNodeWithTag("overflow-button").performClick()
+        compose.onNodeWithText("Filters (2 active)").assertIsDisplayed()
+        compose.onNodeWithTag("menu-filters").performClick()
         assertThat(opened).isEqualTo(1)
         count = 0
         compose.waitForIdle()
@@ -82,7 +82,7 @@ class FiltersTest {
         assertThat(filter).isEqualTo(TowerFilter())
     }
 
-    @Test fun filtersButtonOpensTheSectionOnTheMapScreen() {
+    @Test fun theOverflowMenuOpensFiltersOnTheMapScreen() {
         val vm = MapViewModel(
             FakeData(FakeSnapshot(SITES)), FakeUpdates(), FakeBasemap(null), FakeLocation(), FakeCoverage(),
             compute = Dispatchers.Unconfined, io = Dispatchers.Unconfined,
@@ -94,7 +94,9 @@ class FiltersTest {
                 MapScreen(state, vm, location, onOpenUpdates = {}, renderMap = false)
             }
         }
-        compose.onNodeWithTag("filters-button").performClick()
+        compose.onNodeWithTag("filters-button").assertDoesNotExist() // no toolbar button any more
+        compose.onNodeWithTag("overflow-button").performClick()
+        compose.onNodeWithTag("menu-filters").performClick()
         repeat(3) {
             shadowOf(Looper.getMainLooper()).idleFor(200, TimeUnit.MILLISECONDS)
             compose.mainClock.advanceTimeBy(500)
@@ -104,9 +106,5 @@ class FiltersTest {
         compose.onNodeWithTag("filter-net-OPTUS").performClick()
         assertThat(vm.state.value.filter.networks).containsExactly(Network.OPTUS)
         compose.onNodeWithTag("filters-badge", useUnmergedTree = true).assertIsDisplayed()
-    }
-
-    private companion object {
-        val NOOP = CoverageActions({}, {}, {}, {}, {}, { _: CoverageSelection.View -> })
     }
 }

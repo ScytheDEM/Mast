@@ -196,7 +196,18 @@ class MapViewModel(
      */
     fun showCoverageFor(n: Network) {
         networkChosen = true
+        _state.update { it.copy(section = MapSection.COVERAGE) }
         updateCoverage { it.copy(on = true, network = n) }
+    }
+
+    /**
+     * The navigation bar: Coverage turns the layer on (with its controls), any other section turns it off. The selected
+     * site stays selected across sections.
+     */
+    fun selectSection(section: MapSection) {
+        if (section == _state.value.section) return
+        _state.update { it.copy(section = section) }
+        setCoverageOn(section == MapSection.COVERAGE)
     }
 
     fun setCoverageNetwork(n: Network) {
@@ -359,6 +370,12 @@ class MapViewModel(
     }
 
     fun downloadPatternsNow() = updates.downloadPatternsNow()
+
+    /**
+     * A tower tapped on the map: tapping the selected tower again deselects it (its lobes go), any other tower becomes the
+     * selection. Collapsing or swiping the sheet down never deselects.
+     */
+    fun onSiteTapped(id: Int) = selectSite(if (id == selectedId.value) null else id)
 
     fun selectSite(id: Int?) {
         selectedId.value = id
