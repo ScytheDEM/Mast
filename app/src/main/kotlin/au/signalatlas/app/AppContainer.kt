@@ -13,6 +13,17 @@ import au.signalatlas.app.data.PrefsUiHints
 import au.signalatlas.app.data.RepositoryPatternAccess
 import au.signalatlas.app.data.UiHints
 import au.signalatlas.app.data.AppStorage
+import au.signalatlas.app.packs.PackDeps
+import au.signalatlas.app.packs.PackDownloader
+import au.signalatlas.app.packs.PackManager
+import au.signalatlas.app.packs.PackNotifications
+import au.signalatlas.app.packs.PackRepository
+import au.signalatlas.app.packs.WorkManagerPackScheduler
+import au.signalatlas.core.geo.packs.DemPackContent
+import au.signalatlas.core.map.StyleLoader
+import au.signalatlas.core.map.packs.BasemapPackContent
+import au.signalatlas.core.map.packs.MapLibreOfflineBackend
+import java.io.IOException
 import au.signalatlas.app.data.CalibrationPrefs
 import au.signalatlas.app.data.CalibrationSettings
 import au.signalatlas.app.data.StoreCalibrationData
@@ -257,6 +268,25 @@ class AppContainer(context: Context) {
     )
 
     val location = DeviceLocationSource(app)
+
+    // Offline region packs: the base map (MapLibre offline regions) and elevation (pinned DEM chunks). Buildings and
+    // roads join `packSources` when their chunk stores exist.
+    private val packRepo = PackRepository(File(app.filesDir, "packs/packs.json"))
+    private val packSources = linkedMapOf(
+        PackManager.BASEMAP to BasemapPackContent(MapLibreOfflineBackend(app, app.resources.displayMetrics.density.coerceAtMost(2f))) { packStyleUrl() },
+        PackManager.ELEVATION to DemPackContent(elevationChunks, demFetcher),
+    )
+    val packNotifications = PackNotifications(app)
+    val packDeps = PackDeps(PackDownloader(packRepo, packSources.values.toList()), packRepo)
+    val packs = PackManager(packRepo, packSources, WorkManagerPackScheduler(app))
+
+    /** The clean light style pointed at the current build, as a file MapLibre can use as a region's style URL. */
+    private suspend fun packStyleUrl(): String = withContext(Dispatchers.IO) {
+        val key = basemap.currentKey() ?: throw IOException("The base map build is not known yet")
+        val file = File(app.filesDir, "packs/style.json").apply { parentFile?.mkdirs() }
+        file.writeText(StyleLoader.load(app, dark = false, basemapKey = key))
+        "file://${file.absolutePath}"
+    }
 
     private val towerData = RepositoryTowerData(repo, repoStarted)
 
