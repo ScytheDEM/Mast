@@ -1,7 +1,14 @@
 package au.signalatlas.app.ui.connected
 
 import android.content.res.Resources
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -100,26 +107,28 @@ internal fun distance(m: Double): String = when {
 }
 
 /**
- * The card at the bottom of the map: one row per active SIM (dual SIM), the data SIM first and large. Each row has the
- * carrier's colour as an accent, a signal-bars glyph from the RSRP, a large 4G/5G badge, band chips and the RSRP in its
- * quality colour; the primary row adds the tower distance and bearing. Tapping it opens the cellular details (or asks for
- * the missing permission).
+ * The card at the bottom of the map, in Material 3 Expressive form: a tonal surface (surfaceContainerHigh, dynamic colour)
+ * with an extra-large rounded shape, one row per active SIM (dual SIM), the data SIM first and large. The primary row
+ * leads with a carrier-tinted tile holding the signal bars, then the 4G/5G badge and carrier name over a fixed-height
+ * band-chip line, and ends with the RSRP in its legend colour. Values cross-fade when they change and every slot has a
+ * fixed size, so a band or reading change never moves the layout. Feed it [au.signalatlas.app.connected.ServingStabiliser]
+ * output. Tapping it opens the cellular details (or asks for the missing permission).
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ConnectedInfoBar(ui: ConnectedUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val res = LocalContext.current.resources
     val summary = ui.allSims.mapIndexed { i, sim -> simSummary(sim, res, i) }.joinToString(". ")
-    ElevatedCard(
+    Surface(
         onClick = onClick,
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp),
+        shape = RoundedCornerShape(28.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 2.dp,
+        shadowElevation = 4.dp,
         modifier = modifier.fillMaxWidth().testTag("connected-bar").semantics { contentDescription = summary },
     ) {
-        Column(Modifier.padding(vertical = 4.dp)) {
+        Column(Modifier.padding(vertical = 6.dp)) {
             ui.allSims.forEachIndexed { i, sim ->
-                if (i > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                if (i > 0) HorizontalDivider(Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.outlineVariant)
                 if (i == 0) PrimaryRow(sim, i) else CompactRow(sim, i)
             }
         }
@@ -144,36 +153,57 @@ private val LegendGoodText @Composable get() = if (isSystemInDarkTheme()) Color(
 private val LegendFairText @Composable get() = if (isSystemInDarkTheme()) Color(0xFFE9C46A) else Color(0xFF8A6A00)
 private val LegendWeakText @Composable get() = if (isSystemInDarkTheme()) Color(0xFFF4A261) else Color(0xFFB4570F)
 
-@OptIn(ExperimentalLayoutApi::class)
+private val RSRP_WIDTH = 64.dp
+private val CHIP_LINE_HEIGHT = 24.dp
+
 @Composable
 private fun PrimaryRow(ui: ConnectedUi, index: Int) {
     val res = LocalContext.current.resources
     val connected = ui.status == ConnectedStatus.CONNECTED || ui.status == ConnectedStatus.UNTRACKED
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(end = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.padding(vertical = 10.dp).width(5.dp).fillMaxHeight().background(accentOf(ui), RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp)))
+    val accent = accentOf(ui)
+    Row(Modifier.fillMaxWidth().padding(start = 10.dp, end = 16.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        // The carrier tile: the carrier's colour as a tonal accent behind the signal bars.
+        Box(
+            Modifier.size(48.dp).background(accent.copy(alpha = 0.16f), MaterialTheme.shapes.large),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (connected) {
+                Crossfade(signalBars(ui.rsrpDbm), label = "bars") { bars ->
+                    SignalBars(bars, rsrpColor(ui.rsrpDbm), Modifier.size(26.dp))
+                }
+            } else {
+                Box(Modifier.size(10.dp).background(accent, CircleShape))
+            }
+        }
         if (!connected) {
             Text(
                 connectedText(ui, res), style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 14.dp),
+                modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp),
             )
             return@Row
         }
-        SignalBars(signalBars(ui.rsrpDbm), rsrpColor(ui.rsrpDbm), Modifier.padding(start = 14.dp).size(30.dp))
-        Column(Modifier.weight(1f).padding(start = 12.dp, top = 10.dp, bottom = 10.dp)) {
+        Column(Modifier.weight(1f).padding(start = 12.dp, top = 6.dp, bottom = 6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TechBadge(ui.fiveG, large = true)
+                Crossfade(ui.fiveG, label = "tech") { TechBadge(it, large = true) }
                 Spacer(Modifier.width(8.dp))
                 Text(simName(ui, res, index), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.height(6.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                ui.bandList.forEach { BandChip(it) }
+            // One fixed-height line: bands never wrap, so the card keeps its height.
+            Row(Modifier.height(CHIP_LINE_HEIGHT).clipToBounds(), verticalAlignment = Alignment.CenterVertically) {
+                AnimatedContent(ui.bandList, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "bands") { bands ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        bands.forEach { BandChip(it, accent = accent) }
+                    }
+                }
                 ui.tower?.let {
                     Text(
                         res.getString(R.string.connected_tower, distance(it.distanceM), it.compass),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.align(Alignment.CenterVertically).padding(start = 4.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 8.dp),
                     )
                 }
             }
@@ -186,15 +216,17 @@ private fun PrimaryRow(ui: ConnectedUi, index: Int) {
 private fun CompactRow(ui: ConnectedUi, index: Int) {
     val res = LocalContext.current.resources
     val connected = ui.status == ConnectedStatus.CONNECTED || ui.status == ConnectedStatus.UNTRACKED
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(8.dp).background(accentOf(ui), CircleShape))
+    val accent = accentOf(ui)
+    Row(Modifier.fillMaxWidth().height(40.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(8.dp).background(accent, CircleShape))
         Spacer(Modifier.width(10.dp))
         Text(simName(ui, res, index), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
         if (connected) {
             Spacer(Modifier.width(8.dp))
-            TechBadge(ui.fiveG, large = false)
-            ui.bandList.forEach { Spacer(Modifier.width(4.dp)); BandChip(it) }
-            Spacer(Modifier.weight(1f))
+            Crossfade(ui.fiveG, label = "tech") { TechBadge(it, large = false) }
+            AnimatedContent(ui.bandList, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "bands", modifier = Modifier.weight(1f).clipToBounds()) { bands ->
+                Row(verticalAlignment = Alignment.CenterVertically) { bands.forEach { Spacer(Modifier.width(4.dp)); BandChip(it, accent = accent) } }
+            }
             SignalBars(signalBars(ui.rsrpDbm), rsrpColor(ui.rsrpDbm), Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
             RsrpValue(ui.rsrpDbm, large = false)
@@ -205,17 +237,22 @@ private fun CompactRow(ui: ConnectedUi, index: Int) {
     }
 }
 
+/** The RSRP in a fixed-width slot with tabular figures; a new value cross-fades in. */
 @Composable
 private fun RsrpValue(rsrp: Int?, large: Boolean) {
     val color = rsrpColor(rsrp)
-    Column(horizontalAlignment = Alignment.End) {
-        Text(
-            rsrp?.let { dbmNumber(it) } ?: "–",
-            style = if (large) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.labelLarge,
-            color = color,
-            fontWeight = FontWeight.SemiBold,
-        )
-        if (large) Text("dBm", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.width(if (large) RSRP_WIDTH else 44.dp), horizontalAlignment = Alignment.End) {
+        Crossfade(rsrp, label = "rsrp") { v ->
+            Text(
+                v?.let { dbmNumber(it) } ?: "–",
+                style = (if (large) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.labelLarge)
+                    .copy(fontFeatureSettings = "tnum"),
+                color = color,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
+        if (large) Text(stringResource(R.string.unit_dbm), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -237,13 +274,14 @@ fun TechBadge(fiveG: Boolean, large: Boolean, modifier: Modifier = Modifier) {
     }
 }
 
-/** A band such as "n78" or "B3". */
+/** A band such as "n78" or "B3"; [accent] (the carrier's colour) outlines it. */
 @Composable
-fun BandChip(band: String, modifier: Modifier = Modifier) {
+fun BandChip(band: String, modifier: Modifier = Modifier, accent: Color? = null) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
         contentColor = MaterialTheme.colorScheme.onSurface,
         shape = CircleShape,
+        border = accent?.let { BorderStroke(1.dp, it.copy(alpha = 0.55f)) },
         modifier = modifier,
     ) {
         Text(band, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
