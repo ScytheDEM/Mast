@@ -182,6 +182,7 @@ private const val LAYER_CONNECTED_NEIGHBOURS = "connected-neighbours"
 private const val LAYER_CONNECTED_RING = "connected-ring"
 private const val LAYER_CONNECTED_DOT = "connected-dot"
 private const val EMPTY_COLLECTION = """{"type":"FeatureCollection","features":[]}"""
+private const val ESTIMATED_ACCURACY_M = 70f
 private const val PULSE_STEPS = 24
 private const val PULSE_FRAME_MS = 70L
 
@@ -205,6 +206,8 @@ fun TowerMap(
     /** The user's position (lat, lon) for the location dot; pass null without location permission. */
     userLocation: Pair<Double, Double>? = null,
     userLocationColor: Int = selectedColor,
+    /** The location is estimated (dead-reckoned in a tunnel): a fainter dot with a soft pulse and a wide accuracy halo. */
+    userLocationEstimated: Boolean = false,
     /** Tile URL template of the coverage overlay (`CoverageTileService.tileUrlTemplate()`); null = no overlay. */
     coverageUrlTemplate: String? = null,
     coverageView: CoverageSelection.View = CoverageSelection.View.RSRP,
@@ -402,18 +405,23 @@ fun TowerMap(
     // The location dot: MapLibre's LocationComponent fed by us (no location engine of its own).
     // Activated once per map; it re-adds its layers itself when the style is replaced.
     val showDot = userLocation != null
-    LaunchedEffect(style, showDot, userLocationColor) {
+    LaunchedEffect(style, showDot, userLocationColor, userLocationEstimated) {
         val m = map ?: return@LaunchedEffect
         val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
-        setUserLocationVisible(m, s, context, showDot, userLocationColor)
+        setUserLocationVisible(m, s, context, showDot, userLocationColor, userLocationEstimated)
     }
-    LaunchedEffect(style, userLocation) {
+    LaunchedEffect(style, userLocation, userLocationEstimated) {
         val m = map ?: return@LaunchedEffect
         val at = userLocation ?: return@LaunchedEffect
         if (style?.isFullyLoaded != true) return@LaunchedEffect
         val lc = m.locationComponent
         if (lc.isLocationComponentActivated && lc.isLocationComponentEnabled) {
-            lc.forceLocationUpdate(Location("signal-atlas").apply { latitude = at.first; longitude = at.second })
+            val loc = Location("signal-atlas").apply {
+                latitude = at.first
+                longitude = at.second
+                if (userLocationEstimated) accuracy = ESTIMATED_ACCURACY_M
+            }
+            lc.forceLocationUpdate(loc)
         }
     }
 
@@ -422,18 +430,21 @@ fun TowerMap(
 
 /** No location engine runs, so no permission is used here; the caller only passes a position it may show. */
 @SuppressLint("MissingPermission")
-private fun setUserLocationVisible(map: MapLibreMap, style: Style, context: Context, visible: Boolean, color: Int) {
+private fun setUserLocationVisible(map: MapLibreMap, style: Style, context: Context, visible: Boolean, color: Int, estimated: Boolean) {
     val lc = map.locationComponent
     if (!visible) {
         if (lc.isLocationComponentActivated && lc.isLocationComponentEnabled) lc.isLocationComponentEnabled = false
         return
     }
     val options = LocationComponentOptions.builder(context)
-        .foregroundTintColor(color)
-        .backgroundTintColor(0xFFFFFFFF.toInt())
+        .foregroundTintColor(if (estimated) (color and 0x00FFFFFF) or 0x99000000.toInt() else color)
+        .backgroundTintColor(if (estimated) 0xB3FFFFFF.toInt() else 0xFFFFFFFF.toInt())
         .accuracyColor(color)
-        .accuracyAlpha(0.12f)
-        .pulseEnabled(false)
+        .accuracyAlpha(if (estimated) 0.2f else 0.12f)
+        .pulseEnabled(estimated)
+        .pulseColor(color)
+        .pulseSingleDuration(2500f)
+        .pulseMaxRadius(36f)
         .build()
     if (lc.isLocationComponentActivated) {
         lc.applyStyle(options)

@@ -246,6 +246,17 @@
     <string name="das_in_building">DAS · in-building</string>
     <string name="das_tunnel">DAS · tunnel</string>
     <string name="das_badge">DAS</string>
+    <string name="das_channel_name">DAS detected</string>
+    <string name="das_channel_description">Tells you when your phone is on an in-building or tunnel distributed antenna system.</string>
+    <string name="das_notification_title">DAS detected</string>
+    <string name="das_dismiss">Dismiss</string>
+    <string name="beacons_title">Use Bluetooth beacons in tunnels</string>
+    <string name="beacons_summary">Scans for Bluetooth beacons only on a trip, within 500 m of a tunnel, to sharpen your position when GPS is lost. Learns beacon positions while GPS is accurate. Needs Bluetooth and location permission.</string>
+    <string name="beacons_permission_denied">Bluetooth scan permission is needed to use beacons.</string>
+    <string name="beacons_import">Import beacon list (CSV: id,lat,lon)</string>
+    <string name="beacons_known">%d beacons known</string>
+    <string name="beacons_imported">Imported %1$d beacons, %2$d lines skipped</string>
+    <string name="beacons_import_failed">Could not read that file.</string>
     <string name="filters_bands">Bands</string>
     <string name="filters_button">Filters</string>
     <plurals name="filters_badge_description">

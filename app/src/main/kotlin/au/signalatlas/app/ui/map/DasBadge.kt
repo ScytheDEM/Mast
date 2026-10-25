@@ -1,6 +1,15 @@
 package au.signalatlas.app.ui.map
 
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -30,3 +39,33 @@ fun DasBadge(kind: SiteKind, modifier: Modifier = Modifier, label: String? = nul
         )
     }
 }
+
+/** What the map screen needs of DAS detection: the current announcement (null = none) and its dismissal. */
+class DasUi(val banner: StateFlow<String?>, val onDismiss: () -> Unit) {
+    companion object {
+        val None = DasUi(MutableStateFlow(null), {})
+    }
+}
+
+/** "DAS detected: {site name} ({networks})" along the top; dismisses itself after [AUTO_DISMISS_MS]. */
+@Composable
+fun DasBanner(text: String, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+    LaunchedEffect(text) {
+        delay(AUTO_DISMISS_MS)
+        onDismiss()
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = MaterialTheme.shapes.large,
+        shadowElevation = 3.dp,
+        modifier = modifier.fillMaxWidth().testTag("das-banner"),
+    ) {
+        Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text, style = MaterialTheme.typography.titleSmall, maxLines = 2, modifier = Modifier.weight(1f).padding(vertical = 10.dp))
+            TextButton(onClick = onDismiss, modifier = Modifier.testTag("das-banner-dismiss")) { Text(stringResource(R.string.das_dismiss)) }
+        }
+    }
+}
+
+private const val AUTO_DISMISS_MS = 15_000L

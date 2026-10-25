@@ -68,6 +68,7 @@ dependencies {
     implementation(project(":core:roads"))
     implementation(project(":core:radio"))
     implementation(project(":core:calibration"))
+    implementation(project(":core:beacons"))
     implementation(project(":feature:trip"))
     implementation(project(":car"))
     implementation(project(":engine"))

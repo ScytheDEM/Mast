@@ -36,6 +36,8 @@ interface TowerSnapshot {
     fun search(query: String, limit: Int = 20): List<SiteSummary>
     /** Null if the site does not exist or this snapshot was retired by a reload. */
     fun siteDetail(siteId: Int): SiteDetail?
+    /** One site's in-memory summary (no query); null when unknown. */
+    fun site(siteId: Int): SiteSummary? = null
 }
 
 /** The live tower data, which a reload can swap at any time. */
@@ -91,7 +93,11 @@ interface LocationSource {
     val last: StateFlow<Pair<Double, Double>?>
     /** False while the device's location services are switched off. */
     val enabled: StateFlow<Boolean>
+    /** The position is dead-reckoned along a tunnel road, not a GPS fix: the map draws a subtle "estimated" dot. */
+    val estimated: StateFlow<Boolean> get() = ESTIMATED_NEVER
 }
+
+private val ESTIMATED_NEVER: StateFlow<Boolean> = kotlinx.coroutines.flow.MutableStateFlow(false)
 
 /** Equality is the wrapped store's identity, so a reload is always a change. */
 data class StoreSnapshot(private val store: TowerStore) : TowerSnapshot {
@@ -101,6 +107,7 @@ data class StoreSnapshot(private val store: TowerStore) : TowerSnapshot {
     override fun nearest(lat: Double, lon: Double, f: TowerFilter, limit: Int) = store.nearest(lat, lon, f, limit)
     override fun search(query: String, limit: Int) = store.search(query, limit)
     override fun siteDetail(siteId: Int) = store.siteDetail(siteId)
+    override fun site(siteId: Int) = store.summary(siteId)
 }
 
 class RepositoryTowerData(private val repo: TowerRepository, override val started: StateFlow<Boolean>) : TowerData {

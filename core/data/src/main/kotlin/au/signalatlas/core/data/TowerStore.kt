@@ -56,6 +56,12 @@ class TowerStore private constructor(
         return result
     }
 
+    /** The in-memory summary of one site (name, networks, DAS kind), or null; no SQLite access. */
+    fun summary(siteId: Int): SiteSummary? {
+        val i = summaries.asList().binarySearch { it.id.compareTo(siteId) }
+        return if (i >= 0) summaries[i] else null
+    }
+
     fun allSites(f: TowerFilter): List<SiteSummary> = summaries.filter { f.matches(it) }
 
     /** Up to [limit] filtered sites nearest to the point, nearest first, with distance in metres. */

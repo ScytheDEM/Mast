@@ -1,5 +1,7 @@
 package au.signalatlas.app.ui.trip
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,7 +27,20 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import au.signalatlas.app.data.BeaconSettings
+import au.signalatlas.core.beacons.bleScanPermissions
+import au.signalatlas.core.beacons.hasBleScanPermission
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -67,6 +82,8 @@ fun TripSettingsScreen(
     onConfig: ((TripConfig) -> TripConfig) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Tunnel beacon settings; null hides the section (tests). */
+    beacons: BeaconSettings? = null,
 ) {
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -107,6 +124,7 @@ fun TripSettingsScreen(
                 Text(stringResource(R.string.trip_voice), Modifier.weight(1f).padding(end = 12.dp), style = MaterialTheme.typography.bodyLarge)
                 Switch(checked = config.voice, onCheckedChange = { v -> onConfig { it.copy(voice = v) } }, modifier = Modifier.testTag("trip-voice"))
             }
+            if (beacons != null) BeaconSection(beacons)
         }
     }
 }
@@ -132,5 +150,60 @@ private fun <T> Choice(options: List<T>, selected: T, tag: String, onSelect: (T)
                 label = { Text(label(option), maxLines = 1) },
             )
         }
+    }
+}
+
+/** Settings: "Use Bluetooth beacons in tunnels" (asks for BLUETOOTH_SCAN + location only when turned on) and the CSV import. */
+@Composable
+private fun BeaconSection(beacons: BeaconSettings) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val enabled by beacons.enabled.collectAsStateWithLifecycle()
+    var message by remember { mutableStateOf<String?>(null) }
+    var count by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(Unit) { count = beacons.count() }
+    val denied = stringResource(R.string.beacons_permission_denied)
+    val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.isNotEmpty() && granted.values.all { it }) {
+            beacons.setEnabled(true)
+            message = null
+        } else {
+            message = denied
+        }
+    }
+    val importedFmt = stringResource(R.string.beacons_imported)
+    val failed = stringResource(R.string.beacons_import_failed)
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val r = beacons.importCsv(uri)
+            message = if (r == null) failed else String.format(importedFmt, r.imported, r.skipped)
+            count = beacons.count()
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.beacons_title), Modifier.weight(1f).padding(end = 12.dp), style = MaterialTheme.typography.titleMedium)
+            Switch(
+                checked = enabled,
+                onCheckedChange = { on ->
+                    if (!on) {
+                        beacons.setEnabled(false)
+                    } else if (hasBleScanPermission(context)) {
+                        beacons.setEnabled(true)
+                    } else {
+                        permissions.launch(bleScanPermissions())
+                    }
+                },
+                modifier = Modifier.testTag("beacons-enabled"),
+            )
+        }
+        Text(stringResource(R.string.beacons_summary), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        count?.let { Text(stringResource(R.string.beacons_known, it), style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("beacons-count")) }
+        OutlinedButton(
+            onClick = { picker.launch(arrayOf("text/csv", "text/comma-separated-values", "text/plain", "application/csv", "application/vnd.ms-excel")) },
+            modifier = Modifier.testTag("beacons-import"),
+        ) { Text(stringResource(R.string.beacons_import)) }
+        message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("beacons-message")) }
     }
 }

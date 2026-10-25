@@ -36,6 +36,25 @@ class TowerStoreTest {
             c.prepare(query).use { st -> buildList { while (st.step()) add(read(st)) } }
         }
 
+    @Test fun siteKindIsReadIntoSummariesDetailAndTheDasFilter() {
+        assertThat(store.allSites(TowerFilter()).all { it.kind == au.signalatlas.core.model.SiteKind.MACRO }).isTrue()
+        assertThat(store.allSites(TowerFilter(dasOnly = true))).isEmpty()
+        val copy = File(tmp.newFolder(), "towers.db").also { db.copyTo(it) }
+        BundledSQLiteDriver().open(copy.path).use { c ->
+            c.execSQL("UPDATE site SET site_kind = 2 WHERE id = 101160")
+            c.execSQL("UPDATE site SET site_kind = 1 WHERE id = 41428")
+        }
+        TowerStore.open(copy).use { s ->
+            assertThat(s.summary(101160)!!.kind).isEqualTo(au.signalatlas.core.model.SiteKind.DAS_TUNNEL)
+            assertThat(s.summary(41428)!!.kind).isEqualTo(au.signalatlas.core.model.SiteKind.DAS_BUILDING)
+            assertThat(s.summary(9002575)!!.kind).isEqualTo(au.signalatlas.core.model.SiteKind.MACRO)
+            assertThat(s.summary(-5)).isNull()
+            assertThat(s.siteDetail(101160)!!.site.kind).isEqualTo(au.signalatlas.core.model.SiteKind.DAS_TUNNEL)
+            assertThat(s.allSites(TowerFilter(dasOnly = true)).map { it.id }).containsExactly(41428, 101160)
+            assertThat(s.nearest(-35.30, 149.13, TowerFilter(dasOnly = true), 5).map { it.first.id }).containsExactly(41428, 101160)
+        }
+    }
+
     @Test fun sitesInCanberraFindsFixtureSites() {
         val ids = store.sitesIn(canberra, TowerFilter()).map { it.id }
         assertThat(ids).containsAtLeast(101160, 41428, 9002575)

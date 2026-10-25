@@ -35,6 +35,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import au.signalatlas.app.ui.map.DasBadge
 import au.signalatlas.app.ui.map.SignalQuality
 import au.signalatlas.core.map.NetworkColors
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -187,6 +188,10 @@ private fun PrimaryRow(ui: ConnectedUi, index: Int) {
                 Crossfade(ui.fiveG, label = "tech") { TechBadge(it, large = true) }
                 Spacer(Modifier.width(8.dp))
                 Text(simName(ui, res, index), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                ui.dasKind?.let {
+                    Spacer(Modifier.width(8.dp))
+                    DasBadge(it, Modifier.testTag("connected-das-badge"), label = stringResource(R.string.das_badge))
+                }
             }
             Spacer(Modifier.height(6.dp))
             // One fixed-height line: bands never wrap, so the card keeps its height.

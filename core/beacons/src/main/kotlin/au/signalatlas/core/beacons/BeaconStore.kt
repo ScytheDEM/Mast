@@ -130,3 +130,9 @@ object BeaconCsv {
         return Parsed(out.values.toList(), skipped)
     }
 }
+
+/** Opens the database on first use, so constructing the object graph at start-up touches no file. */
+class LazyBeaconRepository(private val delegate: Lazy<BeaconRepository>) : BeaconRepository {
+    override fun get(id: String): KnownBeacon? = delegate.value.get(id)
+    override fun put(b: KnownBeacon) = delegate.value.put(b)
+}

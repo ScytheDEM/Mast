@@ -38,6 +38,10 @@ import au.signalatlas.app.ui.storage.StorageViewModel
 import au.signalatlas.app.ui.updates.UpdatesScreen
 import au.signalatlas.app.ui.trip.TripSettingsScreen
 import au.signalatlas.app.ui.trip.TripUi
+import au.signalatlas.app.ui.map.DasUi
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import au.signalatlas.app.ui.updates.currentNetworkKind
 
 private enum class Root { Loading, FirstRun, Map }
@@ -57,6 +61,7 @@ fun AppScaffold(container: AppContainer) {
         TripUi(container.trip.state) { if (container.trip.isRunning) container.trip.stop() else container.trip.start() }
     }
     val connected by container.connected.ui.collectAsStateWithLifecycle()
+    val dasUi = remember(container) { DasUi(container.das.banner.map { it?.text }.stateIn(container.appScope, SharingStarted.Eagerly, null), container.das::dismiss) }
     val connectedActions = remember(container) {
         ConnectedActions(
             start = container.connected::start, stop = container.connected::stop,
@@ -106,6 +111,7 @@ fun AppScaffold(container: AppContainer) {
                     hints = container.hints,
                     calibration = calibrationHooks,
                     trip = tripUi,
+                    das = dasUi,
                 )
             }
         }
@@ -152,7 +158,10 @@ fun AppScaffold(container: AppContainer) {
             enter = slideInHorizontally { it },
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
-            TripSettingsScreen(config = tripConfig, onConfig = container.tripSettings::update, onBack = { showTrip = false })
+            TripSettingsScreen(
+                config = tripConfig, onConfig = container.tripSettings::update, onBack = { showTrip = false },
+                beacons = container.beaconSettings,
+            )
         }
 
         AnimatedVisibility(

@@ -5,6 +5,7 @@ import au.signalatlas.core.calibration.CellMapStore
 import au.signalatlas.core.calibration.CellMapping
 import au.signalatlas.core.calibration.CellMatcher
 import au.signalatlas.core.calibration.Fix
+import au.signalatlas.core.model.SiteKind
 import au.signalatlas.core.radio.RadioState
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -44,6 +45,8 @@ class ConnectedController(
     private val radioStates: StateFlow<Map<Int, RadioState>> = MutableStateFlow(emptyMap()),
     /** The SIM that carries mobile data; null = unknown (the primary is [radioState]'s). */
     private val dataSubId: StateFlow<Int?> = MutableStateFlow(null),
+    /** The DAS kind of a tower DB site (for the phone card's DAS badge); MACRO when unknown. */
+    private val siteKind: (Int) -> SiteKind = { SiteKind.MACRO },
 ) {
     private val lock = Any()
     private var foreground = false
@@ -110,7 +113,9 @@ class ConnectedController(
         } else {
             null
         }
-        return connectedUi(state, match, fix)
+        val ui = connectedUi(state, match, fix)
+        val kind = ui.tower?.siteId?.let(siteKind)?.takeIf { it.isDas }
+        return if (kind != null) ui.copy(dasKind = kind) else ui
     }
 }
 

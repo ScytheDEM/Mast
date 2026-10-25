@@ -41,6 +41,8 @@ data class MapUiState(
     /** False while the device's location services are off (then no fix will arrive). */
     val locationEnabled: Boolean = true,
     val location: Pair<Double, Double>? = null,
+    /** [location] is dead-reckoned in a tunnel (GPS lost): shown as a subtle "estimated" dot. */
+    val locationEstimated: Boolean = false,
     /** Nearest filtered sites with distance in metres, nearest first; empty without permission. */
     val nearby: List<Pair<SiteSummary, Double>> = emptyList(),
     val data: DataSummary? = null,

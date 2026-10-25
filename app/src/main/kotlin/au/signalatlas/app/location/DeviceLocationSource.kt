@@ -43,6 +43,8 @@ class DeviceLocationSource(
 
     /** The same fresh fixes as [last], with their horizontal accuracy (calibration needs <= 50 m) and wall-clock time. */
     val fixes: StateFlow<Fix?> = _fixes.asStateFlow()
+    private val _estimated = MutableStateFlow(false)
+    override val estimated: StateFlow<Boolean> = _estimated.asStateFlow()
     private val _enabled = MutableStateFlow(isLocationOn())
     override val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
@@ -97,6 +99,7 @@ class DeviceLocationSource(
         lastAtNanos = nowNanos()
         _fixes.value = fix
         _last.value = fix.lat to fix.lon
+        _estimated.value = fix.deadReckoned
     }
 
     fun stop() {
@@ -173,6 +176,7 @@ class DeviceLocationSource(
             if (location.hasAccuracy()) location.accuracy.toDouble() else NO_ACCURACY_M, location.time,
         )
         _last.value = location.latitude to location.longitude
+        _estimated.value = false
     }
 
     companion object {
