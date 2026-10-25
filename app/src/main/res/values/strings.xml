@@ -31,6 +31,7 @@
     <string name="search_no_results">No matching sites</string>
     <string name="more_options">More options</string>
     <string name="menu_tower_data">Tower data</string>
+    <string name="menu_tower_data_update">Tower data · update ready</string>
     <string name="menu_filters">Filters</string>
     <string name="menu_filters_active">Filters (%1$d active)</string>
     <string name="nav_home">Home</string>
@@ -119,7 +120,7 @@
     <string name="coverage_signal">Signal</string>
     <string name="coverage_reliability">Reliability</string>
     <string name="coverage_zoom_in">Zoom in to see coverage</string>
-    <string name="legend_excellent">Excellent ≥ −85 dBm</string>
+    <string name="legend_excellent">Excellent</string>
     <string name="legend_good">Good</string>
     <string name="legend_fair">Fair</string>
     <string name="legend_weak">Weak</string>

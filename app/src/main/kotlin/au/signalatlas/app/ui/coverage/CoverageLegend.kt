@@ -46,19 +46,24 @@ fun CoverageLegend(view: CoverageSelection.View, modifier: Modifier = Modifier) 
     Surface(
         modifier = modifier,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shape = MaterialTheme.shapes.medium,
-        shadowElevation = 3.dp,
+        shape = MaterialTheme.shapes.extraLarge,
+        shadowElevation = 2.dp,
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // One slim row: the legend is a key, not a panel.
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             rows.forEach { (color, label) ->
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     Surface(
                         color = color,
-                        shape = RoundedCornerShape(4.dp),
+                        shape = RoundedCornerShape(3.dp),
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        modifier = Modifier.size(width = 22.dp, height = 14.dp),
+                        modifier = Modifier.size(10.dp),
                     ) { }
-                    Text(stringResource(label), style = MaterialTheme.typography.labelMedium)
+                    Text(stringResource(label), style = MaterialTheme.typography.labelSmall, maxLines = 1)
                 }
             }
         }

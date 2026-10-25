@@ -73,6 +73,8 @@ fun TowerSearchBar(
     /** Active filters (badges the overflow icon); [onFilters] opens the filters from the overflow menu. */
     filterCount: Int = 0,
     onFilters: () -> Unit = {},
+    /** A tower data update is ready: a dot on the overflow icon and its menu item, instead of a chip on the map. */
+    updateAvailable: Boolean = false,
 ) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -118,7 +120,7 @@ fun TowerSearchBar(
                     text.isNotEmpty() -> IconButton(onClick = { setText("") }) {
                         Icon(Icons.Filled.Close, stringResource(R.string.clear))
                     }
-                    !expanded -> OverflowMenu(onOpenUpdates, onOpenOffline, filterCount, onFilters)
+                    !expanded -> OverflowMenu(onOpenUpdates, onOpenOffline, filterCount, onFilters, updateAvailable)
                 }
             },
         )
@@ -147,7 +149,7 @@ fun TowerSearchBar(
 }
 
 @Composable
-private fun OverflowMenu(onOpenUpdates: () -> Unit, onOpenOffline: () -> Unit, filterCount: Int, onFilters: () -> Unit) {
+private fun OverflowMenu(onOpenUpdates: () -> Unit, onOpenOffline: () -> Unit, filterCount: Int, onFilters: () -> Unit, updateAvailable: Boolean) {
     var open by remember { mutableStateOf(false) }
     val description = if (filterCount > 0) {
         stringResource(R.string.more_options) + ", " + pluralStringResource(R.plurals.filters_badge_description, filterCount, filterCount)
@@ -156,7 +158,14 @@ private fun OverflowMenu(onOpenUpdates: () -> Unit, onOpenOffline: () -> Unit, f
     }
     Box {
         IconButton(onClick = { open = true }, modifier = Modifier.testTag("overflow-button")) {
-            BadgedBox(badge = { if (filterCount > 0) Badge(Modifier.testTag("filters-badge")) { Text(filterCount.toString()) } }) {
+            BadgedBox(
+                badge = {
+                    when {
+                        filterCount > 0 -> Badge(Modifier.testTag("filters-badge")) { Text(filterCount.toString()) }
+                        updateAvailable -> Badge(Modifier.testTag("update-badge"))
+                    }
+                },
+            ) {
                 Icon(Icons.Filled.MoreVert, description)
             }
         }
@@ -170,8 +179,9 @@ private fun OverflowMenu(onOpenUpdates: () -> Unit, onOpenOffline: () -> Unit, f
                 modifier = Modifier.testTag("menu-filters"),
             )
             DropdownMenuItem(
-                text = { Text(stringResource(R.string.menu_tower_data)) },
+                text = { Text(stringResource(if (updateAvailable) R.string.menu_tower_data_update else R.string.menu_tower_data)) },
                 leadingIcon = { Icon(painterResource(R.drawable.ic_cell_tower), null) },
+                trailingIcon = if (updateAvailable) ({ Badge() }) else null,
                 onClick = { open = false; onOpenUpdates() },
             )
             DropdownMenuItem(

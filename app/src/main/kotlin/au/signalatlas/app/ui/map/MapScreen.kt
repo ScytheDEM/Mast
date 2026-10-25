@@ -119,6 +119,7 @@ import au.signalatlas.feature.trip.TripState
 import au.signalatlas.app.ui.coverage.IncreaseResolutionSheet
 import au.signalatlas.app.ui.coverage.PointReadout
 import au.signalatlas.app.ui.nearby.NearbyContent
+import au.signalatlas.core.update.UpdateStatus
 import au.signalatlas.core.map.MapCameraState
 import au.signalatlas.core.map.SectorBeams
 import au.signalatlas.core.map.TowerMap
@@ -220,7 +221,7 @@ fun MapScreen(
     CollapseSearchOnWindowChange(windowClass.minWidthDp to windowClass.minHeightDp) { searchExpanded = false }
     var explainerSeen by remember { mutableStateOf(hints.coverageExplainerSeen()) }
     var patternExpanded by remember { mutableStateOf(hints.patternExpanded()) }
-    var coverageOptionsOpen by rememberSaveable { mutableStateOf(true) }
+    var coverageOptionsOpen by rememberSaveable { mutableStateOf(false) }
     var rationaleFor by remember { mutableStateOf<(() -> Unit)?>(null) }
     var afterGrant by remember { mutableStateOf<(() -> Unit)?>(null) }
 
@@ -405,10 +406,7 @@ fun MapScreen(
     }
 
     val coverageActions = CoverageActions(
-        onToggle = { on ->
-            if (on) coverageOptionsOpen = true
-            vm.setCoverageOn(on)
-        },
+        onToggle = vm::setCoverageOn,
         onOptions = { coverageOptionsOpen = !coverageOptionsOpen },
         onNetwork = vm::setCoverageNetwork,
         onFiveGOnly = vm::setCoverageFiveGOnly,
@@ -449,7 +447,6 @@ fun MapScreen(
     }
     val onShowCoverage: (Network) -> Unit = { n ->
         state.selected?.site?.let { camera.animateTo(it.lat, it.lon, COVERAGE_FIT_ZOOM) }
-        coverageOptionsOpen = true
         vm.showCoverageFor(n)
         // The open sheet would hide the map: collapse it to its peek (the site stays selected).
         if (!expanded) scope.launch { sheetState.animateTo(PeekValue.Peek, tween()) }
@@ -584,11 +581,14 @@ fun MapScreen(
                 modifier = Modifier.align(Alignment.BottomCenter),
             ) {
                 val navInset = WindowInsets.navigationBars.let { with(density) { it.getBottom(density).toDp() } }
-                PeekSheet(sheetState, peekHeight = SITE_PEEK, maxHeight = sheetMax, bottomInset = NAV_AREA + navInset) {
+                PeekSheet(sheetState, peekHeight = SITE_PEEK, maxHeight = sheetMax, bottomInset = navInset) {
                     siteContent(PaddingValues(bottom = 16.dp))
                 }
             }
-            NavBarHost(section, selectSection, tripState is TripState.Running, Modifier.align(Alignment.BottomCenter))
+            // The site sheet takes the bottom edge; the navigation bar returns when it closes.
+            AnimatedVisibility(!compactSite, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
+                NavBarHost(section, selectSection, tripState is TripState.Running)
+            }
             // A different pane gets a fresh sheet: a modal sheet whose content changes height while open can lose its anchors.
             var lastPane by remember { mutableStateOf(modalPane) }
             if (modalPane != Pane.None) lastPane = modalPane
@@ -791,9 +791,9 @@ private fun MapControls(
 ) {
     val inCoverage = state.section == MapSection.COVERAGE
     // Bottom up: the navigation bar, then the info bar (or a site's peek sheet), then the buttons and coverage controls.
-    val showBar = connected != null && !sitePeek
+    val showBar = connected != null && !sitePeek && !inCoverage
     val barInset = if (showBar) CONNECTED_BAR_INSET + CONNECTED_ROW_INSET * connected!!.otherSims.size else 0.dp
-    val stackInset: Dp = NAV_AREA + (if (sitePeek) SITE_PEEK + 8.dp else barInset)
+    val stackInset: Dp = if (sitePeek) SITE_PEEK + 8.dp else NAV_AREA + barInset
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth()) {
             val search: @Composable (Modifier) -> Unit = { m ->
@@ -802,6 +802,7 @@ private fun MapControls(
                     expanded = searchExpanded, onExpandedChange = onSearchExpandedChange,
                     onQueryChange = onQueryChange, onResultClick = onResultClick, onOpenUpdates = onOpenUpdates, onOpenOffline = onOpenOffline,
                     docked = docked, filterCount = filterCount, onFilters = onFilters, modifier = m,
+                    updateAvailable = state.update is UpdateStatus.Available,
                 )
             }
             if (docked) {
@@ -813,7 +814,7 @@ private fun MapControls(
                 Spacer(Modifier.height(10.dp))
                 tripBanner?.let { TripBanner(it, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
                 dasBanner?.let { DasBanner(it, onDismissDas, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
-                AnimatedVisibility(state.update.showsChip(), enter = fadeIn(), exit = fadeOut()) {
+                AnimatedVisibility(state.update.showsChip() && state.update !is UpdateStatus.Available, enter = fadeIn(), exit = fadeOut()) {
                     UpdateChip(state.update, onClick = onOpenUpdates, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
                 AnimatedVisibility(state.coverage.needsZoom(state.zoom), enter = fadeIn(), exit = fadeOut()) {
@@ -830,7 +831,10 @@ private fun MapControls(
                         )
                     }
                 }
-                AnimatedVisibility(state.coverage.on && !state.coverage.needsZoom(state.zoom), enter = fadeIn(), exit = fadeOut()) {
+                AnimatedVisibility(
+                    state.coverage.on && !state.coverage.needsZoom(state.zoom) && !state.coverage.showsCalculating(state.zoom),
+                    enter = fadeIn(), exit = fadeOut(),
+                ) {
                     AccuracyChip(state.coverage.accuracy, onClick = onIncrease, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }
                 AnimatedVisibility(state.coverage.showsCalculating(state.zoom), enter = fadeIn(), exit = fadeOut()) {

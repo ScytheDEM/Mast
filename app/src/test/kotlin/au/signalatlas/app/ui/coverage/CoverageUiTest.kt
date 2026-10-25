@@ -65,7 +65,7 @@ class CoverageUiTest {
 
     @Test fun signalLegendHasTheFourBands() {
         compose.setContent { SignalAtlasTheme { CoverageLegend(CoverageSelection.View.RSRP) } }
-        for (t in listOf("Excellent ≥ −85 dBm", "Good", "Fair", "Weak")) compose.onNodeWithText(t).assertIsDisplayed()
+        for (t in listOf("Excellent", "Good", "Fair", "Weak")) compose.onNodeWithText(t).assertIsDisplayed()
         compose.onNodeWithText("≥ 90%").assertDoesNotExist()
     }
 
