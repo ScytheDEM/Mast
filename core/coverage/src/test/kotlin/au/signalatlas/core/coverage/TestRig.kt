@@ -6,6 +6,7 @@ import au.signalatlas.core.model.GeoBounds
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Tech
 import au.signalatlas.engine.AreaClass
+import au.signalatlas.engine.BuildingGrid
 import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.DemGridHandle
 import au.signalatlas.engine.TerrainTable
@@ -79,6 +80,7 @@ class FakeRenderer : TileRenderer {
     class Rendered(
         val z: Int, val x: Int, val y: Int, val area: AreaClass, val cancel: CancelToken,
         val residuals: List<ResidualRaster> = emptyList(), val prepared: PreparedRegion? = null,
+        val buildings: BuildingGrid? = null,
     )
 
     val prepares = AtomicInteger()
@@ -145,7 +147,11 @@ class FakeRenderer : TileRenderer {
     @Volatile var predict: (CarrierBatch, Int, Double, Double) -> Float = { _, _, _, _ -> -100f }
     val predictCalls = AtomicInteger()
 
-    override fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass): FloatArray {
+    /** The building grid of each point-prediction call. */
+    val predictBuildings = CopyOnWriteArrayList<BuildingGrid?>()
+
+    override fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass, buildings: BuildingGrid?): FloatArray {
+        predictBuildings += buildings
         predictCalls.incrementAndGet()
         val p = prepared as FakePrepared
         return FloatArray(p.size) { k -> predict(p.source, p.batchIndex(k), lat, lon) }
@@ -184,9 +190,9 @@ class FakeRenderer : TileRenderer {
 
     override fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
-        residuals: List<ResidualRaster>,
+        residuals: List<ResidualRaster>, buildings: BuildingGrid?,
     ): RenderedTile? {
-        renders += Rendered(z, x, y, area, cancel, residuals, prepared)
+        renders += Rendered(z, x, y, area, cancel, residuals, prepared, buildings)
         val now = concurrent.incrementAndGet()
         synchronized(this) { maxConcurrent = maxOf(maxConcurrent, now) }
         try {

@@ -719,6 +719,44 @@ class TerrainServiceTest {
         assertThat(r.renderer.buildCalls).hasSize(builds)
     }
 
+    /** M2 rule 5a (M3b): building data arrives with Increase resolution, changes tile keys, and reaches the renderer. */
+    @Test fun buildingChunksAreFetchedWithIncreaseResolutionAndChangeTheBuildingsVersion(): Unit = runBlocking {
+        val r = TerrainRig(tmp, chunksPresent = true, withBuildings = true, metered = true).also { rig = it }
+        r.service.setVisible(setOf(r.tile))
+        val key0 = r.key()
+        assertThat(key0.buildingsVersion).isEqualTo(0L)
+        val need = au.signalatlas.engine.BuildingGrid.chunksFor(TileMath.bounds(10, r.at.x, r.at.y))
+        assertThat(r.service.estimateIncreaseBytes()).isEqualTo(need.size * 10L)
+        val epoch = r.service.terrainEpoch.value
+        assertThat(r.service.increaseResolution(allowMetered = true).toList().last()).isEqualTo(FetchProgress.Done)
+        assertThat(r.buildingSource.fetches.single()).isEqualTo(need)
+        assertThat(r.service.terrainEpoch.value).isGreaterThan(epoch) // MapLibre refetches
+        val key1 = r.key()
+        assertThat(key1.buildingsVersion).isNotEqualTo(0L)
+        assertThat(r.key(12, r.at.x * 4 + 1, r.at.y * 4 + 2).buildingsVersion).isEqualTo(key1.buildingsVersion) // per z10 area
+        r.render()
+        val grid = r.renderer.renders.last().buildings!!
+        assertThat(grid.stored).isNotEmpty()
+        assertThat(grid.coverCode(1, 1)).isEqualTo(0) // empty chunk: data, no buildings
+        assertThat(r.cache.getMemory(key1)).isNotNull()
+        assertThat(r.cache.getMemory(key0)).isNull()
+    }
+
+    @Test fun autoCacheAlsoFetchesTheViewsBuildingChunks() {
+        val r = TerrainRig(tmp, chunksPresent = false, withBuildings = true).also { rig = it }
+        r.service.setVisible(setOf(r.tile))
+        waitUntil(what = "building fetch") { r.buildingSource.fetches.isNotEmpty() }
+        waitUntil(what = "buildings version") { r.key().buildingsVersion != 0L }
+        assertThat(r.source.fetches.single()).isEqualTo(r.regionChunks)
+    }
+
+    @Test fun withoutBuildingSupportTheBuildingsVersionStaysZeroAndNoGridIsPassed() {
+        val r = rig()
+        r.render()
+        assertThat(r.key().buildingsVersion).isEqualTo(0L)
+        assertThat(r.renderer.renders.last().buildings).isNull()
+    }
+
     @Test fun estimateAndIncreaseWithoutAViewAnswerNoViewInsteadOfCrashing(): Unit = runBlocking {
         val r = rig(chunks = false)
         r.service.setVisible(setOf(r.tile))

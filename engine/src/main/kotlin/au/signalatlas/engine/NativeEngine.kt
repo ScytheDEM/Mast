@@ -36,6 +36,8 @@ object NativeEngine {
      * (RSRP code != 0) and, among them, pixels whose best server had no complete terrain lookup. Returns the
      * number of carriers evaluated (>= 0), -1 when cancelled, or -2 for bad arguments. [residuals] (at most 32
      * direct buffers of 65536 int8 codes) and [residualMasks] (same length) are the tile's residual rasters.
+     * [bldCover] (null = none) / [bldHeight] are a building grid of `bldRows * bldCols` 0.01 degree cells whose south-west
+     * corner is ([bldSouth], [bldWest]) degrees (M2 rule 5a; see [BuildingGrid]); the point query takes the same.
      */
     @JvmStatic
     external fun nativeRender(
@@ -44,6 +46,7 @@ object NativeEngine {
         grid: Int, area: Int, indoor: Boolean, thrDbm: Float, residuals: Array<ByteBuffer>, residualMasks: IntArray,
         cancel: ByteBuffer?,
         outRsrp: ByteBuffer, outSinr: ByteBuffer, outProb: ByteBuffer, outBest: ByteBuffer, outStats: ByteBuffer?,
+        bldCover: ByteBuffer?, bldHeight: ByteBuffer?, bldSouth: Double, bldWest: Double, bldRows: Int, bldCols: Int,
     ): Int
 
     /**
@@ -55,6 +58,7 @@ object NativeEngine {
         fields: Array<ByteBuffer>, n: Int, tables: Array<ByteBuffer>, masks: Array<ByteBuffer>,
         patterns: ByteBuffer?, patternCount: Int, lat: Double, lon: Double, area: Int, indoor: Boolean,
         outRsrp: ByteBuffer,
+        bldCover: ByteBuffer?, bldHeight: ByteBuffer?, bldSouth: Double, bldWest: Double, bldRows: Int, bldCols: Int,
     ): Int
 
     /**

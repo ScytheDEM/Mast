@@ -64,23 +64,30 @@ PreparedPathLoss preparePathLoss(float freqMhz, float hTxM, Area areaIn) {
         p.kind = hata ? PreparedPathLoss::Kind::Hata : PreparedPathLoss::Kind::Cost231;
         const double hb = clampd(h, 3.0, 200.0);
         const double logf = std::log10(f);
-        double ahm;
-        if (area == Area::DenseUrban) {
-            const double l = std::log10(11.75 * kHRx);
-            ahm = 3.2 * l * l - 4.97;
-        } else {
-            ahm = (1.1 * logf - 0.7) * kHRx - (1.56 * logf - 0.8);
-        }
-        double corr = 0.0;
-        if (area == Area::Suburban) {
-            const double l = std::log10(f / 28.0);
-            corr = -2.0 * l * l - 5.4;
-        } else if (area == Area::Rural) {
-            corr = -4.78 * logf * logf + 18.33 * logf - 35.94;
-        }
-        const double cm = (!hata && area == Area::DenseUrban) ? 3.0 : 0.0;
         const double lead = hata ? 69.55 + 26.16 * logf : 46.3 + 33.9 * logf;
-        p.base = lead - 13.82 * std::log10(hb) - ahm + cm + corr;
+        // The receiver-surroundings terms of class a: -a(h_m) + C_m + correction.
+        auto receiver = [&](Area a) {
+            double ahm;
+            if (a == Area::DenseUrban) {
+                const double l = std::log10(11.75 * kHRx);
+                ahm = 3.2 * l * l - 4.97;
+            } else {
+                ahm = (1.1 * logf - 0.7) * kHRx - (1.56 * logf - 0.8);
+            }
+            double corr = 0.0;
+            if (a == Area::Suburban) {
+                const double l = std::log10(f / 28.0);
+                corr = -2.0 * l * l - 5.4;
+            } else if (a == Area::Rural) {
+                corr = -4.78 * logf * logf + 18.33 * logf - 35.94;
+            }
+            const double cm = (!hata && a == Area::DenseUrban) ? 3.0 : 0.0;
+            return -ahm + cm + corr;
+        };
+        const double fixed = lead - 13.82 * std::log10(hb);
+        p.base = fixed + receiver(area);
+        for (int e = 0; e < 4; ++e) p.envBase[e] = fixed + receiver(static_cast<Area>(e));
+        p.envApplies = true;
         p.slope = 44.9 - 6.55 * std::log10(hb);
         return p;
     }

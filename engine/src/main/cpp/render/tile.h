@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "model/environment.h"
 #include "model/pathloss.h"
 
 namespace sa {
@@ -71,6 +72,10 @@ struct RenderParams {
     // the call. Rasters whose masks overlap add up.
     const ResidualRaster* residuals = nullptr;
     int32_t residualCount = 0;
+    // Rule 5a (M3b): the building grid around the tile (borrowed for the call), or null. Each grid sample's receiver
+    // environment class (environmentAt) replaces the carrier's class in the Hata / COST-231 receiver terms; samples
+    // without building data keep the carrier's class.
+    const BuildingGrid* buildings = nullptr;
 };
 
 // Each buffer is 256 * 256, row-major, row 0 = north edge. `best` is the index into CarrierArrays of the serving

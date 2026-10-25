@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 
+#include "model/environment.h"
 #include "model/limits.h"
 
 namespace sa {
@@ -28,8 +29,11 @@ struct PreparedPathLoss {
 
     Kind kind;
     double o2iDb;
-    // Hata / COST-231: pl = base + slope * log10(d).
+    // Hata / COST-231: pl = base + slope * log10(d). envBase[e] is `base` for receiver environment class e (rule 5a:
+    // the class changes only a(h_m), the SUBURBAN / RURAL corrections and C_m); envApplies is false for TR 38.901.
     double base, slope;
+    double envBase[4];
+    bool envApplies;
     // TR 38.901.
     double dh;                  // h_BS - h_UT
     double dbp;                 // break point (m)
@@ -40,10 +44,11 @@ struct PreparedPathLoss {
     double sLos, sNlos;
     double rK, rC, rH, rPl1Dbp; // RMa PL1 terms and PL1(d_BP)
 
-    // Raw double evaluation. `d3dKm` is the 3D distance, finite.
-    Pl evalD(double d3dKm) const {
+    // Raw double evaluation. `d3dKm` is the 3D distance, finite. `env` (rule 5a) is the receiver environment class
+    // (an Area value) or kNoEnv; it only changes the Hata / COST-231 terms of the receiver's surroundings.
+    Pl evalD(double d3dKm, uint8_t env = kNoEnv) const {
         const double d = d3dKm < 0.02 ? 0.02 : d3dKm;
-        if (kind == Kind::Hata || kind == Kind::Cost231) return {base + slope * std::log10(d), 8.0};
+        if (kind == Kind::Hata || kind == Kind::Cost231) return {(env <= 3 ? envBase[env] : base) + slope * std::log10(d), 8.0};
         const double dd = d * 1000.0;
         double d2 = std::sqrt(std::fmax(dd * dd - dh * dh, 0.0));
         d2 = std::fmax(d2, 10.0);
@@ -73,14 +78,14 @@ struct PreparedPathLoss {
     }
 
     // `d3dKm` is the 3D distance, floored at 0.02 km; NaN is treated as 80 km.
-    PathLoss evaluate(float d3dKm) const {
-        const Pl r = evalD(sane(d3dKm, 0.02, 1.0e4, 80.0));
+    PathLoss evaluate(float d3dKm, uint8_t env = kNoEnv) const {
+        const Pl r = evalD(sane(d3dKm, 0.02, 1.0e4, 80.0), env);
         return {static_cast<float>(r.pl), static_cast<float>(r.sigma)};
     }
 
     // Rule 7: PL + O2I low loss, and sigma combined with the O2I sigma in quadrature.
-    PathLoss evaluateIndoor(float d3dKm) const {
-        const Pl r = evalD(sane(d3dKm, 0.02, 1.0e4, 80.0));
+    PathLoss evaluateIndoor(float d3dKm, uint8_t env = kNoEnv) const {
+        const Pl r = evalD(sane(d3dKm, 0.02, 1.0e4, 80.0), env);
         return {static_cast<float>(r.pl + o2iDb),
                 static_cast<float>(std::sqrt(r.sigma * r.sigma + kO2iSigmaDb * kO2iSigmaDb))};
     }

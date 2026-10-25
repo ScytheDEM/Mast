@@ -41,6 +41,19 @@ struct Vec {
     std::vector<std::vector<int8_t>> rasterCodes;
     std::vector<uint32_t> rasterMask;
     std::vector<sa::ResidualRaster> rasters;  // rebuilt by params()
+    // Rule 5a building grid (empty cover = none).
+    double bldSouth = 0.0, bldWest = 0.0;
+    int32_t bldRows = 0, bldCols = 0;
+    std::vector<uint8_t> bldCover, bldHeight;
+    sa::BuildingGrid bld{};
+
+    // `p` with the building grid attached (valid while this Vec is alive and unchanged).
+    sa::RenderParams withBuildings(sa::RenderParams p) const {
+        if (bldCover.empty()) return p;
+        const_cast<Vec*>(this)->bld = {bldSouth, bldWest, 0.01, bldRows, bldCols, bldCover.data(), bldHeight.data()};
+        p.buildings = &bld;
+        return p;
+    }
 
     template <typename T>
     static const T* ptr(const std::vector<T>& v) { return v.empty() ? nullptr : v.data(); }
@@ -124,6 +137,14 @@ inline Vec loadVec(const std::string& file) {
         v.rasterCodes.emplace_back(raw.begin(), raw.end());
         v.rasterMask.push_back(static_cast<uint32_t>(sa_test::jsonNumber(obj, "mask")));
     }
+    v.bldCover = as<uint8_t>(jsonArray(json, "bldCover"));
+    v.bldHeight = as<uint8_t>(jsonArray(json, "bldHeight"));
+    if (!v.bldCover.empty()) {
+        v.bldSouth = sa_test::jsonNumber(json, "bldSouth");
+        v.bldWest = sa_test::jsonNumber(json, "bldWest");
+        v.bldRows = integer("bldRows");
+        v.bldCols = integer("bldCols");
+    }
     v.rsrp = jsonArray(json, "rsrpCodes");
     v.sinr = jsonArray(json, "sinrCodes");
     v.prob = jsonArray(json, "probCodes");
@@ -144,13 +165,13 @@ inline const sa::PatternTable kNoPatterns{0, nullptr};
 
 inline int32_t render(const Vec& v, Out& o, const volatile int32_t* cancel = nullptr, sa::PatternTable pat = kNoPatterns) {
     sa::TileOut view = o.view();
-    return sa::renderTile(v.arrays(), pat, v.params, view, cancel);
+    return sa::renderTile(v.arrays(), pat, v.withBuildings(v.params), view, cancel);
 }
 
 // render() with the Vec's residual rasters attached.
 inline int32_t renderWithRasters(Vec& v, Out& o, sa::PatternTable pat = kNoPatterns) {
     sa::TileOut view = o.view();
-    return sa::renderTile(v.arrays(), pat, v.withRasters(), view, nullptr);
+    return sa::renderTile(v.arrays(), pat, v.withBuildings(v.withRasters()), view, nullptr);
 }
 
 // Asserts every pixel is within +-1 of the reference and at most 0.1% differ (SINR: 2%, because the engine truncates the
@@ -233,6 +254,17 @@ inline Scenario randomScenario(std::mt19937& rng, int index) {
         v.hrpPeak.push_back(static_cast<int16_t>(rng() % 360));
     }
     v.n = n;
+    // Every third scenario has a building grid (rule 5a): random cells of every class around the tile, some without data.
+    if (index % 3 != 2) {
+        v.bldSouth = std::floor((cLat - 0.03) * 100.0) / 100.0;
+        v.bldWest = std::floor((cLon - 0.03) * 100.0) / 100.0;
+        v.bldRows = 7;
+        v.bldCols = 7;
+        for (int k = 0; k < 49; ++k) {
+            v.bldCover.push_back(rng() % 9 == 0 ? 255 : static_cast<uint8_t>(pick({0, 10, 30, 60, 100, 160})));
+            v.bldHeight.push_back(static_cast<uint8_t>(pick({0, 8, 20, 30, 50, 90})));
+        }
+    }
     return sc;
 }
 

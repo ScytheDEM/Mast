@@ -180,6 +180,18 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         colCh[static_cast<size_t>(i)] = std::cos(lr / 2.0);
     }
     for (int32_t j = 0; j < N; ++j) rowLatDeg[static_cast<size_t>(j)] = merc::tileLatDeg(p.y + (j + 0.5) / N, p.z);
+    // Rule 5a: the receiver environment class of every grid sample (kNoEnv = the carrier's own class), and per block
+    // the set of classes present (bit e = class e, bit 4 = no data), so the bound can use the most optimistic one.
+    std::vector<uint8_t> gEnv;
+    if (p.buildings != nullptr) {
+        gEnv.resize(NN);
+        for (int32_t j = 0; j < N; ++j) {
+            for (int32_t i = 0; i < N; ++i) {
+                gEnv[static_cast<size_t>(j) * N + i] =
+                    environmentAt(p.buildings, rowLatDeg[static_cast<size_t>(j)], colLonDeg[static_cast<size_t>(i)]);
+            }
+        }
+    }
     // Residual rasters: the pixel a grid index samples, and per raster the value (dB) at the current point.
     const int32_t R = p.residualCount;
     std::vector<int32_t> rasterPx(static_cast<size_t>(N));
@@ -226,6 +238,16 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 }
             }
             radius = radius * 1.05 + 2.0;  // every point of the block lies within `radius` of the centre sample
+            uint32_t envMask = 1u << 4;  // without a building grid every sample uses the carrier's class
+            if (!gEnv.empty()) {
+                envMask = 0;
+                for (int32_t j = bj * B; j < (bj + 1) * B; ++j) {
+                    for (int32_t i = bi * B; i < (bi + 1) * B; ++i) {
+                        const uint8_t e = gEnv[static_cast<size_t>(j) * N + i];
+                        envMask |= e <= 3 ? 1u << e : 1u << 4;
+                    }
+                }
+            }
             // The largest value each residual raster takes at the block's samples.
             for (int32_t r = 0; r < R; ++r) {
                 int32_t hi = -128;
@@ -256,7 +278,17 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 for (int32_t k = st.first; k < st.first + st.count; ++k) {
                     const Carrier& cr = car[static_cast<size_t>(k)];
                     const float d3Km = static_cast<float>(std::sqrt(dlo * dlo + cr.hd2) / 1000.0);
-                    const PathLoss pl = indoor ? cr.pl.evaluateIndoor(d3Km) : cr.pl.evaluate(d3Km);
+                    // The smallest path loss over the receiver classes present in the block (rule 5a; only the
+                    // Hata family depends on them), so the bound stays an upper bound.
+                    PathLoss pl = indoor ? cr.pl.evaluateIndoor(d3Km) : cr.pl.evaluate(d3Km);
+                    if (cr.pl.envApplies && envMask != (1u << 4)) {
+                        if (!((envMask >> 4) & 1u)) pl.plDb = std::numeric_limits<float>::infinity();
+                        for (uint8_t e = 0; e < 4; ++e) {
+                            if (!((envMask >> e) & 1u)) continue;
+                            const PathLoss q = indoor ? cr.pl.evaluateIndoor(d3Km, e) : cr.pl.evaluate(d3Km, e);
+                            if (q.plDb < pl.plDb) pl = q;
+                        }
+                    }
                     // Lower bounds on the antenna attenuation over the block (A = min(A_H + A_V, maxA)).
                     const PreparedAntenna& an = cr.ant;
                     double aH = 0.0;
@@ -342,6 +374,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 const int32_t* bgord = &gord[bi * KK];
                 const double* bgsum = &gsum[bi * static_cast<size_t>(G)];
                 const double cs = colSh[static_cast<size_t>(i)], cc = colCh[static_cast<size_t>(i)];
+                const uint8_t envHere = gEnv.empty() ? kNoEnv : gEnv[static_cast<size_t>(j) * N + i];
                 ++stamp;
                 double bestR = -std::numeric_limits<double>::infinity();
                 float bestSigma = 8.0f;
@@ -367,7 +400,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     }
                     // Terrain rule 5 and Calibration rules 4-6: RSRP = eirpRe - A - PL_quick - L_terr + calibration
                     // + residual. A carrier without a table keeps the quick model and counts as incomplete.
-                    const CarrierEval ev = evaluateCarrier(cr, sbrg[s], sd2[s], indoor);
+                    const CarrierEval ev = evaluateCarrier(cr, sbrg[s], sd2[s], indoor, envHere);
                     const double r = cr.rasterBits == 0 ? ev.rsrp : ev.rsrp + rasterSum(cr.rasterBits, resAt.data());
                     evalStamp[static_cast<size_t>(k)] = stamp;
                     rs[static_cast<size_t>(k)] = r;

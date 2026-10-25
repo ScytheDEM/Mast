@@ -137,6 +137,49 @@ def area_class(sites_within_3km):
     return "RURAL"
 
 
+# ---------------------------------------------------------------- rule 5a: receiver environment (M3b)
+
+BUILDING_NO_DATA = 255
+COVER_SCALE = 250.0
+HEIGHT_STEP_M = 0.5
+
+
+def classify_environment(fraction, height_m):
+    """Rule 5a: the receiver's environment class from the building coverage fraction and mean height (m)."""
+    if fraction >= 0.35 and height_m >= 15.0:
+        return "DENSE_URBAN"
+    if fraction >= 0.2:
+        return "URBAN"
+    if fraction >= 0.05:
+        return "SUBURBAN"
+    return "RURAL"
+
+
+def environment_at(grid, lat, lon):
+    """Rule 5a: the class at (lat, lon) from a building grid dict (south, west, step, rows, cols, cover, height: row-major
+    codes, row 0 = south; cover = round(fraction * 250), 255 = no data; height in 0.5 m steps). The fraction and height
+    are interpolated bilinearly between the centres of the four surrounding cells. None (the carrier's own class) for no
+    grid, a point outside the cell centres, or a cell without data among the four."""
+    if grid is None:
+        return None
+    rows, cols, step = grid["rows"], grid["cols"], grid["step"]
+    fr = (lat - grid["south"]) / step - 0.5
+    fc = (lon - grid["west"]) / step - 0.5
+    if not (0.0 <= fr <= rows - 1 and 0.0 <= fc <= cols - 1):
+        return None
+    r0 = min(int(math.floor(fr)), rows - 2)
+    c0 = min(int(math.floor(fc)), cols - 2)
+    tr, tc = fr - r0, fc - c0
+    idx = (r0 * cols + c0, r0 * cols + c0 + 1, (r0 + 1) * cols + c0, (r0 + 1) * cols + c0 + 1)
+    cover, height = grid["cover"], grid["height"]
+    if any(cover[i] == BUILDING_NO_DATA for i in idx):
+        return None
+
+    def bil(a):
+        return (a[idx[0]] * (1.0 - tc) + a[idx[1]] * tc) * (1.0 - tr) + (a[idx[2]] * (1.0 - tc) + a[idx[3]] * tc) * tr
+    return classify_environment(bil(cover) / COVER_SCALE, bil(height) * HEIGHT_STEP_M)
+
+
 # ---------------------------------------------------------------- rule 6: path loss
 
 def _hata_ahm_and_corr(f_mhz, area):
@@ -427,11 +470,15 @@ def carrier_usable(carriers, i):
     return all(_finite(v) for v in (lat, lon, e)) and abs(lat) <= 90.0 and abs(lon) <= 540.0
 
 
-def carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain=None):
+def carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain=None, env=None):
     """One carrier at one point: (RSRP dBm, sigma dB, terrain complete). Rules 3-8, Terrain rule 5, Calibration rules
     4 and 6 (the optional `calOffsetDb`, `calSlope`, `calDmedKm`, `calSigmaScale` columns; no residual raster).
-    `area` is the fallback for a carrier without its own `carrierArea` (rule 5)."""
+    `area` is the fallback for a carrier without its own `carrierArea` (rule 5). `env` (rule 5a) is the receiver's
+    environment class at the point, or None: it replaces the carrier's class in the Hata / COST-231 receiver terms
+    (f <= 2200 MHz: a(h_m), the SUBURBAN / RURAL corrections and C_m); TR 38.901 keeps the carrier's scenario."""
     area = carrier_area(carriers, i, area)
+    if env is not None and carriers["freqMhz"][i] <= 2200.0:
+        area = env
     h = h_tx_clamped(carriers["hTx"][i])
     d2 = haversine_m(carriers["lat"][i], carriers["lon"][i], lat, lon)
     d3 = math.sqrt(d2 * d2 + (h - H_RX) ** 2)
@@ -452,9 +499,10 @@ def carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain=None):
     return rsrp, calibrated_sigma(sg, _cal(carriers, "calSigmaScale", i)), full
 
 
-def predict_point(carriers, patterns, lat, lon, area, indoor=False, terrain=None):
+def predict_point(carriers, patterns, lat, lon, area, indoor=False, terrain=None, buildings=None):
     """M4 point query: every carrier's RSRP at (lat, lon), no culling; None for an unusable carrier."""
-    return [carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain)[0]
+    env = environment_at(buildings, lat, lon)
+    return [carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain, env)[0]
             if carrier_usable(carriers, i) else None for i in range(carriers["n"])]
 
 
@@ -465,7 +513,7 @@ def residual_pixel(index, grid):
 
 # ---------------------------------------------------------------- tile renderer
 
-def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None, residual=None):
+def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None, residual=None, env=None):
     """Best-server RSRP, SINR, probability, carrier index and whether the best server's terrain loss
     came from a complete profile, at one point. `terrain(i, bearing, d2D)` -> (L_terr dB, complete);
     `residual(i)` -> the residual rasters' sum (dB) for carrier i at this point."""
@@ -473,7 +521,7 @@ def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None, 
     sigma = []
     complete = []
     for i in idx:
-        r, sg, full = carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain)
+        r, sg, full = carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain, env)
         rsrp.append(r + (residual(i) if residual is not None else 0.0))    # Calibration rule 5
         sigma.append(sg)
         complete.append(full)
@@ -495,7 +543,8 @@ def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None, 
     return rsrp[b], sinr, prob, best, complete[b]
 
 
-def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-118.0, terrain=None, residuals=None):
+def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-118.0, terrain=None, residuals=None,
+                buildings=None):
     """Rules 8-9: render one 256x256 tile from structure-of-arrays `carriers` (the tile JSON fields).
 
     `patterns[id - 1]` is the 360-entry quantised attenuation of pattern `id`. Returns a dict with
@@ -504,7 +553,8 @@ def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-
     carrier's RSRP loses L_terr, and `terrainComplete` (65536 bools) says whether the pixel's best server
     (nearest grid sample, as for `best`) had a complete profile. `residuals` (Calibration rule 5) is a list of
     (codes, network_mask): 65536 int8 codes (0.25 dB, row-major) added to every carrier whose `network` column bit
-    is set in the mask, sampled at `residual_pixel` of each grid index."""
+    is set in the mask, sampled at `residual_pixel` of each grid index. `buildings` (rule 5a) is a building grid dict
+    (see `environment_at`) giving each grid sample's receiver environment class."""
     bounds = tile_bounds(z, x, y)
     idx = [i for i in range(carriers["n"])
            if carrier_usable(carriers, i)
@@ -525,7 +575,7 @@ def render_tile(carriers, patterns, z, x, y, grid, area, indoor=False, thr_dbm=-
                     return 0.0
                 return sum(v for v, mask in here if (mask >> nets[k]) & 1)
             row.append(_sample(carriers, idx, patterns, lat, lon, area, indoor, thr_dbm, terrain,
-                               residual if residuals else None))
+                               residual if residuals else None, environment_at(buildings, lat, lon)))
         vals.append(row)
 
     out = {"rsrpCodes": [], "sinrCodes": [], "probCodes": [], "best": [], "evaluated": len(idx),

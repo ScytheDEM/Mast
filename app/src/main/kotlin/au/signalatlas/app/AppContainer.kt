@@ -157,6 +157,10 @@ class AppContainer(context: Context) {
     /** The one elevation fetcher: its downloads are serialised process-wide. */
     private val demFetcher = DemFetcher(http, elevationChunks, isMetered = { GeoNetwork.isActiveNetworkMetered(app) })
 
+    /** Building grid chunks (`geo/bld`, M3b rule 5a) and their fetcher, under the same budget as the elevation. */
+    private val buildingChunks = au.signalatlas.core.geo.BuildingChunkStore(File(app.filesDir, "geo/bld"), budgetBytes = { geoPrefs.cacheBudgetBytes })
+    private val buildingFetcher = au.signalatlas.core.geo.BuildingFetcher(http, buildingChunks, isMetered = { GeoNetwork.isActiveNetworkMetered(app) })
+
     /** Forwards the calibration store's snapshots to the tile service (the store itself opens off the main thread). */
     private val calibrationSnapshot = MutableStateFlow(CalibrationSnapshot.EMPTY)
 
@@ -170,6 +174,7 @@ class AppContainer(context: Context) {
         TerrainSupport(
             elevationChunks, DemFetcherSource(demFetcher), terrainTables,
             ConnectivityNetworkMonitor(app), appScope,
+            buildings = au.signalatlas.core.coverage.BuildingSupport(buildingChunks, au.signalatlas.core.coverage.BuildingFetcherSource(buildingFetcher)),
         ),
         calibrationSnapshot,
     )

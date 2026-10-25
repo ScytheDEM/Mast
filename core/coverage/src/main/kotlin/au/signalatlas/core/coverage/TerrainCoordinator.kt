@@ -496,11 +496,27 @@ internal class TerrainCoordinator(
         return need.filterTo(HashSet()) { !support.chunks.has(it) }
     }
 
+    /** Building chunks (rule 5a) the view's z10 regions need that are not stored; empty without building support. */
+    private fun buildingsMissingFor(v: View): Set<ChunkId> {
+        val b = support.buildings ?: return emptySet()
+        val need = HashSet<ChunkId>()
+        for ((rx, ry) in v.tiles.filter { it.first == v.z }.map { (z, x, y) -> (x shr (z - TERRAIN_ZOOM)) to (y shr (z - TERRAIN_ZOOM)) }.toSet()) {
+            need += au.signalatlas.engine.BuildingGrid.chunksFor(TileMath.bounds(TERRAIN_ZOOM, rx, ry))
+        }
+        return need.filterTo(HashSet()) { !b.store.has(it) }
+    }
+
+    /** Building chunks were stored: tile keys near them changed (their buildings version), so MapLibre must refetch. */
+    fun onBuildingsChanged() = bumped()
+
     /** Background fetch of the view's missing chunks: only z >= 10, only on an unmetered network, no prompts. */
     private fun autoCache() {
         val v = view ?: return
         if (v.z < TERRAIN_ZOOM || !support.network.unmetered.value) return
-        val need = missingFor(v)
+        val dem = missingFor(v)
+        val bld = buildingsMissingFor(v)
+        // Building chunks are tagged apart so a DEM chunk and a building chunk with the same id never collide.
+        val need = dem + bld.map { ChunkId(it.latIdx + BUILDING_TAG, it.lonIdx) }
         if (need.isEmpty() || need == autoFailed) return
         synchronized(this) {
             // A fetch that already covers this view keeps going (a second trigger must not restart it).
@@ -509,7 +525,14 @@ internal class TerrainCoordinator(
             autoNeed = need
             autoJob = support.scope.launch {
                 try {
-                    support.source.fetch(need, false) {}
+                    if (dem.isNotEmpty()) support.source.fetch(dem, false) {}
+                    if (bld.isNotEmpty()) {
+                        try {
+                            support.buildings!!.source.fetch(bld, false) {}
+                        } finally {
+                            onBuildingsChanged()
+                        }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: InsufficientStorageException) {
@@ -576,7 +599,9 @@ internal class TerrainCoordinator(
         if (!support.network.isOnline()) return null
         val v = view?.takeIf { it.z >= TERRAIN_ZOOM } ?: return null
         val need = missingFor(v)
-        return if (need.isEmpty()) 0L else support.source.estimateBytes(need)
+        val bld = buildingsMissingFor(v)
+        return (if (need.isEmpty()) 0L else support.source.estimateBytes(need)) +
+            (if (bld.isEmpty()) 0L else support.buildings!!.source.estimateBytes(bld))
     }
 
     /** Estimate, then download the view's missing chunks (see [CoverageTileService.increaseResolution]). */
@@ -588,18 +613,35 @@ internal class TerrainCoordinator(
             v.z < TERRAIN_ZOOM -> send(FetchProgress.Failed("zoom in"))
             else -> {
                 val need = missingFor(v)
-                if (need.isEmpty()) {
+                val bld = buildingsMissingFor(v)
+                if (need.isEmpty() && bld.isEmpty()) {
                     send(FetchProgress.Done)
                     return@channelFlow
                 }
                 try {
-                    send(FetchProgress.Estimating(support.source.estimateBytes(need)))
+                    val demBytes = if (need.isEmpty()) 0L else support.source.estimateBytes(need)
+                    val bldBytes = if (bld.isEmpty()) 0L else support.buildings!!.source.estimateBytes(bld)
+                    send(FetchProgress.Estimating(demBytes + bldBytes))
                     if (!allowMetered && support.network.isMetered()) {
                         send(FetchProgress.Failed("metered"))
                         return@channelFlow
                     }
-                    support.source.fetch(need, allowMetered) { trySend(FetchProgress.Fetching(it.coerceIn(0f, 1f))) }
-                    onChunksChanged()
+                    // Progress by bytes over both downloads (elevation first).
+                    val total = (demBytes + bldBytes).coerceAtLeast(1L).toFloat()
+                    if (need.isNotEmpty()) {
+                        support.source.fetch(need, allowMetered) { trySend(FetchProgress.Fetching((it * demBytes / total).coerceIn(0f, 1f))) }
+                        onChunksChanged()
+                    }
+                    if (bld.isNotEmpty()) {
+                        try {
+                            support.buildings!!.source.fetch(bld, allowMetered) {
+                                trySend(FetchProgress.Fetching(((demBytes + it * bldBytes) / total).coerceIn(0f, 1f)))
+                            }
+                        } finally {
+                            onBuildingsChanged()
+                        }
+                    }
+                    if (need.isEmpty() || bld.isNotEmpty()) trySend(FetchProgress.Fetching(1f))
                     send(FetchProgress.Done)
                 } catch (e: CancellationException) {
                     throw e
@@ -630,6 +672,8 @@ internal class TerrainCoordinator(
         /** Open home mosaics kept between builds while more are pending (each a few MB). */
         private const val MAX_IDLE_HOMES = 2
         private const val E5 = 100_000.0
+        /** Offsets building chunk ids in the auto-cache bookkeeping (never a real latitude index). */
+        private const val BUILDING_TAG = 100_000
         private const val FNV_OFFSET = -3750763034362895579L // 0xcbf29ce484222325
         private const val FNV_PRIME = 1099511628211L
 

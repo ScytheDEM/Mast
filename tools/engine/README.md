@@ -314,3 +314,12 @@ python3 -I tools/engine/make_calibration_vectors.py engine/host/test/vectors
 |---|---|
 | `point_canberra.json` | The Canberra tile carriers plus synthetic `calOffsetDb, calSlope, calDmedKm, calSigmaScale` (every third carrier full terms, the next offset only, the next null) and `network` (i % 2); `points`: 8 points (tile centre to ~170 km away, all four areas, some indoor), each with every carrier's `rsrp`. |
 | `tile_canberra_z13_calibrated.json` | The z13 tile rendered with those columns and two `residuals` (base64 int8 codes and `mask`): a smooth +-3 dB raster for network 0 and +10 dB squares for networks 0 and 1. |
+
+## Receiver environment (rule 5a, M3b, 2026-10-24)
+
+`reference.environment_at(grid, lat, lon)` classifies a point from a building grid (dict: `south`, `west`, `step`
+0.01, `rows`, `cols`, row-major `cover` codes `round(fraction * 250)` with 255 = no data, `height` codes in 0.5 m),
+interpolating fraction and height bilinearly between cell centres. `carrier_rsrp(..., env=)` uses the class in place of
+the carrier's own only for f <= 2200 MHz (the Hata / COST-231 receiver terms). `make_vectors.py` writes
+`tile_canberra_z13_buildings.json` (the carrier-area tile plus a synthetic grid in `bldSouth`, `bldWest`, `bldRows`,
+`bldCols`, `bldCover`, `bldHeight`); the other vectors carry no grid and are unchanged.

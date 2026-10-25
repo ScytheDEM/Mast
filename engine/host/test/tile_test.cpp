@@ -15,6 +15,7 @@
 #include <random>
 
 #include "render/mercator.h"
+#include "render/point.h"
 #include "render/tile.h"
 #include "terrain/polar_table.h"
 #include "tile_fixtures.h"
@@ -61,7 +62,43 @@ INSTANTIATE_TEST_SUITE_P(Vectors, TileVectorTest,
                          ::testing::Values("tile_canberra_z13.json", "tile_edge_z12.json",
                                            "tile_canberra_z13_urban_indoor_hi.json",
                                            "tile_canberra_z13_urban_indoor_mid.json",
-                                           "tile_canberra_z13_carrier_area.json"));
+                                           "tile_canberra_z13_carrier_area.json",
+                                           "tile_canberra_z13_buildings.json"));
+
+// Rule 5a (M3b): the building grid changes the Hata-family receiver terms per pixel; the point query uses the same
+// class at the same point, and a tile without the grid is the plain per-carrier tile.
+TEST(TileBuildings, PointQueryUsesTheSameEnvironmentAndNoGridIsUnchanged) {
+    Vec v = loadVec("tile_canberra_z13_buildings.json");
+    ASSERT_FALSE(v.bldCover.empty());
+    v.params.grid = 256;
+    Out o;
+    ASSERT_EQ(v.n, render(v, o));
+    const sa::RenderParams withGrid = v.withBuildings(v.params);
+    std::vector<float> got(static_cast<size_t>(v.n));
+    int differentClass = 0;
+    for (int32_t j = 5; j < 256; j += 37) {
+        for (int32_t i = 3; i < 256; i += 41) {
+            const double lat = sa::merc::tileLatDeg(v.params.y + (j + 0.5) / 256.0, v.params.z);
+            const double lon = sa::merc::tileLonDeg(v.params.x + (i + 0.5) / 256.0, v.params.z);
+            differentClass += sa::environmentAt(withGrid.buildings, lat, lon) != sa::kNoEnv;
+            ASSERT_EQ(v.n, sa::predictPoint(v.arrays(), kNoPatterns, lat, lon, v.params.area, false, got.data(), withGrid.buildings));
+            int32_t best = 0;
+            for (int32_t k = 1; k < v.n; ++k) {
+                if (got[static_cast<size_t>(k)] > got[static_cast<size_t>(best)]) best = k;
+            }
+            const size_t px = static_cast<size_t>(j) * 256 + static_cast<size_t>(i);
+            EXPECT_NEAR(std::floor((got[static_cast<size_t>(best)] + 140.0) * 2.0 + 0.5), o.rsrp[px], 1.0) << i << "," << j;
+        }
+    }
+    EXPECT_GT(differentClass, 10);
+    Vec plain = loadVec("tile_canberra_z13_carrier_area.json");
+    Vec stripped = loadVec("tile_canberra_z13_buildings.json");
+    stripped.bldCover.clear();
+    Out a, b;
+    render(plain, a);
+    render(stripped, b);
+    EXPECT_EQ(a.rsrp, b.rsrp);
+}
 
 TEST(Tile, NoCarriersInRangeIsAllZeroAndFast) {
     Vec v = loadVec("tile_canberra_z13.json");

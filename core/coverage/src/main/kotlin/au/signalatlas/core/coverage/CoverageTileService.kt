@@ -178,6 +178,44 @@ class CoverageTileService internal constructor(
     private fun terrainSegment(): String =
         "t${terrainEpoch.value}" + calibration.value.version.let { if (it == 0L) "" else "c$it" }
 
+    private val buildingStore = terrainSupport?.buildings?.store
+
+    /** Building chunks by version area (the z10 tile containing a tile at z >= 10, else the tile itself). */
+    private val buildingChunks = java.util.concurrent.ConcurrentHashMap<Triple<Int, Int, Int>, List<au.signalatlas.core.geo.ChunkId>>()
+
+    /**
+     * Rule 5a (M3b): the buildings data version of tile (z, x, y): 0 without building data, else a hash of the building
+     * chunks stored around its version area (the z10 tile containing it, or the tile itself below z10), so a tile is
+     * re-rendered when building chunks near it arrive. Part of [TileKey.buildingsVersion].
+     */
+    private fun bldVersion(z: Int, x: Int, y: Int): Long {
+        val store = buildingStore ?: return 0L
+        val zf = minOf(z, FALLBACK_ZOOM)
+        val area = Triple(zf, x shr (z - zf), y shr (z - zf))
+        val ids = buildingChunks.getOrPut(area) {
+            au.signalatlas.engine.BuildingGrid.chunksFor(TileMath.bounds(area.first, area.second, area.third))
+                .sortedWith(compareBy({ it.latIdx }, { it.lonIdx }))
+        }
+        var h = -3750763034362895579L
+        var any = false
+        for (id in ids) {
+            if (!store.has(id)) continue
+            any = true
+            h = (h xor id.latIdx.toLong()) * 1099511628211L
+            h = (h xor id.lonIdx.toLong()) * 1099511628211L
+        }
+        return if (!any) 0L else if (h == 0L) 1L else h
+    }
+
+    /** The building grid a render of [key] uses (null without building data); the tile is stale if the data moved on. */
+    private fun buildingGridFor(key: TileKey, bounds: GeoBounds): au.signalatlas.engine.BuildingGrid? {
+        val store = buildingStore ?: return null
+        if (key.buildingsVersion == 0L) return null
+        val grid = au.signalatlas.engine.BuildingGrid.open(store, bounds)
+        if (bldVersion(key.z, key.x, key.y) != key.buildingsVersion) throw TileCancelledException()
+        return grid
+    }
+
     /** The calibration version tile (z, x, y) has under the current snapshot. */
     private fun calVersion(z: Int, x: Int, y: Int): Long = cal.current().regionVersion(z, x, y)
 
@@ -291,7 +329,7 @@ class CoverageTileService internal constructor(
             return failed(StaleTileException())
         }
         val version = terrainVersion(tile.selectionId, stamp, tile.patternsEtag, tile.z, tile.x, tile.y, create = true, recheck = true)
-        val key = TileKey(tile.z, tile.x, tile.y, tile.selectionId, stamp, tile.patternsEtag, version, calVersion(tile.z, tile.x, tile.y))
+        val key = TileKey(tile.z, tile.x, tile.y, tile.selectionId, stamp, tile.patternsEtag, version, calVersion(tile.z, tile.x, tile.y), bldVersion(tile.z, tile.x, tile.y))
         val raw = rawTile(key, sel)
         // A memory-cache hit never renders: it asks for its servers' tables here (a render asks in [run]).
         if (raw.isDone && !raw.isCompletedExceptionally) requestTables(key, sel, raw.getNow(null), onPool = false)
@@ -305,6 +343,7 @@ class CoverageTileService internal constructor(
         val etag = patternsEtag()
         return TileKey(
             z, x, y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, x, y, create = true), calVersion(z, x, y),
+            bldVersion(z, x, y),
         )
     }
 
@@ -389,7 +428,7 @@ class CoverageTileService internal constructor(
     private fun predictTile(
         tx: Int, ty: Int, pts: List<LatLon>, sel: CoverageSelection, stamp: String, etag: String,
     ): List<AlongPath.Raw> {
-        val key = TileKey(FALLBACK_ZOOM, tx, ty, sel.cacheId(), stamp, etag, 0L, calVersion(FALLBACK_ZOOM, tx, ty))
+        val key = TileKey(FALLBACK_ZOOM, tx, ty, sel.cacheId(), stamp, etag, 0L, calVersion(FALLBACK_ZOOM, tx, ty), bldVersion(FALLBACK_ZOOM, tx, ty))
         val region = region(key, sel)
         val full = region.prepared ?: return pts.map { AlongPath.Raw.NONE }
         val batch = region.batch
@@ -411,8 +450,9 @@ class CoverageTileService internal constructor(
             calibration = cal?.let { c -> { r: Int -> c(rows[r]) } },
             area = areas?.let { a -> { r: Int -> a[rows[r]] } },
         )
+        val buildings = buildingStore?.let { au.signalatlas.engine.BuildingGrid.open(it, box) }
         return pts.map { p ->
-            val rsrp = renderer.predictPoint(prepared, p.lat, p.lon, FALLBACK_AREA)
+            val rsrp = renderer.predictPoint(prepared, p.lat, p.lon, FALLBACK_AREA, buildings)
             var best = -1
             for (k in rsrp.indices) if (rsrp[k].isFinite() && (best < 0 || rsrp[k] > rsrp[best])) best = k
             if (best < 0) {
@@ -437,7 +477,7 @@ class CoverageTileService internal constructor(
             val top = tiles.maxOfOrNull { it.first } ?: return
             for ((z, x, y) in tiles) {
                 if (z != top) continue
-                val key = TileKey(z, x, y, sel.cacheId(), stamp, patternsEtag(), terrainVersion(sel.cacheId(), stamp, patternsEtag(), z, x, y), calVersion(z, x, y))
+                val key = TileKey(z, x, y, sel.cacheId(), stamp, patternsEtag(), terrainVersion(sel.cacheId(), stamp, patternsEtag(), z, x, y), calVersion(z, x, y), bldVersion(z, x, y))
                 if (synchronized(wantsByTile) { key in wantsByTile }) requestTables(key, sel, null, onPool = false)
             }
         }
@@ -462,7 +502,7 @@ class CoverageTileService internal constructor(
         val etag = patternsEtag()
         return Accuracy.summary(
             visible.filter { it.first == top }.mapNotNull { (z, x, y) ->
-                val key = TileKey(z, x, y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, x, y), calVersion(z, x, y))
+                val key = TileKey(z, x, y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, x, y), calVersion(z, x, y), bldVersion(z, x, y))
                 val tile = cache.getMemory(key) ?: return@mapNotNull Accuracy.QUICK
                 // A tile with no coverage has no prediction to label: it neither makes a terrain view partial nor proves it.
                 if (key.terrainVersion != 0L && tile.coveredPixels == 0) null else Accuracy.of(key, tile)
@@ -522,7 +562,7 @@ class CoverageTileService internal constructor(
             val at = TileMath.locate(lat, lon, z) ?: return null
             val key = TileKey(
                 z, at.x, at.y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, at.x, at.y),
-                calVersion(z, at.x, at.y),
+                calVersion(z, at.x, at.y), bldVersion(z, at.x, at.y),
             )
             val tile = cache.getMemory(key) ?: continue
             val i = at.py * 256 + at.px
@@ -608,7 +648,8 @@ class CoverageTileService internal constructor(
     private fun isCurrent(key: TileKey): Boolean =
         isDataCurrent(key) &&
             terrainVersion(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y) == key.terrainVersion &&
-            calVersion(key.z, key.x, key.y) == key.calibrationVersion
+            calVersion(key.z, key.x, key.y) == key.calibrationVersion &&
+            bldVersion(key.z, key.x, key.y) == key.buildingsVersion
 
     private fun render(key: TileKey, sel: CoverageSelection, cancel: CancelToken): RenderedTile? {
         val region = region(key, sel)
@@ -616,7 +657,8 @@ class CoverageTileService internal constructor(
         val view = cal.current()
         if (view.regionVersion(key.z, key.x, key.y) != key.calibrationVersion) throw TileCancelledException()
         val rasters = if (key.calibrationVersion == 0L) emptyList() else view.rasters(key.z, key.x, key.y)
-        return renderer.render(preparedFor(key, sel, region), key.z, key.x, key.y, FALLBACK_AREA, THRESHOLD_DBM, cancel, rasters)
+        val buildings = buildingGridFor(key, TileMath.bounds(key.z, key.x, key.y))
+        return renderer.render(preparedFor(key, sel, region), key.z, key.x, key.y, FALLBACK_AREA, THRESHOLD_DBM, cancel, rasters, buildings)
     }
 
     /**
