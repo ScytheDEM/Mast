@@ -90,6 +90,12 @@ class FakeRenderer : TileRenderer {
     @Volatile var hold = false
     @Volatile var rsrpCode: Byte = 100
     @Volatile var bestIndex: Short = 1
+    /**
+     * When set, pixel i is served by prepared carrier `i % carriers` (every carrier serves an equal share) instead of
+     * [bestIndex]; [serverOf] overrides both (prepared index by pixel, -1 = none).
+     */
+    @Volatile var spread = false
+    @Volatile var serverOf: ((prepared: FakePrepared, pixel: Int) -> Int)? = null
 
     /** Tables handed to each prepared region, as (batch row, table). */
     val preparedTables = CopyOnWriteArrayList<List<Pair<Int, TerrainTable>>>()
@@ -115,9 +121,11 @@ class FakeRenderer : TileRenderer {
         require(batch.size <= 65535) { "too many carriers" }
         val tables = if (terrain == null) emptyList() else (0 until batch.size).mapNotNull { r -> terrain(r)?.let { r to it } }
         if (terrain != null) preparedTables += tables
+        val tabled = tables.map { it.first }.toSet()
         // Carrier i of the prepared region = batch row (size - 1 - i): proves batchIndex is used.
         return object : FakePrepared {
             override val tableCount = tables.size
+            override val tabledRows = tabled
             override val carriers = batch.size
             override val size = batch.size
             override val source = batch
@@ -127,6 +135,8 @@ class FakeRenderer : TileRenderer {
 
     interface FakePrepared : PreparedRegion {
         val tableCount: Int
+        /** Batch rows that have a terrain table. */
+        val tabledRows: Set<Int>
         val carriers: Int
         val source: CarrierBatch
     }
@@ -183,13 +193,28 @@ class FakeRenderer : TileRenderer {
             while (hold && !cancel.isCancelled) Thread.sleep(2)
             if (cancel.isCancelled) return null
             val n = RenderedTile.PIXELS
-            // Like the engine: pixels are "incomplete" for the carriers that have no table (carriers share pixels equally here).
             val p = prepared as? FakePrepared
-            val covered = if (rsrpCode.toInt() == 0) 0 else n
-            val incomplete = if (p == null || p.carriers == 0) covered else covered * (p.carriers - p.tableCount) / p.carriers
+            val pick = serverOf
+            val best = ShortArray(n) { i ->
+                when {
+                    rsrpCode.toInt() == 0 -> RenderedTile.NO_BEST.toShort()
+                    pick != null && p != null -> pick(p, i).let { if (it < 0) RenderedTile.NO_BEST.toShort() else it.toShort() }
+                    spread && p != null && p.carriers > 0 -> (i % p.carriers).toShort()
+                    else -> bestIndex
+                }
+            }
+            // Like the engine: a covered pixel is terrain-incomplete when its serving carrier has no table.
+            var covered = 0
+            var incomplete = 0
+            for (i in 0 until n) {
+                val k = best[i].toInt() and 0xFFFF
+                if (rsrpCode.toInt() == 0 || k == RenderedTile.NO_BEST) continue
+                covered++
+                if (p == null || k >= p.carriers || p.batchIndex(k) !in p.tabledRows) incomplete++
+            }
             return RenderedTile(
-                z, x, y, ByteArray(n) { rsrpCode }, ByteArray(n) { 80 }, ByteArray(n) { 51 }, ShortArray(n) { bestIndex },
-                covered, incomplete,
+                z, x, y, ByteArray(n) { i -> if ((best[i].toInt() and 0xFFFF) == RenderedTile.NO_BEST) 0 else rsrpCode }, ByteArray(n) { 80 },
+                ByteArray(n) { 51 }, best, covered, incomplete,
             )
         } finally {
             concurrent.decrementAndGet()

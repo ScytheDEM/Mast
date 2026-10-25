@@ -169,6 +169,8 @@ class RenderPool internal constructor(
         const val MAX_THREADS = 8
         const val PRIORITY_RENDER = 0
         const val PRIORITY_TABLE = 1
+        /** Terrain tables of carriers that serve under 1% of a tile's pixels: after the contenders' tables. */
+        const val PRIORITY_TABLE_LOW = 2
         const val REEVALUATE_NANOS = 5_000_000_000L
         private const val THROTTLE_HEADROOM = 0.85f
 

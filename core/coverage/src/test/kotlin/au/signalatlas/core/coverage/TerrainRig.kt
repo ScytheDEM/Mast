@@ -93,6 +93,7 @@ internal class TerrainRig(
 
     init {
         if (chunksPresent) putChunks(regionChunks)
+        renderer.spread = true // every carrier serves a share of each tile, so each is a contender
     }
 
     fun putChunks(ids: Collection<ChunkId>) = ids.forEach { chunkStore.put(FakeSource.flatChunk(it)) }

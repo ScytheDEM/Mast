@@ -181,32 +181,62 @@ class CoverageTileService internal constructor(
     /** The calibration version tile (z, x, y) has under the current snapshot. */
     private fun calVersion(z: Int, x: Int, y: Int): Long = cal.current().regionVersion(z, x, y)
 
+    /** Each tile key's wanted tables (its servers, most pixels first), so a repeated request re-asks without recounting. */
+    private val wantsByTile = object : LinkedHashMap<TileKey, List<Want>>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TileKey, List<Want>>) = size > MAX_WANT_LISTS
+    }
+
     /**
-     * A tile served from the cache never renders, so a terrain region recreated after an eviction would never ask for its
-     * tables: a one-off low-priority job computes the demand from the region's carriers and queues the builds.
+     * Contender-aware table demand (M3b): a tile rendered with terrain (or served from the cache) asks for the tables of
+     * the carriers that actually serve its pixels, the >= 1% ones first ([TerrainCoordinator.demand]). Cheap when the
+     * tile's wants are known; otherwise counted on the pool (a cache hit may need its region prepared).
      */
-    private fun ensureDemand(key: TileKey, sel: CoverageSelection) {
+    private fun requestTables(key: TileKey, sel: CoverageSelection, tile: RenderedTile?, onPool: Boolean) {
         val tc = terrain ?: return
         if (key.terrainVersion == 0L) return
-        val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y)
-        if (tk == null || !tc.claimDemand(tk)) return
-        val tile = Triple(key.z, key.x, key.y)
-        pool.submit(
-            tile, RenderPool.PRIORITY_TABLE,
-            work = { cancel ->
-                try {
-                    // Not isCurrent: an evicted region peeks as version 0, exactly the case to recover. The region is
-                    // recreated (at most once per data key) if the LRU or a trim dropped it meanwhile.
-                    val tr = if (isDataCurrent(key)) tc.regionForDemand(tk) else null
-                    if (tr != null && recordDemand(tc, tr, key, region(key, sel), cancel)) tc.ensureTables(tr, tile)
-                } catch (e: Exception) {
-                    // Stale data or a failed region query: the next request asks again.
-                } finally {
-                    tc.demandDone(tk)
+        val tk = tc.keyFor(key.selectionId, key.towerStamp, key.patternsEtag, key.z, key.x, key.y) ?: return
+        val at = Triple(key.z, key.x, key.y)
+        synchronized(wantsByTile) { wantsByTile[key] }?.let { wants ->
+            tc.existingRegion(tk)?.let { tc.demand(at, it, wants) }
+            return
+        }
+        val count = { _: CancelToken? ->
+            try {
+                val t = tile ?: cache.getMemory(key)
+                val tr = tc.existingRegion(tk)
+                if (t != null && tr != null && isCurrent(key)) {
+                    val wants = wantsOf(tc, key, region(key, sel), t)
+                    synchronized(wantsByTile) { wantsByTile[key] = wants }
+                    tc.demand(at, tr, wants)
                 }
-            },
-            onCancelled = { tc.demandDone(tk) },
-        )
+            } catch (e: Exception) {
+                // Stale data or a failed region query: the next request asks again.
+            }
+        }
+        if (onPool) count(null) else pool.submit(at, RenderPool.PRIORITY_TABLE, work = { count(it) }, onCancelled = {})
+    }
+
+    /** The tables [tile]'s serving carriers need, by pixels served (most first); contenders serve >= 1% of its covered pixels. */
+    private fun wantsOf(tc: TerrainCoordinator, key: TileKey, region: Region, tile: RenderedTile): List<Want> {
+        val prepared = region.prepared ?: return emptyList()
+        val pixels = HashMap<Int, Int>()
+        var covered = 0
+        for (i in 0 until RenderedTile.PIXELS) {
+            val c = tile.bestCarrier(i)
+            if (c < 0) continue
+            covered++
+            pixels.merge(prepared.batchIndex(c), 1, Int::plus)
+        }
+        val b = region.batch
+        val byKey = LinkedHashMap<TableKey, Pair<Int, Int>>() // key -> (a row, pixels)
+        for ((row, n) in pixels) {
+            val k = tc.tableKey(key.towerStamp, b, row) ?: continue
+            val old = byKey[k]
+            byKey[k] = (old?.first ?: row) to ((old?.second ?: 0) + n)
+        }
+        return byKey.entries.sortedByDescending { it.value.second }.map { (k, v) ->
+            Want(k, b.siteLat[v.first], b.siteLon[v.first], v.second >= covered * TerrainCoordinator.CONTENDER_SHARE)
+        }
     }
 
     /** Memory pressure ([android.content.ComponentCallbacks2.onTrimMemory]): sheds terrain memory, see [TerrainCoordinator.trimMemory]. */
@@ -262,10 +292,10 @@ class CoverageTileService internal constructor(
         }
         val version = terrainVersion(tile.selectionId, stamp, tile.patternsEtag, tile.z, tile.x, tile.y, create = true, recheck = true)
         val key = TileKey(tile.z, tile.x, tile.y, tile.selectionId, stamp, tile.patternsEtag, version, calVersion(tile.z, tile.x, tile.y))
-        val png = rawTile(key, sel).thenApply { TerrariumEncoder.encode(it.rsrp, tile.view, it.prob) }
-        // After the render is queued, so an idle pool starts the tile before the (much slower) demand sample.
-        ensureDemand(key, sel)
-        return png
+        val raw = rawTile(key, sel)
+        // A memory-cache hit never renders: it asks for its servers' tables here (a render asks in [run]).
+        if (raw.isDone && !raw.isCompletedExceptionally) requestTables(key, sel, raw.getNow(null), onPool = false)
+        return raw.thenApply { TerrariumEncoder.encode(it.rsrp, tile.view, it.prob) }
     }
 
     /** The key a tile of the current selection and data has now (creating its terrain region); null when coverage is off. */
@@ -402,6 +432,15 @@ class CoverageTileService internal constructor(
         // The coordinator learns the new view first, so jobs the pool cancels below are seen as dropped by a pan.
         terrain?.onVisible(tiles, if (sel == null || stamp == null) null else TerrainCoordinator.Context(sel.cacheId(), stamp, patternsEtag()))
         pool.setVisible(tiles)
+        // Tables dropped with panned-away tiles, for tiles still (or again) on screen that MapLibre may not re-request.
+        if (terrain != null && sel != null && stamp != null) {
+            val top = tiles.maxOfOrNull { it.first } ?: return
+            for ((z, x, y) in tiles) {
+                if (z != top) continue
+                val key = TileKey(z, x, y, sel.cacheId(), stamp, patternsEtag(), terrainVersion(sel.cacheId(), stamp, patternsEtag(), z, x, y), calVersion(z, x, y))
+                if (synchronized(wantsByTile) { key in wantsByTile }) requestTables(key, sel, null, onPool = false)
+            }
+        }
     }
 
     /**
@@ -551,7 +590,10 @@ class CoverageTileService internal constructor(
             val tile = cache.getDisk(key)
                 ?: render(key, sel, cancel)?.takeIf { !cancel.isCancelled && isCurrent(key) }?.also { cache.put(key, it) }
             if (tile == null) future.completeExceptionally(TileCancelledException()) else future.complete(tile)
-            if (tile != null) refreshAccuracy()
+            if (tile != null) {
+                refreshAccuracy()
+                requestTables(key, sel, tile, onPool = true)
+            }
         } catch (t: Throwable) {
             future.completeExceptionally(t)
         } finally {
@@ -591,34 +633,10 @@ class CoverageTileService internal constructor(
     } ?: throw StaleTileException()
 
     /**
-     * Records [tr]'s table demand once. The tables that matter are those of the carriers that serve its pixels, so the
-     * region's z10 tile is rendered with the quick model first and its best servers lead the demand (most pixels
-     * first). False if [cancel] fired meanwhile (nothing recorded; the next render or demand job asks again).
-     */
-    private fun recordDemand(tc: TerrainCoordinator, tr: TerrainRegion, key: TileKey, region: Region, cancel: CancelToken): Boolean {
-        if (!tc.needsDemand(tr)) return true
-        val prepared = region.prepared ?: return true.also { tc.setDemand(tr, region.batch, IntArray(0)) }
-        val k = tr.key
-        val sample = renderer.render(prepared, k.zf, k.rx, k.ry, FALLBACK_AREA, THRESHOLD_DBM, cancel)
-        if (sample == null || cancel.isCancelled) return false
-        val pixels = HashMap<Int, Int>()
-        for (i in 0 until RenderedTile.PIXELS) {
-            val c = sample.bestCarrier(i)
-            if (c >= 0) pixels.merge(prepared.batchIndex(c), 1, Int::plus)
-        }
-        val servers = pixels.entries.sortedByDescending { it.value }.map { it.key }.toIntArray()
-        tc.setDemand(tr, region.batch, servers)
-        return true
-    }
-
-    /**
      * The region prepared for [key]'s terrain version: the plain quick-model one while its region has no tables, else
-     * one built from exactly the tables of that version's snapshot (no mixing). Asks for the region's missing tables.
-     * Fails with [TileCancelledException] if the region moved on to another version meanwhile.
-     *
-     * It never waits for the region's table demand: that needs a quick render of the whole z10 tile (seconds with tens of
-     * thousands of carriers), which [ensureDemand] runs as a background job, so a visible tile renders at once with the
-     * tables published so far.
+     * one built from exactly the tables of that version's snapshot (no mixing). Fails with [TileCancelledException] if
+     * the region moved on to another version meanwhile. It never waits for tables: the rendered tile asks for its
+     * servers' tables afterwards ([requestTables]), so a visible tile renders at once with the tables published so far.
      */
     private fun preparedFor(key: TileKey, sel: CoverageSelection, region: Region): PreparedRegion {
         val tc = terrain
@@ -629,7 +647,6 @@ class CoverageTileService internal constructor(
         val tr = tc.existingRegion(tk) ?: throw TileCancelledException()
         val snap = tc.snapshot(tr)
         if (snap.version != key.terrainVersion) throw TileCancelledException()
-        tc.ensureTables(tr, Triple(key.z, key.x, key.y))
         if (snap.tables.isEmpty()) return region.prepared!!
         val pk = TerrainPrepKey(region.key, tr.key, snap.version)
         val mine = CompletableFuture<PreparedRegion>()
@@ -638,7 +655,7 @@ class CoverageTileService internal constructor(
             try {
                 val store = patterns.value
                 if ((store?.etag ?: "none") != key.patternsEtag) throw StaleTileException()
-                val provider = { row: Int -> tc.tableKey(tr, region.batch, row)?.let { snap.tables[it] } }
+                val provider = { row: Int -> tc.tableKey(key.towerStamp, region.batch, row)?.let { snap.tables[it] } }
                 mine.complete(renderer.prepare(region.batch, store, sel.indoor, provider, region.calibration, region.areas?.let { a -> a::get }))
             } catch (t: Throwable) {
                 synchronized(terrainPrepared) { terrainPrepared.remove(pk, mine) }
@@ -747,6 +764,7 @@ class CoverageTileService internal constructor(
         private const val MAX_OVERFLOW_HINTS = 512
         private const val MAX_TERRAIN_PREPARED = 8
         private const val MAX_SITE_COUNTS = 100_000
+        private const val MAX_WANT_LISTS = 256
         /** Rule 5's class for a carrier without its own (none in practice: every usable row gets one). */
         private val FALLBACK_AREA = AreaClass.SUBURBAN
         private const val MAX_CARRIERS = 65535 // PreparedCarriers.MAX_CARRIERS

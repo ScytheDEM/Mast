@@ -3,26 +3,31 @@ package au.signalatlas.core.coverage
 import au.signalatlas.engine.RenderedTile
 
 /**
- * How a tile (or a viewport of tiles) was predicted. A single tile is [QUICK] or [TERRAIN]; [PARTIAL] is only the
- * summary of a viewport in which some, but not all, tiles are [TERRAIN].
+ * How a tile (or a viewport of tiles) was predicted: [QUICK] = no terrain loss applied anywhere, [TERRAIN] = terrain
+ * applied to at least 95% of the covered pixels (Terrain rule 6), [PARTIAL] = in between (a tile rendered with terrain
+ * whose other pixels are served by carriers without a table yet, or a viewport mixing such tiles).
  */
 enum class Accuracy {
     QUICK, PARTIAL, TERRAIN;
 
     companion object {
         /**
-         * Terrain rule 6 for one tile: [TERRAIN] when its region had complete elevation data (`terrainVersion != 0`),
-         * it has covered pixels and at least 95% of them had full terrain profiles ([RenderedTile.isTerrainAccurate]).
-         * Anything else, including a tile with no coverage (nothing was predicted with terrain), is [QUICK]; the
-         * viewport summary ([CoverageTileService.accuracyFor]) leaves such empty tiles out. The inputs are persisted
-         * with the tile, so the label survives the disk cache.
+         * One tile. Rendered without terrain (`terrainVersion == 0`) or with no covered pixel having a complete terrain
+         * lookup: [QUICK]. With terrain, a pixel counts as complete only if its *serving* carrier had a table and a full
+         * profile (an untabled serving carrier makes it incomplete, M3b): >= 95% complete is [TERRAIN], fewer is
+         * [PARTIAL]. A tile with no coverage is [QUICK]; the viewport summary ([CoverageTileService.accuracyFor]) leaves
+         * such empty tiles out. The inputs are persisted with the tile, so the label survives the disk cache.
          */
-        fun of(key: TileKey, tile: RenderedTile): Accuracy =
-            if (key.terrainVersion != 0L && tile.isTerrainAccurate) TERRAIN else QUICK
+        fun of(key: TileKey, tile: RenderedTile): Accuracy = when {
+            key.terrainVersion == 0L || tile.coveredPixels == 0 -> QUICK
+            tile.isTerrainAccurate -> TERRAIN
+            tile.terrainIncompletePixels < tile.coveredPixels -> PARTIAL
+            else -> QUICK
+        }
 
-        /** The viewport summary: [TERRAIN] only if every tile is, [PARTIAL] if some are, else [QUICK] (also when empty). */
+        /** The viewport summary: [TERRAIN] only if every tile is, [QUICK] if every tile is (also when empty), else [PARTIAL]. */
         fun summary(tiles: Collection<Accuracy>): Accuracy = when {
-            tiles.isEmpty() || tiles.none { it == TERRAIN } -> QUICK
+            tiles.isEmpty() || tiles.all { it == QUICK } -> QUICK
             tiles.all { it == TERRAIN } -> TERRAIN
             else -> PARTIAL
         }
