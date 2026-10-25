@@ -49,6 +49,18 @@ internal object TileMath {
     }
 
     /** Haversine distance in metres. */
+    /** The point [distanceM] from [lat], [lon] along [bearingDeg] (spherical earth; fine to tens of km). */
+    fun offset(lat: Double, lon: Double, bearingDeg: Double, distanceM: Double): Pair<Double, Double> {
+        val r = 6_371_008.8
+        val d = distanceM / r
+        val b = Math.toRadians(bearingDeg)
+        val p1 = Math.toRadians(lat)
+        val l1 = Math.toRadians(lon)
+        val p2 = kotlin.math.asin(kotlin.math.sin(p1) * kotlin.math.cos(d) + kotlin.math.cos(p1) * kotlin.math.sin(d) * kotlin.math.cos(b))
+        val l2 = l1 + kotlin.math.atan2(kotlin.math.sin(b) * kotlin.math.sin(d) * kotlin.math.cos(p1), kotlin.math.cos(d) - kotlin.math.sin(p1) * kotlin.math.sin(p2))
+        return Math.toDegrees(p2) to Math.toDegrees(l2)
+    }
+
     fun distanceM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val dLat = Math.toRadians(lat2 - lat1)
         val dLon = Math.toRadians(lon2 - lon1)

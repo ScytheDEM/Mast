@@ -436,6 +436,67 @@ class CoverageTileService internal constructor(
         return raws.map { AlongPath.toPrediction(it ?: AlongPath.Raw.NONE, thr) }
     }
 
+    /**
+     * Where [network]'s carriers on the site at [siteLat], [siteLon] reach: along [rays] bearings, the farthest
+     * distance (gaps up to [FOOTPRINT_GAP_M] bridged) at which their best predicted RSRP is still >= [thresholdDbm],
+     * with their antenna patterns, heights and, when [withTerrain], terrain tables and buildings (missing elevation is
+     * fetched when the network rules allow it without asking). The outline as (lat, lon), closed; null without tower
+     * data or carriers there. Runs on [Dispatchers.Default].
+     */
+    suspend fun siteFootprint(
+        siteLat: Double, siteLon: Double, network: Network, withTerrain: Boolean,
+        thresholdDbm: Float = FOOTPRINT_THRESHOLD_DBM, rays: Int = FOOTPRINT_RAYS,
+    ): List<Pair<Double, Double>>? = withContext(Dispatchers.Default) {
+        val stamp = towers.stamp() ?: return@withContext null
+        val etag = patternsEtag()
+        val sel = CoverageSelection(network, Tech.entries.toSet(), null, false, CoverageSelection.View.RSRP)
+        val at = TileMath.locate(siteLat, siteLon, FALLBACK_ZOOM) ?: return@withContext null
+        val key = TileKey(FALLBACK_ZOOM, at.x, at.y, sel.cacheId(), stamp, etag, 0L, calVersion(FALLBACK_ZOOM, at.x, at.y), bldVersion(FALLBACK_ZOOM, at.x, at.y))
+        val region = try {
+            region(key, sel)
+        } catch (e: StaleTileException) {
+            return@withContext null
+        }
+        val full = region.prepared ?: return@withContext null
+        val batch = region.batch
+        val picked = (0 until full.size).map { full.batchIndex(it) to full.rMaxKm(it) }.filter { (row, _) ->
+            TileMath.distanceM(batch.siteLat[row].toDouble(), batch.siteLon[row].toDouble(), siteLat, siteLon) < SAME_SITE_M
+        }
+        if (picked.isEmpty()) return@withContext null
+        val rows = picked.map { it.first }.distinct().sorted().toIntArray()
+        val maxM = (picked.maxOf { it.second } * 1000.0).coerceAtMost(FOOTPRINT_MAX_M)
+        val sub = batch.subset(rows)
+        val tc = terrain
+        if (withTerrain && tc != null) tc.fetchQuietly(tc.missingHomeChunks(siteLat, siteLon))
+        val tables = if (withTerrain && tc != null) Array(rows.size) { tc.tableNow(stamp, sub, it) } else null
+        val prepared = renderer.prepare(
+            sub, patterns.value, false,
+            terrain = tables?.let { t -> { r: Int -> t[r] } },
+            calibration = region.calibration?.let { c -> { r: Int -> c(rows[r]) } },
+            area = region.areas?.let { a -> { r: Int -> a[rows[r]] } },
+        )
+        val box = GeoBounds(
+            siteLat - maxM / 111_320.0, siteLon - maxM / (111_320.0 * kotlin.math.cos(Math.toRadians(siteLat))),
+            siteLat + maxM / 111_320.0, siteLon + maxM / (111_320.0 * kotlin.math.cos(Math.toRadians(siteLat))),
+        )
+        val buildings = if (withTerrain) buildingStore?.let { au.signalatlas.engine.BuildingGrid.open(it, box) } else null
+        val ring = ArrayList<Pair<Double, Double>>(rays + 1)
+        for (i in 0 until rays) {
+            val bearing = 360.0 * i / rays
+            var reach = 0.0
+            var d = FOOTPRINT_STEP_M
+            while (d <= maxM && d - reach <= FOOTPRINT_GAP_M) {
+                val (lat, lon) = TileMath.offset(siteLat, siteLon, bearing, d)
+                val rsrp = renderer.predictPoint(prepared, lat, lon, FALLBACK_AREA, buildings)
+                if (rsrp.any { it.isFinite() && it >= thresholdDbm }) reach = d
+                d += if (d < 5_000.0) FOOTPRINT_STEP_M else FOOTPRINT_STEP_M * 2.5
+            }
+            ring += TileMath.offset(siteLat, siteLon, bearing, maxOf(reach, FOOTPRINT_STEP_M))
+        }
+        ring += ring.first()
+        ring
+    }
+
     /** Raw predictions of [pts] (all inside z10 tile [tx], [ty]). Blocking. */
     private fun predictTile(
         tx: Int, ty: Int, pts: List<LatLon>, sel: CoverageSelection, stamp: String, etag: String,
@@ -848,6 +909,13 @@ class CoverageTileService internal constructor(
         private const val MAX_CARRIERS = 65535 // PreparedCarriers.MAX_CARRIERS
         private const val MAX_LEVEL = 2
         private const val FALLBACK_ZOOM = 10
+        const val FOOTPRINT_THRESHOLD_DBM = -110f
+        const val FOOTPRINT_RAYS = 90
+        private const val FOOTPRINT_STEP_M = 100.0
+        private const val FOOTPRINT_GAP_M = 1_000.0
+        private const val FOOTPRINT_MAX_M = 30_000.0
+        /** Carriers within this of the site's position belong to it. */
+        private const val SAME_SITE_M = 30.0
         private const val TAG = "CoverageTileService"
         internal const val REGION_MARGIN_M = 80_000.0
         private const val THRESHOLD_DBM = -118f

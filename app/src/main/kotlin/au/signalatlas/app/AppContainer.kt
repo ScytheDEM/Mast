@@ -337,12 +337,16 @@ class AppContainer(context: Context) {
 
     val location = DeviceLocationSource(app)
 
-    // Offline region packs: the base map (MapLibre offline regions) and elevation (pinned DEM chunks). Buildings and
-    // roads join `packSources` when their chunk stores exist.
+    // Offline region packs: the base map (MapLibre offline regions), elevation (pinned DEM chunks) and, with the
+    // tower-pattern setting or Detailed quality, the buildings of built-up areas.
     private val packRepo = PackRepository(File(app.filesDir, "packs/packs.json"))
     private val packSources = linkedMapOf(
         PackManager.BASEMAP to BasemapPackContent(MapLibreOfflineBackend(app, app.resources.displayMetrics.density.coerceAtMost(2f))) { packStyleUrl() },
         PackManager.ELEVATION to DemPackContent(elevationChunks, demFetcher),
+        // Built-up areas' buildings, when the tower-pattern setting (or Detailed quality) wants them.
+        "buildings" to au.signalatlas.app.packs.BuildingPackContent(buildingChunks, buildingFetcher) { box ->
+            repo.store.value?.sitesIn(box, au.signalatlas.core.model.TowerFilter())?.size ?: 0
+        },
     )
     val packNotifications = PackNotifications(app)
     val packDeps = PackDeps(PackDownloader(packRepo, packSources.values.toList()), packRepo)

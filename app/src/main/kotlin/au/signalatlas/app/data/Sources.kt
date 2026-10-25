@@ -1,5 +1,6 @@
 package au.signalatlas.app.data
 
+import au.signalatlas.core.model.Network
 import au.signalatlas.core.coverage.Accuracy
 import au.signalatlas.core.coverage.CoverageSample
 import au.signalatlas.core.coverage.CoverageSelection
@@ -78,6 +79,8 @@ interface Coverage {
     fun accuracyFor(visible: Set<Triple<Int, Int, Int>>): StateFlow<Accuracy>
     /** True while the device is online (terrain can be downloaded). */
     fun isOnline(): Boolean
+    /** [network]'s reach around a site as a closed (lat, lon) outline (see CoverageTileService.siteFootprint). */
+    suspend fun siteFootprint(lat: Double, lon: Double, network: Network, withTerrain: Boolean): List<Pair<Double, Double>>? = null
     /** Tile renders queued or running (the progress pill counts them down). */
     val pendingRenders: StateFlow<Int> get() = kotlinx.coroutines.flow.MutableStateFlow(0)
     /** Bytes "Increase resolution" would download for the view; null while offline, without a view or zoomed out. */
@@ -151,6 +154,8 @@ class ServiceCoverage(
     override fun accuracyFor(visible: Set<Triple<Int, Int, Int>>) = service.accuracyFor(visible)
     override fun isOnline() = service.isOnline()
     override val pendingRenders: StateFlow<Int> get() = service.pendingRenders
+    override suspend fun siteFootprint(lat: Double, lon: Double, network: Network, withTerrain: Boolean) =
+        service.siteFootprint(lat, lon, network, withTerrain)
     override suspend fun estimateIncreaseBytes() = service.estimateIncreaseBytes()
     override fun increaseResolution(allowMetered: Boolean) = service.increaseResolution(allowMetered)
 }

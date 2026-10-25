@@ -283,6 +283,41 @@ internal class TerrainCoordinator(
         )
     }
 
+    /**
+     * Batch row [row]'s terrain table now: published, on disk, or built here (blocking, about 20 ms). Null while its
+     * home elevation is not stored. For one-off point work (a site's footprint), outside the map's demand queue.
+     */
+    fun tableNow(stamp: String, b: CarrierBatch, row: Int): TerrainTable? {
+        val key = tableKey(stamp, b, row) ?: return null
+        synchronized(lock) { ready[key] ?: staged[key] }?.let { return it }
+        support.tables.get(key)?.let { return it }
+        if (!homeStored(b.siteLat[row].toDouble(), b.siteLon[row].toDouble())) return null
+        return build(Want(key, b.siteLat[row].toDouble(), b.siteLon[row].toDouble(), true), CancelToken())
+    }
+
+    /** The elevation chunks a site at [lat], [lon] needs for its tables that are not stored yet. */
+    fun missingHomeChunks(lat: Double, lon: Double): Set<ChunkId> {
+        val at = TileMath.locate(lat, lon, TERRAIN_ZOOM) ?: return emptySet()
+        return homeChunks(at.x, at.y).filterTo(HashSet()) { !support.chunks.has(it) }
+    }
+
+    private fun homeStored(lat: Double, lon: Double) = missingHomeChunks(lat, lon).isEmpty()
+
+    /** Downloads [chunks] when the network rules allow it without asking; false if not allowed or failed. */
+    suspend fun fetchQuietly(chunks: Set<ChunkId>): Boolean {
+        if (chunks.isEmpty()) return true
+        if (!support.network.isOnline() || support.network.isMetered()) return false
+        return try {
+            support.source.fetch(chunks, false) {}
+            onChunksChanged()
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private fun homeChunks(rx: Int, ry: Int) = ChunkMath.chunksFor(TileMath.bounds(TERRAIN_ZOOM, rx, ry), MARGIN_KM)
 
     /** Caller holds [lock]. */

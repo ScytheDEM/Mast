@@ -1,5 +1,6 @@
 package au.signalatlas.app.ui.map
 
+import au.signalatlas.core.model.DataSettings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import au.signalatlas.app.data.BasemapKeys
@@ -108,7 +109,23 @@ class MapViewModel(
             .onEach { (id, detail, plots) ->
                 // A site that no longer exists (e.g. after an update) closes the sheet.
                 if (id != null && detail == null) selectedId.value = null
-                _state.update { it.copy(selected = detail, selectedId = if (detail == null) null else id, selectedPlots = plots) }
+                _state.update {
+                    it.copy(selected = detail, selectedId = if (detail == null) null else id, selectedPlots = plots)
+                }
+            }
+            .launchIn(viewModelScope)
+
+        // Settings → Tower patterns: the selected site's reach with terrain, buildings and height, one network at a time.
+        selectedId
+            .mapLatest { id ->
+                _state.update { it.copy(selectedFootprints = emptyList()) }
+                if (id == null || !DataSettings.patternTerrain) return@mapLatest emptyList()
+                val detail = withContext(io) { loadDetail(id) } ?: return@mapLatest emptyList()
+                detail.sectors.map { it.network }.distinct().mapNotNull { n ->
+                    coverage.siteFootprint(detail.site.lat, detail.site.lon, n, withTerrain = true)
+                        ?.let { ring -> au.signalatlas.core.map.FootprintShape(n, ring) }
+                        ?.also { shape -> _state.update { s -> if (s.selectedId == id) s.copy(selectedFootprints = s.selectedFootprints + shape) else s } }
+                }
             }
             .launchIn(viewModelScope)
 

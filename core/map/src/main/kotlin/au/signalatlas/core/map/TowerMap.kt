@@ -180,6 +180,9 @@ private const val BEAMS_SOURCE = "site-beams"
 private const val LAYER_BEAMS = "site-beams-fill"
 private const val LAYER_BEAMS_LINE = "site-beams-line"
 private const val LAYER_BEAMS_LABEL = "site-beams-label"
+private const val FOOTPRINT_SOURCE = "site-footprint"
+private const val LAYER_FOOTPRINT = "site-footprint-fill"
+private const val LAYER_FOOTPRINT_LINE = "site-footprint-line"
 private const val CONNECTED_SOURCE = "connected"
 private const val LAYER_CONNECTED_LINE = "connected-line"
 private const val LAYER_CONNECTED_NEIGHBOURS = "connected-neighbours"
@@ -228,6 +231,8 @@ fun TowerMap(
     connected: ConnectedHighlight? = null,
     /** The selected site's sector lobes, drawn translucent at [beamLengthM]; null = none. */
     siteBeams: SiteBeams? = null,
+    /** The selected site's terrain-shaped reach per network (the pattern-terrain setting); empty = none. */
+    siteFootprints: List<FootprintShape> = emptyList(),
     beamLengthM: Double = SectorBeams.lengthMetersForZoom(null),
     /** Show the lobes' labels at every zoom (else only from [SectorBeams.LABEL_MIN_ZOOM]). */
     beamLabelsAlways: Boolean = false,
@@ -388,6 +393,33 @@ fun TowerMap(
                 textPadding(2f),
                 textOptional(true),
             ).apply { if (!beamLabelsAlways) minZoom = SectorBeams.LABEL_MIN_ZOOM },
+        )
+    }
+    LaunchedEffect(style, siteFootprints) {
+        val st = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
+        st.removeLayer(LAYER_FOOTPRINT_LINE)
+        st.removeLayer(LAYER_FOOTPRINT)
+        st.removeSource(FOOTPRINT_SOURCE)
+        if (siteFootprints.isEmpty()) return@LaunchedEffect
+        val json = withContext(Dispatchers.Default) { SiteFootprints.toGeoJson(siteFootprints) }
+        st.addSource(GeoJsonSource(FOOTPRINT_SOURCE, json))
+        val netColor = match(
+            get("net"), color(0xFF9AA0A6.toInt()),
+            *Network.entries.map { stop(it.name, color(NetworkColors.argb(it))) }.toTypedArray(),
+        )
+        // Under the lobes: the lobes say where the antennas point, the footprint where the signal gets to.
+        val below = if (st.getLayer(LAYER_BEAMS) != null) LAYER_BEAMS else LAYER_CLUSTERS
+        st.addLayerBelow(
+            FillLayer(LAYER_FOOTPRINT, FOOTPRINT_SOURCE)
+                .withProperties(fillColor(netColor), fillOpacity(SiteFootprints.FILL_OPACITY), fillAntialias(true)),
+            below,
+        )
+        st.addLayerBelow(
+            LineLayer(LAYER_FOOTPRINT_LINE, FOOTPRINT_SOURCE).withProperties(
+                lineColor(netColor), lineWidth(1.5f), lineOpacity(SiteFootprints.OUTLINE_OPACITY),
+                lineDasharray(arrayOf(2f, 2f)),
+            ),
+            below,
         )
     }
     LaunchedEffect(style, beamLabelsAlways) {

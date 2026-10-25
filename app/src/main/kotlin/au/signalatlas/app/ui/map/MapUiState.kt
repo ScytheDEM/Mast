@@ -32,6 +32,8 @@ data class MapUiState(
     val selected: SiteDetail? = null,
     /** The selected site's sector radiation patterns (one per sector). */
     val selectedPlots: List<SectorPlot> = emptyList(),
+    /** The selected site's terrain-shaped reach per network (Settings → Tower patterns); empty when off or pending. */
+    val selectedFootprints: List<au.signalatlas.core.map.FootprintShape> = emptyList(),
     val search: SearchUiState = SearchUiState(),
     val update: UpdateStatus = UpdateStatus.Unknown,
     val basemapKey: String? = null,

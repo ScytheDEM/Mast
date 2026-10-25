@@ -484,6 +484,7 @@ fun MapScreen(
                 userLocationEstimated = state.locationEstimated,
                 connected = connected?.highlight,
                 siteBeams = siteBeams,
+                siteFootprints = state.selectedFootprints,
                 beamLengthM = SectorBeams.lengthMetersForZoom(state.zoom),
                 beamLabelsAlways = expanded || sheetExpanded,
             )
