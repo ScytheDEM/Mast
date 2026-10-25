@@ -78,6 +78,8 @@ interface Coverage {
     fun accuracyFor(visible: Set<Triple<Int, Int, Int>>): StateFlow<Accuracy>
     /** True while the device is online (terrain can be downloaded). */
     fun isOnline(): Boolean
+    /** Tile renders queued or running (the progress pill counts them down). */
+    val pendingRenders: StateFlow<Int> get() = kotlinx.coroutines.flow.MutableStateFlow(0)
     /** Bytes "Increase resolution" would download for the view; null while offline, without a view or zoomed out. */
     suspend fun estimateIncreaseBytes(): Long?
     /** Downloads the elevation the current view is missing. */
@@ -148,6 +150,7 @@ class ServiceCoverage(
     override val terrainEpoch: StateFlow<Long> get() = service.terrainEpoch
     override fun accuracyFor(visible: Set<Triple<Int, Int, Int>>) = service.accuracyFor(visible)
     override fun isOnline() = service.isOnline()
+    override val pendingRenders: StateFlow<Int> get() = service.pendingRenders
     override suspend fun estimateIncreaseBytes() = service.estimateIncreaseBytes()
     override fun increaseResolution(allowMetered: Boolean) = service.increaseResolution(allowMetered)
 }

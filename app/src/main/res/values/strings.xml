@@ -389,4 +389,5 @@
     <string name="settings_trip">Trip alerts</string>
     <string name="settings_calibration">Calibration</string>
     <string name="settings_storage">Storage</string>
+    <string name="coverage_rendering_count">Rendering coverage · %1$d of %2$d tiles</string>
 </resources>

@@ -71,9 +71,12 @@ data class CoverageUiState(
     val increase: IncreaseUiState? = null,
     /** The overlay still has tiles being calculated (reported by the map). */
     val calculating: Boolean = false,
+    /** Tiles of the current rendering batch finished, and the batch size (0 = nothing rendering). */
+    val renderDone: Int = 0,
+    val renderTotal: Int = 0,
 ) {
     /** The small "Calculating coverage…" pill: coverage is on, in range, and tiles are outstanding. */
-    fun showsCalculating(zoom: Double?): Boolean = on && !needsZoom(zoom) && calculating
+    fun showsCalculating(zoom: Double?): Boolean = on && !needsZoom(zoom) && (calculating || renderTotal > 0)
 
     /** Coverage is on but the map is too far out to show it. */
     fun needsZoom(zoom: Double?): Boolean = on && zoom != null && zoom < MIN_ZOOM

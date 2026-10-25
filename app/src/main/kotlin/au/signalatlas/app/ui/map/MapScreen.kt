@@ -526,7 +526,6 @@ fun MapScreen(
                 nearby = state.nearby,
                 onSiteClick = openSite,
                 onRequestPermission = { withLocation { } },
-                onClose = { vm.selectSection(MapSection.HOME) },
                 modifier = modifier,
                 contentPadding = padding,
             )
@@ -836,7 +835,7 @@ private fun MapControls(
                     }
                 }
                 AnimatedVisibility(state.coverage.showsCalculating(state.zoom), enter = fadeIn(), exit = fadeOut()) {
-                    CalculatingPill(Modifier.padding(start = 16.dp, top = 4.dp))
+                    CalculatingPill(Modifier.padding(start = 16.dp, top = 4.dp), state.coverage.renderDone, state.coverage.renderTotal)
                 }
                 state.coverage.readout?.let {
                     PointReadout(it.result, Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp))

@@ -142,6 +142,14 @@ class MapViewModel(
         coverage.urlTemplate.onEach { t -> _state.update { it.copy(coverage = it.coverage.copy(urlTemplate = t)) } }
             .launchIn(viewModelScope)
 
+        // Rendering progress: a batch starts when renders appear and ends when none are left; its size is the most
+        // renders seen at once, so the count only goes up while tiles are added and the bar only fills.
+        var batch = 0
+        coverage.pendingRenders.onEach { pending ->
+            batch = if (pending == 0) 0 else maxOf(batch, pending)
+            _state.update { it.copy(coverage = it.coverage.copy(renderDone = batch - pending, renderTotal = batch)) }
+        }.launchIn(viewModelScope)
+
         // The accuracy chip: follows the tiles in view and re-reads when terrain data changes or coverage is toggled.
         combine(visibleTiles, coverage.terrainEpoch, coverage.urlTemplate) { tiles, _, template -> tiles.takeIf { template != null } }
             .flatMapLatest { tiles -> if (tiles == null) flowOf(Accuracy.QUICK) else coverage.accuracyFor(tiles) }

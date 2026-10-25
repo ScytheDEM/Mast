@@ -2,6 +2,8 @@
 
 package au.signalatlas.app.ui.coverage
 
+import androidx.compose.runtime.getValue
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -55,7 +57,7 @@ fun CoverageExplainerCard(onDismiss: () -> Unit, modifier: Modifier = Modifier) 
 
 /** A small, non-blocking tonal pill while coverage tiles are being calculated. */
 @Composable
-fun CalculatingPill(modifier: Modifier = Modifier) {
+fun CalculatingPill(modifier: Modifier = Modifier, done: Int = 0, total: Int = 0) {
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -64,9 +66,17 @@ fun CalculatingPill(modifier: Modifier = Modifier) {
         modifier = modifier.testTag("coverage-calculating"),
     ) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.coverage_calculating), style = MaterialTheme.typography.labelLarge)
+            Text(
+                if (total > 0) stringResource(R.string.coverage_rendering_count, done, total) else stringResource(R.string.coverage_calculating),
+                style = MaterialTheme.typography.labelLarge,
+            )
             Spacer(Modifier.width(10.dp))
-            LinearWavyProgressIndicator(Modifier.width(56.dp))
+            if (total > 0) {
+                val progress by animateFloatAsState(done.toFloat() / total, label = "render-progress")
+                LinearWavyProgressIndicator(progress = { progress }, modifier = Modifier.width(72.dp))
+            } else {
+                LinearWavyProgressIndicator(Modifier.width(56.dp))
+            }
         }
     }
 }

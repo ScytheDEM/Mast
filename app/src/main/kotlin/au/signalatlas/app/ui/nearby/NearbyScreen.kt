@@ -47,16 +47,17 @@ fun NearbyContent(
     nearby: List<Pair<SiteSummary, Double>>,
     onSiteClick: (SiteSummary) -> Unit,
     onRequestPermission: () -> Unit,
-    onClose: () -> Unit,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(bottom = 24.dp),
 ) {
     LazyColumn(modifier, contentPadding = contentPadding) {
         item(key = "header") {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.nearby_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                IconButton(onClick = onClose) { Icon(Icons.Filled.Close, stringResource(R.string.close)) }
-            }
+            // Its own page (a navigation bar section): nothing to close.
+            Text(
+                stringResource(R.string.nearby_title),
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 4.dp),
+            )
         }
         when {
             !locationGranted -> item(key = "permission") {
