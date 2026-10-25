@@ -1,5 +1,8 @@
 package au.signalatlas.feature.trip
 
+import au.signalatlas.core.roads.RoadClass
+import au.signalatlas.core.roads.RoadGraph
+import au.signalatlas.core.roads.RoadWay
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 import kotlin.math.cos
@@ -85,5 +88,52 @@ class LookAheadTest {
         val (x, y) = toXY(r.points[100])
         assertThat(Math.abs(y - toXY(r.points[0]).second)).isLessThan(400.0)
         assertThat(x).isGreaterThan(toXY(r.points[0]).first + 4_500.0)
+    }
+
+    // --- road following (M3b batch 3) ---
+
+    private fun way(cls: RoadClass, vararg pts: Pair<Double, Double>) = RoadWay(cls, null, pts.map { fromXY(it.first, it.second) })
+    private fun graph(vararg ways: RoadWay) = RoadGraph.build(LAT0, LON0, ways.toList())
+
+    @Test fun followsTheRoadRoundABendTheArcExtrapolationMisses() {
+        // Driving east at 25 m/s along a road that turns north at x = 1500.
+        val g = graph(way(RoadClass.MAJOR, -500.0 to 0.0, 1500.0 to 0.0, 1500.0 to 12_000.0))
+        val t = track(30) { it * 25.0 to 0.0 } // ends at x = 750
+        val arc = LookAhead.project(t, 5_000.0)
+        val road = LookAhead.project(t, 5_000.0, g)
+        assertThat(road.points).hasSize(arc.points.size)
+        assertThat(road.points[0]).isEqualTo(arc.points[0])
+        // Speed, heading and curvature still describe the track.
+        assertThat(road.speedMps).isEqualTo(arc.speedMps)
+        assertThat(road.headingDeg).isEqualTo(arc.headingDeg)
+        val (ax, ay) = toXY(arc.points[100])
+        assertThat(ax).isGreaterThan(5_000.0)
+        assertThat(ay).isWithin(1.0).of(0.0)
+        // 2,000 m on = 750 m to the bend, then 1,250 m north.
+        val (x, y) = toXY(road.points[40])
+        assertThat(x).isWithin(1.0).of(1500.0)
+        assertThat(y).isWithin(1.0).of(1250.0)
+        // 5 km on: 750 m to the bend and 4,250 m north.
+        val (x2, y2) = toXY(road.points[100])
+        assertThat(x2).isWithin(1.0).of(1500.0)
+        assertThat(y2).isWithin(2.0).of(5_000.0 - 750.0)
+    }
+
+    @Test fun fallsBackToTheArcWhenNothingMatches() {
+        val t = track(30) { it * 25.0 to 0.0 }
+        val arc = LookAhead.project(t, 3_000.0)
+        // Too far away (100 m), crossing the heading, or no graph at all: the arc stands, point for point.
+        val far = graph(way(RoadClass.MAJOR, 0.0 to 100.0, 5000.0 to 100.0))
+        val across = graph(way(RoadClass.MAJOR, 750.0 to -2000.0, 750.0 to 2000.0))
+        assertThat(LookAhead.project(t, 3_000.0, far).points).isEqualTo(arc.points)
+        assertThat(LookAhead.project(t, 3_000.0, across).points).isEqualTo(arc.points)
+        assertThat(LookAhead.project(t, 3_000.0, graph()).points).isEqualTo(arc.points)
+        assertThat(LookAhead.project(t, 3_000.0, null).points).isEqualTo(arc.points)
+    }
+
+    @Test fun aStationaryVehicleStaysPutEvenOnARoad() {
+        val g = graph(way(RoadClass.MAJOR, 0.0 to 0.0, 5000.0 to 0.0))
+        val r = LookAhead.project(track(30) { 100.0 + 0.2 * (it % 3) to 0.0 }, 5_000.0, g)
+        assertThat(r.points).hasSize(1)
     }
 }

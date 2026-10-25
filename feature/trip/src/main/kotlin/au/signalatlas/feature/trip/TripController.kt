@@ -4,6 +4,7 @@ import au.signalatlas.core.calibration.Fix
 import au.signalatlas.core.coverage.CoverageSelection
 import au.signalatlas.core.coverage.PointPrediction
 import au.signalatlas.core.model.LatLon
+import au.signalatlas.core.roads.RoadGraphProvider
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Tech
 import au.signalatlas.core.radio.ObservedCell
@@ -111,6 +112,8 @@ class TripController(
     /** The clock of [RadioState.updatedAtElapsedMs]. */
     private val elapsedMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
     private val evalIntervalMs: Long = EVAL_INTERVAL_MS,
+    /** Roads around the vehicle for the look-ahead to follow; null (or not yet loaded) means the arc extrapolation. */
+    private val roads: RoadGraphProvider? = null,
 ) {
     private val lock = Any()
     private val _state = MutableStateFlow<TripState>(TripState.Idle)
@@ -226,7 +229,7 @@ class TripController(
                 return
             }
             val speed = fix.speedMps ?: LookAhead.project(trackNow, 0.0).speedMps
-            val path = LookAhead.project(trackNow, AlertEngine.horizonM(speed, cfg.windowSeconds))
+            val path = LookAhead.project(trackNow, AlertEngine.horizonM(speed, cfg.windowSeconds), roads?.graphNear(fix.lat, fix.lon, clockMs()))
             val points = path.points.ifEmpty { listOf(LatLon(fix.lat, fix.lon)) }
             val alertCfg = AlertConfig(cfg)
             val selection = CoverageSelection(

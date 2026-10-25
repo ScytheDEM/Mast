@@ -1,6 +1,7 @@
 package au.signalatlas.feature.trip
 
 import au.signalatlas.core.model.LatLon
+import au.signalatlas.core.roads.RoadGraph
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
@@ -16,7 +17,8 @@ data class TrackFix(val timeMs: Long, val lat: Double, val lon: Double)
 /**
  * Track-based path prediction (M5 ruling): the position ahead is extrapolated from the last [TRACK_MS] of fixes with
  * the current heading and the turn rate fitted to them, as a circular arc for at most [ARC_LIMIT_M] and straight
- * beyond. It does not snap to roads (that needs the offline road network, M5b).
+ * beyond. When a [RoadGraph] is given and the position matches a road (within 30 m, heading within 45 degrees of the
+ * fitted one) the path follows the road instead, straight on past where the graph ends; otherwise the arc stands.
  */
 object LookAhead {
     const val TRACK_MS = 30_000L
@@ -42,7 +44,16 @@ object LookAhead {
      */
     class Result(val points: List<LatLon>, val speedMps: Double, val headingDeg: Double, val curvature: Double)
 
-    fun project(track: List<TrackFix>, lengthM: Double): Result {
+    fun project(track: List<TrackFix>, lengthM: Double, roads: RoadGraph? = null): Result {
+        val arc = projectArc(track, lengthM)
+        if (roads == null || lengthM <= 0.0 || arc.speedMps < MIN_SPEED_MPS) return arc
+        val here = arc.points.firstOrNull() ?: return arc
+        val match = roads.match(here.lat, here.lon, arc.headingDeg) ?: return arc
+        val path = roads.follow(match, lengthM, STEP_M)
+        return Result(listOf(here) + path.points, arc.speedMps, arc.headingDeg, arc.curvature)
+    }
+
+    private fun projectArc(track: List<TrackFix>, lengthM: Double): Result {
         val last = track.lastOrNull() ?: return Result(emptyList(), 0.0, 0.0, 0.0)
         val here = LatLon(last.lat, last.lon)
         val recent = track.filter { last.timeMs - it.timeMs <= TRACK_MS }

@@ -55,6 +55,10 @@ import au.signalatlas.core.geo.DemFetcher
 import au.signalatlas.core.geo.GeoNetwork
 import au.signalatlas.core.geo.GeoPrefs
 import au.signalatlas.core.map.BasemapLocator
+import au.signalatlas.core.roads.HttpRangeSource
+import au.signalatlas.core.roads.PmtilesReader
+import au.signalatlas.core.roads.PmtilesRoadSource
+import au.signalatlas.core.roads.RoadGraphProvider
 import au.signalatlas.core.map.MapHttp
 import au.signalatlas.core.model.TowerFilter
 import au.signalatlas.engine.CoverageEngine
@@ -78,10 +82,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -260,6 +266,18 @@ class AppContainer(context: Context) {
 
     private val towerData = RepositoryTowerData(repo, repoStarted)
 
+    /** Roads for the trip's look-ahead: z14 tiles of the basemap archive by range reads, cached under cacheDir/roads. */
+    private val roads = RoadGraphProvider(
+        PmtilesRoadSource(
+            openReader = {
+                val key = runBlocking { basemap.currentKey() } ?: throw IOException("no basemap build known")
+                PmtilesReader.open(HttpRangeSource(http, "https://build.protomaps.com/$key"))
+            },
+            cacheDir = File(app.cacheDir, "roads"),
+        ),
+        appScope,
+    )
+
     /** The trip: look-ahead, alerts and the location service. Calibration keeps logging while driving. */
     val trip = TripController(
         appScope, { points, selection, thr -> coverage.predictAlong(points, selection, thr) },
@@ -271,6 +289,7 @@ class AppContainer(context: Context) {
             publishFix = location::feed,
             launchService = { TripService.start(app) }, haltService = { TripService.stop(app) },
         ),
+        roads = roads,
     ).also {
         TripRuntime.controller = it
         TripRuntime.voiceEnabled = { tripSettings.config.value.voice }
