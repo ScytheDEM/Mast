@@ -30,7 +30,7 @@ object SectorBeams {
     /** How far past the tip the label sits, as a fraction of the beam length. */
     const val LABEL_AT = 1.08
     /** Fill opacity of a lobe (the outline is drawn on top at [OUTLINE_OPACITY]). */
-    const val FILL_OPACITY = 0.22f
+    const val FILL_OPACITY = 0.14f
     const val OUTLINE_OPACITY = 0.85f
     /** Labels show from this zoom (or always while the site's sheet is expanded). */
     const val LABEL_MIN_ZOOM = 15f

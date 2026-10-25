@@ -156,13 +156,16 @@ private fun sheetNestedScroll(state: AnchoredDraggableState<PeekValue>, settle: 
     }
 }
 
-/** A sheet state that starts expanded. */
+/** A sheet state that starts collapsed to its peek. */
 @Composable
-fun rememberPeekSheetState(initial: PeekValue = PeekValue.Expanded): AnchoredDraggableState<PeekValue> =
+fun rememberPeekSheetState(initial: PeekValue = PeekValue.Peek): AnchoredDraggableState<PeekValue> =
     remember { AnchoredDraggableState(initial) }
 
-/** Re-expands the sheet whenever [key] (the selected site) changes to a new non-null value. */
+/**
+ * Collapses the sheet to its peek whenever [key] (the selected site) changes to a new non-null value, so a newly
+ * selected site's lobes are in view at once; the user drags the sheet up for the details.
+ */
 @Composable
-fun ExpandOnNewKey(state: AnchoredDraggableState<PeekValue>, key: Any?) {
-    LaunchedEffect(key) { if (key != null && state.currentValue != PeekValue.Expanded) state.animateTo(PeekValue.Expanded, tween()) }
+fun PeekOnNewKey(state: AnchoredDraggableState<PeekValue>, key: Any?) {
+    LaunchedEffect(key) { if (key != null && state.currentValue != PeekValue.Peek) state.animateTo(PeekValue.Peek, tween()) }
 }

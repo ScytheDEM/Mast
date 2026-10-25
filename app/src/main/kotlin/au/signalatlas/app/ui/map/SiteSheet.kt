@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -63,10 +65,12 @@ fun SiteSheetContent(
     /** The radiation-pattern plots are shown; the caller remembers the choice. */
     patternExpanded: Boolean = true,
     onPatternExpandedChange: (Boolean) -> Unit = {},
+    /** The list's scroll state (the peek sheet scrolls it back to the header when it collapses). */
+    listState: LazyListState = rememberLazyListState(),
 ) {
     val site = detail.site
     val groups = detail.sectors.groupBy { it.network }.toSortedMap(compareBy { it.ordinal })
-    LazyColumn(modifier, contentPadding = contentPadding) {
+    LazyColumn(modifier, state = listState, contentPadding = contentPadding) {
         item(key = "header") {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f).padding(top = 8.dp)) {

@@ -16,6 +16,9 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.gestures.animateTo
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -154,7 +157,7 @@ private val CONNECTED_ROW_INSET = 41.dp
 private val NAV_AREA = FLOATING_NAV_HEIGHT + FLOATING_NAV_MARGIN + 8.dp
 
 /** The compact site sheet collapsed: drag handle plus the site's name, id line and network pills. */
-private val SITE_PEEK = 156.dp
+private val SITE_PEEK = 176.dp
 
 /** The compact site sheet open: at most this much, and never more than [SITE_SHEET_FRACTION] of the window. */
 private val SITE_SHEET_MAX = 560.dp
@@ -173,7 +176,7 @@ private const val COVERAGE_FIT_ZOOM = 12.0
  * A floating navigation bar switches between Home (towers; a tapped tower shows its sheet and sector lobes), Coverage
  * (the predicted-coverage layer and its controls, plus Trip) and Nearby (the nearest towers). The selected site stays
  * selected, its lobes on the map, until its tower is tapped again or the sheet's close button is pressed; on compact
- * windows its sheet collapses to a peek instead of closing.
+ * windows its sheet opens at, and collapses to, a peek instead of closing.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -237,9 +240,12 @@ fun MapScreen(
     val sheetMax = min(SITE_SHEET_MAX, windowHeight * SITE_SHEET_FRACTION)
     val sheetState = rememberPeekSheetState()
     val sheetExpanded = compactSite && sheetState.targetValue == PeekValue.Expanded
-    ExpandOnNewKey(sheetState, state.selectedId)
-    /** The map area a sheet covers, so the camera centres a site in what is left. */
-    val cameraInsetPx = if (expanded) 0 else with(density) { (sheetMax + NAV_AREA).roundToPx() }
+    PeekOnNewKey(sheetState, state.selectedId)
+    // Collapsed, the peek shows the site's header, not wherever the list was scrolled to.
+    val siteList = rememberLazyListState()
+    LaunchedEffect(sheetState.currentValue) { if (sheetState.currentValue == PeekValue.Peek) siteList.scrollToItem(0) }
+    /** The map area the site's peek sheet covers, so the camera centres a site in what is left. */
+    val cameraInsetPx = if (expanded) 0 else with(density) { (SITE_PEEK + NAV_AREA).roundToPx() }
 
     // The camera may have been restored (recreation) before the map reports its first idle.
     LaunchedEffect(Unit) { vm.onZoom(camera.currentZoom) }
@@ -520,6 +526,7 @@ fun MapScreen(
                 SiteSheetContent(
                     it, onClose = { vm.selectSite(null) }, plots = state.selectedPlots, onShowCoverage = onShowCoverage,
                     patternExpanded = patternExpanded, onPatternExpandedChange = onPatternExpanded, contentPadding = padding,
+                    listState = siteList,
                 )
             }
         }
@@ -829,22 +836,29 @@ private fun MapControls(
         AnimatedVisibility(
             inCoverage,
             enter = fadeIn(), exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(start = 16.dp, end = 72.dp, bottom = stackInset),
+            // Kept below the search bar; on short windows the stack scrolls, its toolbar (at the bottom) in view.
+            modifier = Modifier.align(Alignment.BottomStart).statusBarsPadding().padding(top = 84.dp).navigationBarsPadding()
+                .padding(start = 16.dp, end = 72.dp, bottom = stackInset),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 AnimatedVisibility(showExplainer && !sitePeek, enter = fadeIn(), exit = fadeOut()) {
                     CoverageExplainerCard(onDismissExplainer)
                 }
-                AnimatedVisibility(coverageOptionsOpen && !sitePeek, enter = fadeIn(), exit = fadeOut()) {
-                    CoverageControlsCard(state.coverage, coverage)
+                Column(
+                    Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState(), reverseScrolling = true),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    AnimatedVisibility(coverageOptionsOpen && !sitePeek, enter = fadeIn(), exit = fadeOut()) {
+                        CoverageControlsCard(state.coverage, coverage)
+                    }
+                    CoverageLegend(state.coverage.view)
+                    CoverageToolbar(
+                        optionsOpen = coverageOptionsOpen && !sitePeek,
+                        onOptions = coverage.onOptions,
+                        tripRunning = tripRunning,
+                        onTrip = onTrip,
+                    )
                 }
-                CoverageLegend(state.coverage.view)
-                CoverageToolbar(
-                    optionsOpen = coverageOptionsOpen && !sitePeek,
-                    onOptions = coverage.onOptions,
-                    tripRunning = tripRunning,
-                    onTrip = onTrip,
-                )
             }
         }
         if (showBar) {

@@ -105,7 +105,7 @@ fun TowerSearchBar(
             placeholder = { Text(stringResource(R.string.search_hint), maxLines = 1, overflow = TextOverflow.Ellipsis) },
             leadingIcon = {
                 if (expanded) {
-                    IconButton(onClick = { onExpandedChange(false) }) {
+                    IconButton(onClick = { requestExpanded(false) }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back))
                     }
                 } else {
