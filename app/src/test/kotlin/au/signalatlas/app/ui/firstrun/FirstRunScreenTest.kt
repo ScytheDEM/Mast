@@ -41,7 +41,7 @@ class FirstRunScreenTest {
         show(UpdateStatus.Unknown)
         compose.onNodeWithText("Download tower data").assertIsDisplayed()
         compose.onNodeWithText(
-            "Signal Atlas builds its tower database from the ACMA register on your phone (about 68 MB). After that, it works offline.",
+            "Mast builds its tower database from the ACMA register on your phone (about 68 MB). After that, it works offline.",
         ).assertIsDisplayed()
         compose.onNodeWithText("Download now").performClick()
         assertThat(calls).containsExactly(false)

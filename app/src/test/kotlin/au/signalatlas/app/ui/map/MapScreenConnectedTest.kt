@@ -52,7 +52,7 @@ class MapScreenConnectedTest {
         compose.onNodeWithText("Allow phone access to see your tower").assertIsDisplayed()
         compose.onNodeWithTag("connected-bar").performClick()
         compose.onNodeWithText(
-            "Signal Atlas reads your phone's mobile network details (carrier, tower, band, signal) to show which tower " +
+            "Mast reads your phone's mobile network details (carrier, tower, band, signal) to show which tower " +
                 "you're using and improve predictions. It never reads calls, messages or phone numbers.",
         ).assertIsDisplayed()
         compose.onNodeWithText("Not now").performClick()

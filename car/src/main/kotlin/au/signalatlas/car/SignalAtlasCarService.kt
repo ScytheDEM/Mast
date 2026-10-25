@@ -43,6 +43,6 @@ class SignalAtlasCarSession : Session() {
 
 private class UnavailableScreen(ctx: CarContext) : Screen(ctx) {
     override fun onGetTemplate(): Template =
-        MessageTemplate.Builder("Open Signal Atlas on your phone once, then reconnect.")
-            .setTitle("Signal Atlas").setHeaderAction(Action.APP_ICON).build()
+        MessageTemplate.Builder("Open Mast on your phone once, then reconnect.")
+            .setTitle("Mast").setHeaderAction(Action.APP_ICON).build()
 }

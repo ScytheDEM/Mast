@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Signal Atlas</string>
+    <string name="app_name">Mast</string>
 
     <!-- First run -->
     <string name="firstrun_title">Download tower data</string>
-    <string name="firstrun_body">Signal Atlas builds its tower database from the ACMA register on your phone (about 68 MB). After that, it works offline.</string>
+    <string name="firstrun_body">Mast builds its tower database from the ACMA register on your phone (about 68 MB). After that, it works offline.</string>
     <string name="firstrun_download">Download now</string>
     <string name="try_again">Try again</string>
     <string name="offline_message">You\'re offline. Connect to the internet to download tower data.</string>
@@ -66,10 +66,10 @@
 
     <!-- Location -->
     <string name="location_rationale_title">Use your location?</string>
-    <string name="location_rationale_body">Signal Atlas uses your location to centre the map and list the towers nearest you. It never leaves your phone.</string>
+    <string name="location_rationale_body">Mast uses your location to centre the map and list the towers nearest you. It never leaves your phone.</string>
     <string name="location_continue">Continue</string>
     <string name="not_now">Not now</string>
-    <string name="location_denied">Location is off for Signal Atlas. You can turn it on in Settings.</string>
+    <string name="location_denied">Location is off for Mast. You can turn it on in Settings.</string>
     <string name="settings">Settings</string>
     <string name="location_off">Location is turned off</string>
     <string name="location_off_detail">Turn on location to see the towers nearest you.</string>
@@ -193,16 +193,16 @@
 
     <!-- Connected tower (info bar) -->
     <string name="phone_rationale_title">See your tower</string>
-    <string name="phone_rationale_body">Signal Atlas reads your phone\'s mobile network details (carrier, tower, band, signal) to show which tower you\'re using and improve predictions. It never reads calls, messages or phone numbers.</string>
+    <string name="phone_rationale_body">Mast reads your phone\'s mobile network details (carrier, tower, band, signal) to show which tower you\'re using and improve predictions. It never reads calls, messages or phone numbers.</string>
     <string name="phone_rationale_continue">Continue</string>
-    <string name="phone_denied">Without phone access Signal Atlas can\'t show your tower. Everything else still works.</string>
+    <string name="phone_denied">Without phone access Mast can\'t show your tower. Everything else still works.</string>
     <string name="connected_needs_phone">Allow phone access to see your tower</string>
     <string name="connected_needs_location">Allow location access to see your tower</string>
     <string name="connected_airplane">Airplane mode is on, so there is no tower to show</string>
     <string name="connected_no_sim">No SIM card found, so there is no tower to show</string>
     <string name="connected_roaming">%1$s · Roaming, so tower matching is paused</string>
     <string name="connected_searching">Looking for a signal…</string>
-    <string name="connected_untracked">%1$s is not one of the networks Signal Atlas maps</string>
+    <string name="connected_untracked">%1$s is not one of the networks Mast maps</string>
     <string name="connected_unknown_carrier">Your carrier</string>
     <string name="connected_carrier_tech">%1$s %2$s</string>
     <string name="connected_rsrp">%1$s dBm</string>
@@ -216,7 +216,7 @@
     <string name="calibration_open">Calibration</string>
     <string name="calibration_title">Calibration</string>
     <string name="calibration_toggle">Improve predictions with my signal (stays on this phone)</string>
-    <string name="calibration_toggle_hint">While the map is open, Signal Atlas compares the signal your phone measures with its prediction for the tower you\'re connected to. Nothing leaves this phone except a CSV you choose to export.</string>
+    <string name="calibration_toggle_hint">While the map is open, Mast compares the signal your phone measures with its prediction for the tower you\'re connected to. Nothing leaves this phone except a CSV you choose to export.</string>
     <plurals name="calibration_samples">
         <item quantity="one">%1$d sample logged</item>
         <item quantity="other">%1$d samples logged</item>

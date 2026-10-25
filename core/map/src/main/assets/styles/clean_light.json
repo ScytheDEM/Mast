@@ -1,6 +1,6 @@
 {
  "version": 8,
- "name": "Signal Atlas Clean Light",
+ "name": "Mast Clean Light",
  "glyphs": "asset://glyphs/{fontstack}/{range}.pbf",
  "sources": {
   "protomaps": {

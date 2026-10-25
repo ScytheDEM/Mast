@@ -6,7 +6,7 @@
     <string name="trip_channel_alerts_description">Warnings before you lose mobile coverage, and when it returns.</string>
     <string name="trip_notification_title">Trip</string>
     <string name="trip_stop_action">Stop trip</string>
-    <string name="trip_alert_title">Signal Atlas</string>
+    <string name="trip_alert_title">Mast</string>
     <string name="trip_tile_label">Trip</string>
     <string name="trip_tile_running">Running</string>
     <string name="trip_tile_off">Off</string>

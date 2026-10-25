@@ -122,8 +122,8 @@ class CarBridge(
 
     private fun carSim(slot: Int, ui: ConnectedUi, state: RadioState?): CarSim {
         val note = when (ui.status) {
-            ConnectedStatus.NEEDS_PHONE -> "Allow phone access in Signal Atlas"
-            ConnectedStatus.NEEDS_LOCATION -> "Allow location in Signal Atlas"
+            ConnectedStatus.NEEDS_PHONE -> "Allow phone access in Mast"
+            ConnectedStatus.NEEDS_LOCATION -> "Allow location in Mast"
             ConnectedStatus.AIRPLANE -> "Airplane mode"
             ConnectedStatus.NO_SIM -> "No SIM"
             ConnectedStatus.ROAMING -> "Roaming"
