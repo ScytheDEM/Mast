@@ -1,5 +1,6 @@
 package au.signalatlas.app.ui.map
 
+import androidx.compose.foundation.layout.heightIn
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -213,6 +214,10 @@ fun MapScreen(
     val snackbar = remember { SnackbarHostState() }
     val expanded = currentWindowAdaptiveInfo().windowSizeClass
         .isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_EXPANDED_LOWER_BOUND)
+    // Unfolded foldables and landscape: the navigation bar goes bottom right, the signal card bottom left, and the
+    // cellular details float over the map beside them instead of filling the screen.
+    val wide = currentWindowAdaptiveInfo().windowSizeClass
+        .isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
 
     var showFilters by rememberSaveable { mutableStateOf(false) }
     var showCellular by rememberSaveable { mutableStateOf(false) }
@@ -243,7 +248,7 @@ fun MapScreen(
     }
     // On compact windows only the filters and cellular details are modal sheets; the site has its peek sheet and
     // Nearby is a full-screen section.
-    val modalPane = if (pane == Pane.Filters || pane == Pane.Cellular) pane else Pane.None
+    val modalPane = if (pane == Pane.Filters || (pane == Pane.Cellular && !wide)) pane else Pane.None
 
     val windowHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() }
     val sheetMax = min(SITE_SHEET_MAX, windowHeight * SITE_SHEET_FRACTION)
@@ -515,6 +520,7 @@ fun MapScreen(
                 onSelectSection = selectSection,
                 // On compact windows a selected site's peek sheet takes the bottom; the bar and controls make way.
                 sitePeek = compactSite,
+                wide = wide,
             )
         }
         val nearbyContent: @Composable (Modifier, PaddingValues) -> Unit = { modifier, padding ->
@@ -587,8 +593,27 @@ fun MapScreen(
                 }
             }
             // The site sheet takes the bottom edge; the navigation bar returns when it closes.
-            AnimatedVisibility(!compactSite, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
+            AnimatedVisibility(
+                !compactSite, enter = fadeIn(), exit = fadeOut(),
+                modifier = Modifier.align(if (wide) Alignment.BottomEnd else Alignment.BottomCenter),
+            ) {
                 NavBarHost(section, selectSection, tripState is TripState.Running)
+            }
+            // Wide windows: the cellular details as a floating card bottom left, above the signal card.
+            AnimatedVisibility(
+                wide && pane == Pane.Cellular,
+                enter = fadeIn() + slideInVertically { it / 4 }, exit = fadeOut() + slideOutVertically { it / 4 },
+                modifier = Modifier.align(Alignment.BottomStart),
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                    shape = MaterialTheme.shapes.extraLarge,
+                    shadowElevation = 6.dp,
+                    modifier = Modifier.navigationBarsPadding()
+                        .padding(start = 16.dp, bottom = FLOATING_NAV_MARGIN)
+                        .widthIn(max = WIDE_PANEL_WIDTH)
+                        .heightIn(max = windowHeight * 0.7f),
+                ) { Box(Modifier.padding(top = 12.dp)) { paneContent(Pane.Cellular) } }
             }
             // A different pane gets a fresh sheet: a modal sheet whose content changes height while open can lose its anchors.
             var lastPane by remember { mutableStateOf(modalPane) }
@@ -681,6 +706,7 @@ private fun ExpandedPanes(
 }
 
 private val SIDE_PANEL_WIDTH = 400.dp
+private val WIDE_PANEL_WIDTH = 400.dp
 
 /**
  * The compact layout's modal sheet. It opens only once the keyboard is gone (a keyboard closing
@@ -790,12 +816,16 @@ private fun MapControls(
     onTrip: () -> Unit,
     onSelectSection: (MapSection) -> Unit,
     sitePeek: Boolean,
+    wide: Boolean = false,
 ) {
     val inCoverage = state.section == MapSection.COVERAGE
     // Bottom up: the navigation bar, then the info bar (or a site's peek sheet), then the buttons and coverage controls.
     val showBar = connected != null && !sitePeek && !inCoverage
     val barInset = if (showBar) CONNECTED_BAR_INSET + CONNECTED_ROW_INSET * connected!!.otherSims.size else 0.dp
     val stackInset: Dp = if (sitePeek) SITE_PEEK + 8.dp else NAV_AREA + barInset
+    // Wide: the signal card shares the bottom row with the navigation bar, so the right side only clears the bar.
+    val fabInset: Dp = if (sitePeek) stackInset else if (wide) NAV_AREA else stackInset
+    val leftInset: Dp = if (wide && !sitePeek) barInset + FLOATING_NAV_MARGIN + 8.dp else stackInset
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxWidth()) {
             val search: @Composable (Modifier) -> Unit = { m ->
@@ -847,7 +877,7 @@ private fun MapControls(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
             contentColor = MaterialTheme.colorScheme.primary,
             elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 3.dp),
-            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = stackInset + 4.dp),
+            modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(end = 16.dp, bottom = fabInset + 4.dp),
         ) { Icon(painterResource(R.drawable.ic_my_location), stringResource(R.string.fab_my_location)) }
         // The Coverage section's controls, bottom start, above the info bar.
         AnimatedVisibility(
@@ -855,7 +885,7 @@ private fun MapControls(
             enter = fadeIn(), exit = fadeOut(),
             // Kept below the search bar; on short windows the stack scrolls, its toolbar (at the bottom) in view.
             modifier = Modifier.align(Alignment.BottomStart).statusBarsPadding().padding(top = 84.dp).navigationBarsPadding()
-                .padding(start = 16.dp, end = 72.dp, bottom = stackInset),
+                .padding(start = 16.dp, end = 72.dp, bottom = leftInset),
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 AnimatedVisibility(showExplainer && !sitePeek, enter = fadeIn(), exit = fadeOut()) {
@@ -884,11 +914,16 @@ private fun MapControls(
         if (showBar) {
             ConnectedInfoBar(
                 connected!!, onClick = onConnectedBar,
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
-                    .padding(start = 16.dp, end = 16.dp, bottom = NAV_AREA).widthIn(max = 560.dp),
+                modifier = if (wide) {
+                    Modifier.align(Alignment.BottomStart).navigationBarsPadding()
+                        .padding(start = 16.dp, bottom = FLOATING_NAV_MARGIN).widthIn(max = WIDE_PANEL_WIDTH)
+                } else {
+                    Modifier.align(Alignment.BottomCenter).navigationBarsPadding()
+                        .padding(start = 16.dp, end = 16.dp, bottom = NAV_AREA).widthIn(max = 560.dp)
+                },
             )
         }
-        if (docked) NavBarHost(state.section, onSelectSection, tripRunning, Modifier.align(Alignment.BottomCenter))
+        if (docked) NavBarHost(state.section, onSelectSection, tripRunning, Modifier.align(if (wide) Alignment.BottomEnd else Alignment.BottomCenter))
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = stackInset + 56.dp))
     }
 }
