@@ -41,6 +41,10 @@ data class RadioState(
     val displayFiveG: Boolean,
     val airplane: Boolean,
     val updatedAtElapsedMs: Long,
+    /** Aggregated component carriers from ServiceState.cellBandwidths; null when the modem reports none. */
+    val ca: CarrierAggregation? = null,
+    /** LTE / LTE-A / 5G / 5G+ as the phone would label it; null without a serving cell. */
+    val displayLabel: DisplayLabel? = null,
 ) {
     companion object {
         val EMPTY = RadioState(Permission.GRANTED, null, null, emptyList(), emptyList(), false, false, 0L)
