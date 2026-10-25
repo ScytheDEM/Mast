@@ -190,6 +190,23 @@ void resolveCarriers(JNIEnv* env, jobjectArray fields, jint n, jobjectArray tabl
     out.ok = true;
 }
 
+// Rule 5a: the building grid of a call (cover / height codes, rows * cols each), or none when `cover` is null.
+// Returns false for a bad grid.
+bool resolveBuildings(JNIEnv* env, jobject cover, jobject height, jdouble south, jdouble west, jint rows, jint cols,
+                      sa::BuildingGrid& out, bool* present) {
+    *present = false;
+    if (cover == nullptr) return true;
+    if (rows < 2 || cols < 2 || rows > 100000 || cols > 100000) return false;
+    bool ok = true;
+    const int64_t cells = static_cast<int64_t>(rows) * cols;
+    const uint8_t* c = inPtr<uint8_t>(env, cover, cells, &ok);
+    const uint8_t* h = inPtr<uint8_t>(env, height, cells, &ok);
+    if (!ok) return false;
+    out = {south, west, 0.01, rows, cols, c, h};
+    *present = true;
+    return true;
+}
+
 }  // namespace
 
 extern "C" {
@@ -203,7 +220,8 @@ JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeRender(
     JNIEnv* env, jclass /*clazz*/, jobjectArray fields, jint n, jobjectArray tables, jobjectArray masks,
     jobject patterns, jint patternCount, jint z, jint x, jint y, jint grid, jint area, jboolean indoor, jfloat thrDbm,
     jobjectArray residuals, jintArray residualMasks, jobject cancel, jobject outRsrp, jobject outSinr, jobject outProb,
-    jobject outBest, jobject outStats) {
+    jobject outBest, jobject outStats, jobject bldCover, jobject bldHeight, jdouble bldSouth, jdouble bldWest, jint bldRows,
+    jint bldCols) {
     if (patternCount < 0 || area < 0 || area > 3 || residuals == nullptr || residualMasks == nullptr) return kInvalid;
     const jsize residualCount = env->GetArrayLength(residuals);
     if (residualCount > sa::kMaxResidualRasters || residualCount != env->GetArrayLength(residualMasks)) return kInvalid;
@@ -240,6 +258,10 @@ JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeRender(
     p.thrDbm = thrDbm;
     p.residuals = residualCount > 0 ? rasters : nullptr;
     p.residualCount = residualCount;
+    sa::BuildingGrid buildings{};
+    bool hasBuildings = false;
+    if (!resolveBuildings(env, bldCover, bldHeight, bldSouth, bldWest, bldRows, bldCols, buildings, &hasBuildings)) return kInvalid;
+    p.buildings = hasBuildings ? &buildings : nullptr;
     sa::TileOut out{rsrp, sinr, prob, best};
     if (stats != nullptr) {
         out.terrainCoveredPx = &stats[0];
@@ -251,7 +273,8 @@ JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativeRender(
 // Point prediction (render/point.h): `outRsrp` receives n floats (NaN = unusable carrier). Returns n or -2.
 JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativePredictPoint(
     JNIEnv* env, jclass /*clazz*/, jobjectArray fields, jint n, jobjectArray tables, jobjectArray masks,
-    jobject patterns, jint patternCount, jdouble lat, jdouble lon, jint area, jboolean indoor, jobject outRsrp) {
+    jobject patterns, jint patternCount, jdouble lat, jdouble lon, jint area, jboolean indoor, jobject outRsrp,
+    jobject bldCover, jobject bldHeight, jdouble bldSouth, jdouble bldWest, jint bldRows, jint bldCols) {
     if (patternCount < 0 || area < 0 || area > 3) return kInvalid;
     Carriers cs;
     resolveCarriers(env, fields, n, tables, masks, cs);
@@ -260,8 +283,12 @@ JNIEXPORT jint JNICALL Java_au_signalatlas_engine_NativeEngine_nativePredictPoin
     const uint8_t* att = inPtr<uint8_t>(env, patterns, static_cast<int64_t>(patternCount) * 360, &ok);
     float* out = outPtr<float>(env, outRsrp, n, &ok);
     if (!ok) return kInvalid;
+    sa::BuildingGrid buildings{};
+    bool hasBuildings = false;
+    if (!resolveBuildings(env, bldCover, bldHeight, bldSouth, bldWest, bldRows, bldCols, buildings, &hasBuildings)) return kInvalid;
     const sa::PatternTable table{patternCount, att};
-    return static_cast<jint>(sa::predictPoint(cs.c, table, lat, lon, static_cast<sa::Area>(area), indoor != JNI_FALSE, out));
+    return static_cast<jint>(sa::predictPoint(cs.c, table, lat, lon, static_cast<sa::Area>(area), indoor != JNI_FALSE, out,
+                                              hasBuildings ? &buildings : nullptr));
 }
 
 // Builds one polar terrain table (terrain/polar_table.h) from a DEM mosaic. `dem` holds rows * cols int16 (native

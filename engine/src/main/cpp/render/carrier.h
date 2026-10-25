@@ -52,10 +52,11 @@ struct CarrierEval {
 
 // Exact RSRP of `cr` at bearing `bearingDeg` (from the site) and horizontal distance `d2M` (rules 3-8, Terrain rule 5,
 // Calibration rules 4 and 6): eirpRe - A - PL - L_terr + mu + b * log10(d / d_med).
-inline CarrierEval evaluateCarrier(const Carrier& cr, double bearingDeg, double d2M, bool indoor) {
+// `env` is the receiver environment blend at the point (rule 5a), or null / not valid for the carrier's own class.
+inline CarrierEval evaluateCarrier(const Carrier& cr, double bearingDeg, double d2M, bool indoor, const EnvWeights* env = nullptr) {
     const float aDb = cr.ant.evaluate(static_cast<float>(bearingDeg), static_cast<float>(d2M));
     const float d3Km = static_cast<float>(std::sqrt(d2M * d2M + cr.hd2) / 1000.0);
-    const PathLoss pl = indoor ? cr.pl.evaluateIndoor(d3Km) : cr.pl.evaluate(d3Km);
+    const PathLoss pl = indoor ? cr.pl.evaluateIndoor(d3Km, env) : cr.pl.evaluate(d3Km, env);
     bool inc = true;
     float lTerr = 0.0f;
     if (cr.terrainTable != nullptr) {

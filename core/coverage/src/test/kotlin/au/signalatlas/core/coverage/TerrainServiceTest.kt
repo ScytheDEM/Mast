@@ -95,16 +95,15 @@ class TerrainServiceTest {
     }
 
     /**
-     * Latency (2026-10-24): a visible tile never waits for its region's table demand, which needs a quick render of the
-     * whole z10 tile (8 s with Sydney's 52k carriers on a 2-thread device). The demand runs as a background job after it.
+     * Latency (2026-10-24) and M3b: a terrain tile never waits for table demand, and demand needs no extra render (the
+     * old z10 quick sample took 8 s in Sydney): the rendered tile's own servers are what it asks tables for.
      */
-    @Test fun aVisibleTileRendersBeforeItsRegionsDemandSample() {
+    @Test fun demandComesFromTheRenderedTileWithoutAnExtraRender() {
         val r = rig(threads = 1)
         val (z, x, y) = r.tile
         r.render(z + 3, x * 8, y * 8)
-        waitUntil(what = "demand sample") { r.renderer.renders.any { it.z == z } }
-        assertThat(r.renderer.renders.first().z).isEqualTo(z + 3)
-        assertThat(r.renderer.renders.map { it.z }.take(2)).containsExactly(z + 3, z).inOrder()
+        waitUntil(what = "both tables") { r.renderer.builds.size == 2 }
+        assertThat(r.renderer.renders.map { it.z }.toSet()).containsExactly(z + 3)
     }
 
     /** Task: the calibration matcher predicts with the tables the map already has (any batch, keyed like the renderer's). */
@@ -184,15 +183,28 @@ class TerrainServiceTest {
         assertThat(tables.getValue(2)).isSameInstanceAs(tables.getValue(0)) // same key: one table, shared
     }
 
-    @Test fun carriersOutsideTheDemAreQuickAndGetNoTable() {
-        // Row 1 is 3 degrees (330 km) east of the tile: its site is outside the 40 km elevation margin.
+    /**
+     * A table is built from its site's home DEM (the site's z10 tile + 40 km), so it is the same table whichever region
+     * asks. A server whose home chunks are missing waits for them, and the view's fetch includes them.
+     */
+    @Test fun aServerWhoseHomeDemIsMissingWaitsForItAndTheViewFetchesIt(): Unit = runBlocking {
+        // Row 1 is 3 degrees (330 km) east of the tile: its home chunks are not stored.
         val towers = FakeTowers().apply {
             batchFor = { sydneyBatch(floatArrayOf(700f, 800f), floatArrayOf(30f, 30f)).let { b -> b.siteLon[1] = 154.5; b } }
         }
-        val r = rig(towers = towers)
+        val r = rig(towers = towers, metered = true) // metered: no auto-cache
+        r.service.setVisible(setOf(r.tile))
         r.render()
         r.awaitEpochAbove(0)
         assertThat(r.renderer.buildCalls).containsExactly(700f to 30f)
+        val home = TileMath.locate(-33.86, 154.5, 10)!!
+        val homeChunks = ChunkMathRegion.of(home.x, home.y)
+        assertThat(r.service.estimateIncreaseBytes()).isEqualTo(homeChunks.size * 1000L)
+        assertThat(r.service.increaseResolution(allowMetered = true).toList().last()).isEqualTo(FetchProgress.Done)
+        assertThat(r.source.fetches.flatten()).containsAtLeastElementsIn(homeChunks)
+        waitUntil(what = "the waiting table built") { r.renderer.buildCalls.size == 2 }
+        assertThat(r.renderer.builds.last().dem.southDeg).isLessThan(-33.86)
+        assertThat(r.renderer.builds.last().dem.westDeg).isGreaterThan(153.0) // its own home mosaic
     }
 
     @Test fun aChunkThatVanishedBeforeTheMosaicOpenedFallsBackToQuickWithoutBuildsOrErrors() {
@@ -216,16 +228,16 @@ class TerrainServiceTest {
     @Test fun panningAwayCancelsRunningTableBuildsWithoutChangingTheVersionAndPanningBackRebuilds() {
         val r = rig()
         r.renderer.holdBuilds = true
+        r.service.setVisible(setOf(r.tile))
         r.render()
         waitUntil { r.renderer.buildCalls.size == 2 }
         val far = Triple(10, r.at.x + 40, r.at.y)
         r.service.setVisible(setOf(far))
-        waitUntil(what = "builds cancelled") { r.renderer.holdBuilds && r.renderer.buildCalls.size == 2 && r.service.terrainEpoch.value == 0L }
         Thread.sleep(100)
         assertThat(r.renderer.builds).isEmpty()
         assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
         r.renderer.holdBuilds = false
-        r.service.setVisible(setOf(r.tile))
+        r.service.setVisible(setOf(r.tile)) // back: the tile's known servers are asked for again, without a new request
         r.awaitEpochAbove(0)
         assertThat(r.renderer.builds).hasSize(2)
     }
@@ -234,9 +246,10 @@ class TerrainServiceTest {
         val r = rig()
         r.renderer.holdBuilds = true
         val a = Triple(11, r.at.x * 2, r.at.y * 2)
-        val b = Triple(11, r.at.x * 2 + 1, r.at.y * 2) // same terrain region
+        val b = Triple(11, r.at.x * 2 + 1, r.at.y * 2) // same terrain region, the same servers
         r.service.setVisible(setOf(a, b))
         r.render(a.first, a.second, a.third)
+        r.render(b.first, b.second, b.third)
         waitUntil { r.renderer.buildCalls.size == 2 }
         r.service.setVisible(setOf(b)) // the jobs sat under tile a
         r.renderer.holdBuilds = false
@@ -424,85 +437,88 @@ class TerrainServiceTest {
         assertThat(r.service.accuracyFor(setOf(r.tile, parent)).value).isEqualTo(Accuracy.TERRAIN)
     }
 
-    @Test fun anIncompleteTableSetLabelsTheTileQuick() {
-        // 21 sites in a row: the nearest 256 keys are all built, but a batch row whose site is outside the DEM never
-        // gets one, so its pixels stay incomplete: 1 of 2 carriers = 50% > 5%.
+    @Test fun aTileWhoseServerHasNoTableIsPartialNotTerrainNorQuick() {
+        // Row 1's home DEM is not stored: its pixels (half of them) stay incomplete; the other half have terrain.
         val towers = FakeTowers().apply {
             batchFor = { sydneyBatch(floatArrayOf(700f, 800f), floatArrayOf(30f, 30f)).let { b -> b.siteLon[1] = 154.5; b } }
         }
-        val r = rig(towers = towers)
+        val r = rig(towers = towers, metered = true)
         r.render()
         r.awaitEpochAbove(0)
         r.render()
-        assertThat(accuracyOf(r, r.key())).isEqualTo(Accuracy.QUICK)
-        assertThat(r.cache.getMemory(r.key())!!.terrainIncompletePixels).isGreaterThan(0)
+        val tile = r.cache.getMemory(r.key())!!
+        assertThat(tile.terrainIncompletePixels).isEqualTo(tile.coveredPixels / 2)
+        assertThat(accuracyOf(r, r.key())).isEqualTo(Accuracy.PARTIAL)
+        assertThat(r.service.accuracyFor(setOf(r.tile)).value).isEqualTo(Accuracy.PARTIAL)
     }
 
-    /**
-     * Regression (emulator, Canberra): with more wanted tables than the per-region cap, demand by distance alone left
-     * out the carriers that actually serve the region's pixels, so every tile stayed > 5% terrain-incomplete (QUICK).
-     * The best servers of a quick render of the region come first.
-     */
-    @Test fun theCarriersThatServeTheRegionGetTheirTablesBeforeMerelyNearOnes() {
-        val n = TerrainCoordinator.MAX_TABLES_PER_REGION + 40
+    /** Contender-aware demand: a carrier serving >= 1% of a tile's covered pixels gets its table before the others. */
+    @Test fun contendersGetTheirTablesBeforeCarriersServingUnderOnePercent() {
+        val n = 60
         val towers = FakeTowers().apply {
             batchFor = { sydneyBatch(FloatArray(n) { 700f + 10 * it }, FloatArray(n) { 30f }, sameSite = true) }
         }
-        val r = rig(towers = towers)
-        // Every pixel is served by prepared carrier 1 = batch row n - 2 (FakeRenderer), last in distance order.
-        val server = TerrainKeys.frequencyKhz(700f + 10 * (n - 2)) / 1000f
+        val r = rig(threads = 1, towers = towers)
+        // Prepared carrier 7 serves 90% of the pixels; the other 59 split the rest (each well under 1%).
+        r.renderer.serverOf = { p, i -> if (i % 10 != 0) 7 else (i / 10) % p.carriers }
+        val contender = TerrainKeys.frequencyKhz(700f + 10 * (n - 1 - 7)) / 1000f
+        val keys = (0 until n).map { TerrainKeys.frequencyKhz(700f + 10 * it) }.toSet()
+        assertThat(keys.size).isGreaterThan(3)
         r.render()
-        waitUntil(timeoutMs = 20_000, what = "all tables") { r.renderer.builds.size == TerrainCoordinator.MAX_TABLES_PER_REGION }
-        assertThat(r.renderer.buildCalls.map { it.first }).contains(server)
-        assertThat(r.renderer.buildCalls.first().first).isEqualTo(server)
+        waitUntil(timeoutMs = 20_000, what = "all tables") { r.renderer.builds.size == keys.size }
+        assertThat(r.renderer.buildCalls.first().first).isEqualTo(contender)
     }
 
     /**
-     * Ruling UU: in a dense centre the old (site, 10 MHz, 1 m) keys needed far more than 128 tables per region, so the
-     * 95% rule could never be met; the (site, band centre, 2 m) keys of the same carriers fit, and every carrier then has
-     * its table.
+     * M3b regression (the CBD seams): a dense centre with far more server tables than the old 128-per-region budget
+     * (Sydney's z10 CBD region had 760) still reaches TERRAIN: every serving carrier gets its table.
      */
-    @Test fun aDenseCityCentreFitsTheTableBudgetAndMeetsTheNinetyFivePercentRule() {
-        val batch = cbdBatch()
-        val oldKeys = (0 until batch.size).map {
-            Triple(batch.siteLat[it] to batch.siteLon[it], TerrainTable.frequencyKeyMhz(batch.freqMhz[it]), TerrainTable.heightKeyM(batch.heightM[it]))
-        }.toSet()
-        val newKeys = (0 until batch.size).map {
+    @Test fun aDenseCityCentreReachesTerrain() {
+        val batch = cbdBatch(sites = 40)
+        val keys = (0 until batch.size).map {
             Triple(batch.siteLat[it] to batch.siteLon[it], TerrainKeys.frequencyKhz(batch.freqMhz[it]), TerrainKeys.heightM(batch.heightM[it]))
         }.toSet()
-        assertThat(oldKeys.size).isGreaterThan(TerrainCoordinator.MAX_TABLES_PER_REGION)
-        assertThat(newKeys.size).isLessThan(TerrainCoordinator.MAX_TABLES_PER_REGION)
-
+        assertThat(keys.size).isGreaterThan(128)
         val r = rig(towers = FakeTowers().apply { batchFor = { batch } })
+        r.service.setVisible(setOf(r.tile)) // on screen: its tables are kept even past the memory cap
         r.render()
-        waitUntil(timeoutMs = 20_000, what = "all ${newKeys.size} tables built") { r.renderer.builds.size == newKeys.size }
+        waitUntil(timeoutMs = 20_000, what = "all ${keys.size} tables built") { r.renderer.builds.size == keys.size }
         r.awaitEpochAbove(0)
         Thread.sleep(100)
-        assertThat(r.renderer.buildCalls).hasSize(newKeys.size)
-        val key = r.key()
+        assertThat(r.renderer.buildCalls).hasSize(keys.size)
         r.render()
         assertThat(r.renderer.preparedTables.last()).hasSize(batch.size) // every carrier has its (shared) table
-        assertThat(accuracyOf(r, key)).isEqualTo(Accuracy.TERRAIN)
+        assertThat(accuracyOf(r, r.key())).isEqualTo(Accuracy.TERRAIN)
     }
 
-    @Test fun onlyTheNearestTablesPerRegionAreBuilt() {
-        assertThat(TerrainCoordinator.MAX_TABLES_PER_REGION).isEqualTo(128)
-        val n = TerrainCoordinator.MAX_TABLES_PER_REGION + 40
-        val towers = FakeTowers().apply {
-            batchFor = { sydneyBatch(FloatArray(n) { 700f + 10 * it }, FloatArray(n) { 30f }, sameSite = true) }
-        }
-        val r = rig(towers = towers)
+    /**
+     * M3b (seam report H3): a carrier serving both sides of a z10 border has one table, used by both regions, and its
+     * publication changes both regions' versions, so neither side renders it without terrain once it exists.
+     */
+    @Test fun aCarrierServingAcrossAZ10BorderUsesTheSameTableOnBothSides() {
+        val r = rig()
+        val east = Triple(10, r.at.x + 1, r.at.y)
+        r.putChunks(ChunkMathRegion.of(east.second, east.third))
+        r.service.setVisible(setOf(r.tile, east))
+        val east0 = r.key(east.first, east.second, east.third)
+        r.render() // only the west tile asks for the tables
+        r.awaitEpochAbove(0)
+        val east1 = r.key(east.first, east.second, east.third)
+        assertThat(east1.terrainVersion).isNotIn(listOf(0L, east0.terrainVersion)) // the neighbour moved on too
         r.render()
-        waitUntil(timeoutMs = 20_000, what = "all tables") { r.renderer.builds.size == TerrainCoordinator.MAX_TABLES_PER_REGION }
-        Thread.sleep(100)
-        assertThat(r.renderer.buildCalls).hasSize(TerrainCoordinator.MAX_TABLES_PER_REGION)
-        // Published in batches along the way, once more when the queue drained.
-        assertThat(r.service.terrainEpoch.value).isAtLeast(TerrainCoordinator.MAX_TABLES_PER_REGION / TerrainCoordinator.PUBLISH_BATCH.toLong())
+        val west = r.renderer.preparedTables.last().toMap()
+        r.render(east.first, east.second, east.third)
+        val eastTables = r.renderer.preparedTables.last().toMap()
+        assertThat(eastTables.keys).containsExactly(0, 1)
+        for (row in 0..1) assertThat(eastTables.getValue(row)).isSameInstanceAs(west.getValue(row))
+        assertThat(r.renderer.buildCalls).hasSize(2) // built once, for both regions
+        assertThat(accuracyOf(r, r.key(east.first, east.second, east.third))).isEqualTo(Accuracy.TERRAIN)
     }
 
     @Test fun aPanThatDrainsCancelledJobsDoesNotPublishStagedTablesOrBumpTheEpoch() {
         val r = rig()
         r.renderer.holdAfter = 1 // the first table finishes (staged), the second keeps building
+        r.service.setVisible(setOf(r.tile))
         r.render()
         waitUntil { r.renderer.buildCalls.size == 2 && r.renderer.builds.size == 1 }
         val far = Triple(10, r.at.x + 40, r.at.y)
@@ -513,6 +529,7 @@ class TerrainServiceTest {
         r.renderer.holdAfter = Int.MAX_VALUE
         r.service.setVisible(setOf(r.tile)) // back: the missing table is rebuilt and then everything publishes at once
         r.awaitEpochAbove(0)
+        Thread.sleep(100)
         assertThat(r.service.terrainEpoch.value).isEqualTo(1L)
         assertThat(r.key()).isNotEqualTo(v0)
         assertThat(r.renderer.builds).hasSize(2)
@@ -527,8 +544,9 @@ class TerrainServiceTest {
         r.renderer.holdAfter = 1
         r.service.setVisible(setOf(a, b))
         r.render(a.first, a.second, a.third)
+        r.render(b.first, b.second, b.third)
         waitUntil { r.renderer.buildCalls.size == 2 && r.renderer.builds.size == 1 }
-        r.service.setVisible(setOf(b)) // a leaves, b stays in the same region: the cancelled job is requeued under b
+        r.service.setVisible(setOf(b)) // a leaves, b stays and wants the same tables: the cancelled job is requeued under b
         Thread.sleep(200)
         assertThat(r.service.terrainEpoch.value).isEqualTo(0L)
         r.renderer.holdAfter = Int.MAX_VALUE
@@ -538,18 +556,23 @@ class TerrainServiceTest {
 
     @Test fun epochBumpsAreCoalescedToOnePerWindowOnAMonotonicClock() {
         val now = java.util.concurrent.atomic.AtomicLong(1_000)
-        val r = TerrainRig(tmp, chunksPresent = true, minBumpMs = 10_000, clock = now::get).also { rig = it }
+        // One site in the tile's region and one in the next region east, whose home chunks are not stored yet.
+        val towers = FakeTowers().apply {
+            batchFor = { sydneyBatch(FloatArray(2) { 700f }, FloatArray(2) { 30f }).also { b -> b.siteLat[1] = -33.87; b.siteLon[1] = 151.21 + 0.3516 } }
+        }
+        val r = TerrainRig(tmp, chunksPresent = true, minBumpMs = 10_000, clock = now::get, towers = towers).also { rig = it }
         r.render()
         r.awaitEpochAbove(0) // the first bump is immediate
         assertThat(r.service.terrainEpoch.value).isEqualTo(1L)
+        assertThat(r.renderer.builds).hasSize(1)
         now.addAndGet(9_000) // 1 s left in the window
         val before = r.service.terrainEpoch.value
-        // Two version changes inside the window: chunks of a second region arrive, then its tables publish.
+        // Two version changes inside the window: the east region's chunks arrive (it becomes available), then the
+        // waiting table of its site publishes (both regions change).
         val x = r.at.x + 1
         r.putChunks(ChunkMathRegion.of(x, r.at.y))
-        r.render(10, x, r.at.y) // new region: complete from the start, tables come
         r.render(10, x, r.at.y)
-        waitUntil(what = "second region's tables") { r.renderer.builds.size == 4 }
+        waitUntil(what = "second site's table") { r.renderer.builds.size == 2 }
         assertThat(r.service.terrainEpoch.value).isEqualTo(before) // deferred, not lost
         waitUntil(timeoutMs = 5_000, what = "deferred bump") { r.service.terrainEpoch.value > before }
         now.addAndGet(10_000)
@@ -622,70 +645,20 @@ class TerrainServiceTest {
         r.cache.put(key, au.signalatlas.engine.RenderedTile(key.z, key.x, key.y, ByteArray(n) { 100 }, ByteArray(n), ByteArray(n), ShortArray(n), n, n))
     }
 
-    /** Creates [MAX_REGIONS] + 1 other regions, which pushes the tile's region out of the coordinator's LRU. */
-    private fun evictTileRegion(r: TerrainRig) {
-        repeat(TerrainCoordinator.MAX_REGIONS + 1) { r.key(10, r.at.x + 1 + it, r.at.y) }
-        assertThat(r.service.hasTerrainRegion(r.tile.first, r.tile.second, r.tile.third)).isFalse()
-    }
 
-    /** Occupies the single pool thread until the returned latch is released. */
-    private fun blockPool(r: TerrainRig): java.util.concurrent.CountDownLatch {
-        val started = java.util.concurrent.CountDownLatch(1)
-        val release = java.util.concurrent.CountDownLatch(1)
-        r.rig.pool.submit(r.tile, { started.countDown(); release.await() }, {})
-        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue()
-        return release
-    }
 
-    /** A low-priority job queued after everything queued so far; await the latch to know those ran. */
-    private fun marker(r: TerrainRig, run: () -> Unit = {}): java.util.concurrent.CountDownLatch {
-        val done = java.util.concurrent.CountDownLatch(1)
-        r.rig.pool.submit(r.tile, RenderPool.PRIORITY_TABLE, { try { run() } finally { done.countDown() } }, { done.countDown() })
-        return done
-    }
 
-    @Test fun aRegionEvictedBeforeItsQueuedDemandJobRunsIsRecreatedAndAsksForItsTables() {
-        val r = rig(threads = 1)
+    /** A memory-cache hit never renders: it still asks for its servers' tables (counted on the pool). */
+    @Test fun aCacheHitAsksForTheTablesOfTheCarriersServingIt() {
+        val r = rig()
         val key0 = r.key()
-        assertThat(key0.terrainVersion).isNotEqualTo(0L)
-        cacheTile(r, key0)
+        cacheTile(r, key0) // every pixel served by prepared carrier 0 = batch row 1 (700 MHz)
         r.service.setVisible(setOf(r.tile))
-        val release = blockPool(r)
-        r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS) // cache hit: the demand job queues
-        evictTileRegion(r) // genuinely gone before the demand job runs
-        val ran = marker(r)
-        release.countDown()
-        assertThat(ran.await(5, TimeUnit.SECONDS)).isTrue()
-        assertThat(r.service.hasTerrainRegion(r.tile.first, r.tile.second, r.tile.third)).isTrue() // the job recreated it
-        waitUntil(what = "the recreated region's tables built") { r.renderer.builds.size == 2 }
-        assertThat(r.renderer.buildCalls).containsExactly(3550f to 30f, 700f to 30f)
-        r.awaitEpochAbove(0)
-    }
-
-    @Test fun aDemandJobRecreatesAnEvictedRegionAtMostOncePerDataKey() {
-        val r = rig(threads = 1)
-        val key0 = r.key()
-        cacheTile(r, key0)
-        r.service.setVisible(setOf(r.tile))
-        val release = blockPool(r)
-        r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS) // demand job A queues
-        evictTileRegion(r)
-        // Runs after A recreated the region: evicts it, asks again (job B queues on a fresh region), evicts that too.
-        val churned = marker(r) {
-            evictTileRegion(r)
-            r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS)
-            evictTileRegion(r)
-        }
-        release.countDown()
-        assertThat(churned.await(5, TimeUnit.SECONDS)).isTrue()
-        val after = marker(r) // B has run
-        assertThat(after.await(5, TimeUnit.SECONDS)).isTrue()
-        // B must not resurrect the region a second time (no recreate -> evict -> recreate loop driven by demand jobs).
-        assertThat(r.service.hasTerrainRegion(r.tile.first, r.tile.second, r.tile.third)).isFalse()
-        assertThat(r.renderer.buildCalls).isEmpty()
-        // A real request still recreates it and gets its tables.
         r.rig.tile(r.tile.first, r.tile.second, r.tile.third).get(5, TimeUnit.SECONDS)
-        waitUntil(what = "tables after a real request") { r.renderer.builds.size == 2 }
+        waitUntil(what = "the server's table") { r.renderer.builds.size == 1 }
+        assertThat(r.renderer.buildCalls).containsExactly(700f to 30f)
+        assertThat(r.renderer.renders).isEmpty()
+        r.awaitEpochAbove(0)
     }
 
     @Test fun belowZ10NoTerrainRegionIsEverCreatedAndTilesAreQuickOnly() {
@@ -745,6 +718,71 @@ class TerrainServiceTest {
         
         r.awaitEpochAbove(1)
         assertThat(r.renderer.buildCalls).hasSize(builds)
+    }
+
+    /** The global table LRU is capped at 400; off-screen regions' tables go first, and leave those regions' snapshots. */
+    @Test fun theTableCacheIsCappedAndEvictsOffScreenTablesFirst() {
+        assertThat(TerrainCoordinator.MAX_READY_TABLES).isEqualTo(400)
+        val r0 = TerrainRig(tmp, chunksPresent = true, towers = FakeTowers()).also { rig = it }
+        val far = Triple(10, r0.at.x + 40, r0.at.y)
+        val farLat = TileMath.centreLat(10, far.third)
+        val farLon = TileMath.centreLon(10, far.second)
+        fun site(n: Int, lat: Double, lon: Double) = sydneyBatch(FloatArray(n) { 700f }, FloatArray(n) { 4f + 2 * it }, sameSite = true)
+            .also { b -> for (i in 0 until n) { b.siteLat[i] = lat; b.siteLon[i] = lon } }
+        val a = site(300, -33.87, 151.21)
+        val b = site(200, farLat, farLon)
+        r0.rig.towers.batchFor = { bounds -> if (bounds.contains(-33.87, 151.21)) a else b }
+        r0.putChunks(ChunkMathRegion.of(far.second, far.third))
+        r0.service.setVisible(setOf(r0.tile))
+        r0.render()
+        waitUntil(timeoutMs = 20_000, what = "300 tables") { r0.renderer.builds.size == 300 && r0.service.terrainReadyCount == 300 }
+        r0.awaitEpochAbove(0)
+        val nearKey = r0.key()
+        r0.service.setVisible(setOf(far))
+        r0.render(far.first, far.second, far.third)
+        waitUntil(timeoutMs = 20_000, what = "500 builds") { r0.renderer.builds.size == 500 }
+        waitUntil(what = "trimmed") { r0.service.terrainReadyCount == 400 }
+        r0.render(far.first, far.second, far.third)
+        assertThat(r0.renderer.preparedTables.last()).hasSize(200) // the on-screen region kept all of its tables
+        assertThat(r0.key()).isNotEqualTo(nearKey) // the off-screen region lost the evicted ones (and re-renders later)
+    }
+
+    /** M2 rule 5a (M3b): building data arrives with Increase resolution, changes tile keys, and reaches the renderer. */
+    @Test fun buildingChunksAreFetchedWithIncreaseResolutionAndChangeTheBuildingsVersion(): Unit = runBlocking {
+        val r = TerrainRig(tmp, chunksPresent = true, withBuildings = true, metered = true).also { rig = it }
+        r.service.setVisible(setOf(r.tile))
+        val key0 = r.key()
+        assertThat(key0.buildingsVersion).isEqualTo(0L)
+        val need = au.signalatlas.engine.BuildingGrid.chunksFor(TileMath.bounds(10, r.at.x, r.at.y))
+        assertThat(r.service.estimateIncreaseBytes()).isEqualTo(need.size * 10L)
+        val epoch = r.service.terrainEpoch.value
+        assertThat(r.service.increaseResolution(allowMetered = true).toList().last()).isEqualTo(FetchProgress.Done)
+        assertThat(r.buildingSource.fetches.single()).isEqualTo(need)
+        assertThat(r.service.terrainEpoch.value).isGreaterThan(epoch) // MapLibre refetches
+        val key1 = r.key()
+        assertThat(key1.buildingsVersion).isNotEqualTo(0L)
+        assertThat(r.key(12, r.at.x * 4 + 1, r.at.y * 4 + 2).buildingsVersion).isEqualTo(key1.buildingsVersion) // per z10 area
+        r.render()
+        val grid = r.renderer.renders.last().buildings!!
+        assertThat(grid.stored).isNotEmpty()
+        assertThat(grid.coverCode(1, 1)).isEqualTo(0) // empty chunk: data, no buildings
+        assertThat(r.cache.getMemory(key1)).isNotNull()
+        assertThat(r.cache.getMemory(key0)).isNull()
+    }
+
+    @Test fun autoCacheAlsoFetchesTheViewsBuildingChunks() {
+        val r = TerrainRig(tmp, chunksPresent = false, withBuildings = true).also { rig = it }
+        r.service.setVisible(setOf(r.tile))
+        waitUntil(what = "building fetch") { r.buildingSource.fetches.isNotEmpty() }
+        waitUntil(what = "buildings version") { r.key().buildingsVersion != 0L }
+        assertThat(r.source.fetches.single()).isEqualTo(r.regionChunks)
+    }
+
+    @Test fun withoutBuildingSupportTheBuildingsVersionStaysZeroAndNoGridIsPassed() {
+        val r = rig()
+        r.render()
+        assertThat(r.key().buildingsVersion).isEqualTo(0L)
+        assertThat(r.renderer.renders.last().buildings).isNull()
     }
 
     @Test fun estimateAndIncreaseWithoutAViewAnswerNoViewInsteadOfCrashing(): Unit = runBlocking {

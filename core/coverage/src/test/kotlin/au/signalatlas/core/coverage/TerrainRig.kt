@@ -60,6 +60,17 @@ internal class FakeSource(private val store: DemChunkStore, private val network:
     }
 }
 
+/** Stores empty building chunks when asked to fetch. */
+internal class FakeBuildingSource(private val store: au.signalatlas.core.geo.BuildingChunkStore) : BuildingSource {
+    val fetches = CopyOnWriteArrayList<Set<ChunkId>>()
+    override suspend fun estimateBytes(chunks: Set<ChunkId>) = chunks.count { !store.has(it) } * 10L
+    override suspend fun fetch(chunks: Set<ChunkId>, allowMetered: Boolean, progress: (Float) -> Unit) {
+        fetches += chunks
+        chunks.filter { !store.has(it) }.forEach { store.put(au.signalatlas.core.geo.BuildingChunk.empty(it)) }
+        progress(1f)
+    }
+}
+
 /** A [Rig] with terrain support: real chunk store and table store in temp folders, fake source, network and renderer tables. */
 internal class TerrainRig(
     tmp: TemporaryFolder,
@@ -74,14 +85,18 @@ internal class TerrainRig(
     settleMs: Long = 20,
     minBumpMs: Long = 0,
     clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    withBuildings: Boolean = false,
 ) {
     val chunkStore = DemChunkStore(chunkDir, { Long.MAX_VALUE })
     val network = FakeNetwork(online, metered)
     val source = FakeSource(chunkStore, network)
     val tableStore = TerrainTableStore(tableDir)
+    val buildingStore = au.signalatlas.core.geo.BuildingChunkStore(tmp.newFolder(), { Long.MAX_VALUE })
+    val buildingSource = FakeBuildingSource(buildingStore)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val rig = Rig(tmp.newFolder(), threads, towers = towers, renderer = renderer,
-        terrain = TerrainSupport(chunkStore, source, tableStore, network, scope, settleMs, minBumpMs, clock))
+        terrain = TerrainSupport(chunkStore, source, tableStore, network, scope, settleMs, minBumpMs, clock,
+            if (withBuildings) BuildingSupport(buildingStore, buildingSource) else null))
     val service get() = rig.service
     val renderer get() = rig.renderer
     val cache get() = rig.cache
@@ -93,6 +108,7 @@ internal class TerrainRig(
 
     init {
         if (chunksPresent) putChunks(regionChunks)
+        renderer.spread = true // every carrier serves a share of each tile, so each is a contender
     }
 
     fun putChunks(ids: Collection<ChunkId>) = ids.forEach { chunkStore.put(FakeSource.flatChunk(it)) }

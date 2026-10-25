@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import au.signalatlas.core.geo.BuildingChunkStore
+import au.signalatlas.core.geo.BuildingFetcher
 import au.signalatlas.core.geo.ChunkId
 import au.signalatlas.core.geo.DemChunkStore
 import au.signalatlas.core.geo.DemFetcher
@@ -29,6 +31,24 @@ class DemFetcherSource(private val fetcher: DemFetcher) : ElevationSource {
     override suspend fun fetch(chunks: Set<ChunkId>, allowMetered: Boolean, progress: (Float) -> Unit) =
         fetcher.fetch(chunks, allowMetered, progress)
 }
+
+/** Where missing building chunks come from (M3b); [BuildingFetcherSource] in the app, a fake in tests. Same contract as [ElevationSource]. */
+interface BuildingSource {
+    suspend fun estimateBytes(chunks: Set<ChunkId>): Long
+    suspend fun fetch(chunks: Set<ChunkId>, allowMetered: Boolean, progress: (Float) -> Unit)
+}
+
+class BuildingFetcherSource(private val fetcher: BuildingFetcher) : BuildingSource {
+    override suspend fun estimateBytes(chunks: Set<ChunkId>) = fetcher.estimateBytes(chunks)
+    override suspend fun fetch(chunks: Set<ChunkId>, allowMetered: Boolean, progress: (Float) -> Unit) =
+        fetcher.fetch(chunks, allowMetered, progress)
+}
+
+/**
+ * Building data for the receiver environment model (M2 rule 5a): the building-grid cache and its source. Fetched with the
+ * elevation (auto-cache and Increase resolution) for the view's z10 regions.
+ */
+class BuildingSupport(val store: BuildingChunkStore, val source: BuildingSource)
 
 /** The device's connectivity as the elevation downloads need it. */
 interface NetworkMonitor {
@@ -95,4 +115,6 @@ class TerrainSupport(
     val minBumpMs: Long = 1_000,
     /** Monotonic milliseconds (never the wall clock, which can jump back). */
     val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Building data (M3b); null = every carrier keeps its own area class. */
+    val buildings: BuildingSupport? = null,
 )

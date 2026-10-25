@@ -7,6 +7,7 @@ import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Tech
 import au.signalatlas.core.data.TowerRepository
 import au.signalatlas.engine.AreaClass
+import au.signalatlas.engine.BuildingGrid
 import au.signalatlas.engine.CancelToken
 import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.engine.DemGridHandle
@@ -42,11 +43,11 @@ interface TileRenderer {
 
     /**
      * Null if [cancel] fired. [area] is only the fallback for carriers prepared without their own class. [residuals] are
-     * the tile's residual rasters (Calibration rule 5).
+     * the tile's residual rasters (Calibration rule 5), [buildings] the building grid around it (rule 5a; null = none).
      */
     fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
-        residuals: List<ResidualRaster> = emptyList(),
+        residuals: List<ResidualRaster> = emptyList(), buildings: BuildingGrid? = null,
     ): RenderedTile?
 
     /**
@@ -58,7 +59,7 @@ interface TileRenderer {
     ): TerrainTable?
 
     /** Every carrier's RSRP (dBm, NaN = unusable) at the point, index i = carrier i of [prepared] (see [CoverageEngine.predictPoint]). */
-    fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass): FloatArray =
+    fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass, buildings: BuildingGrid? = null): FloatArray =
         throw UnsupportedOperationException("point prediction")
 }
 
@@ -79,13 +80,13 @@ class EngineTileRenderer(private val engine: CoverageEngine) : TileRenderer {
         dem: DemGridHandle, siteLat: Double, siteLon: Double, hTxAgl: Float, freqMhz: Float, cancel: CancelToken,
     ): TerrainTable? = engine.buildTerrainTable(dem, siteLat, siteLon, hTxAgl, freqMhz, cancel)
 
-    override fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass): FloatArray =
-        engine.predictPoint((prepared as Prepared).carriers, lat, lon, area, indoor = false)
+    override fun predictPoint(prepared: PreparedRegion, lat: Double, lon: Double, area: AreaClass, buildings: BuildingGrid?): FloatArray =
+        engine.predictPoint((prepared as Prepared).carriers, lat, lon, area, indoor = false, buildings = buildings)
 
     override fun render(
         prepared: PreparedRegion, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
-        residuals: List<ResidualRaster>,
-    ): RenderedTile? = engine.render((prepared as Prepared).carriers, z, x, y, area, thrDbm, cancel, residuals)
+        residuals: List<ResidualRaster>, buildings: BuildingGrid?,
+    ): RenderedTile? = engine.render((prepared as Prepared).carriers, z, x, y, area, thrDbm, cancel, residuals, buildings)
 }
 
 /** A pinned tower store, as far as the tile service needs it. */

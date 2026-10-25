@@ -90,6 +90,19 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
    `RenderParams.area` is only the fallback for a carrier without its own class. (Before the amendment the class was
    taken per tile, from the tile centre: neighbouring tiles across a density step switched every carrier's model, which
    showed as 10–25 dB seams at tile borders, e.g. −85 vs −110 dBm on B5.)
+5a. **Receiver environment** (amended 2026-10-24 M3b): where building data exists, each point gets an environment class
+   from the building grid (0.01° cells: footprint coverage fraction and area-weighted mean height, unknown height 6 m),
+   with fraction and height interpolated bilinearly between the centres of the four surrounding cells (any of them without
+   data = no data). The classes are blended, not switched (amended 2026-10-25: a hard switch made 9–13 dB rings):
+   with piecewise-linear ramps `r(x, lo, hi)`, `s1 = r(f, 0, 0.1)`, `s2 = r(f, 0.15, 0.25)`,
+   `s3 = min(s2, r(f, 0.30, 0.40)·r(h, 12, 18))`, the weights are DENSE_URBAN `s3`, URBAN `s2 − s3`, SUBURBAN `s1 − s2`,
+   RURAL `1 − s1` (i.e. ±0.05 ramps around the thresholds 0.05 / 0.2 / 0.35 and 12–18 m around 15 m). The weighted sum
+   of the classes' path losses replaces the carrier's class (rule 5) only in the terms that describe the receiver's
+   surroundings, i.e. the Hata / COST-231 `a(h_m)`, the SUBURBAN / RURAL corrections and `C_m` (f ≤ 2200 MHz). The TR 38.901 scenario stays the
+   carrier's class, the O2I loss and σ are unchanged, and without building data the carrier's class applies as before.
+   Tile grids blend each sample; the branch-and-bound bound uses the lowest path loss over the classes with weight in
+   the block (the blend is a convex combination, so it stays an upper bound); R_max is already the maximum over all classes. Tile keys carry the buildings
+   data version.
 6. **Path loss `PL(d, f, h_tx, class)`.** `d` is the 3D distance in km, floored at 0.02. `h_rx = 1.5` m.
    - **f < 1500 MHz, Okumura-Hata:** `69.55 + 26.16·log f − 13.82·log h_b − a(h_m) + (44.9 − 6.55·log h_b)·log d`.
      - `h_b = clamp(h_tx, 3, 200)`.

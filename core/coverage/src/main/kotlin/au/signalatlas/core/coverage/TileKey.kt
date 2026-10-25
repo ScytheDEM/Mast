@@ -28,6 +28,11 @@ data class TileKey(
      * their keys.
      */
     val calibrationVersion: Long = 0L,
+    /**
+     * Buildings data version (M2 rule 5a, M3b): 0 without building data around the tile, else a hash of the building
+     * chunks stored around it, so tiles re-render when building data arrives.
+     */
+    val buildingsVersion: Long = 0L,
     val engineVersion: Int = ENGINE_VERSION,
 ) {
     companion object {

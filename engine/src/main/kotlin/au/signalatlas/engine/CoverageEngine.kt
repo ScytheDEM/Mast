@@ -48,7 +48,9 @@ class CoverageEngine {
      *
      * @throws IllegalArgumentException for a non-finite point. @throws IllegalStateException if [prepared] is closed.
      */
-    fun predictPoint(prepared: PreparedCarriers, lat: Double, lon: Double, area: AreaClass, indoor: Boolean): FloatArray {
+    fun predictPoint(
+        prepared: PreparedCarriers, lat: Double, lon: Double, area: AreaClass, indoor: Boolean, buildings: BuildingGrid? = null,
+    ): FloatArray {
         check(!prepared.isClosed) { "PreparedCarriers is closed" }
         require(lat.isFinite() && lon.isFinite()) { "point ($lat, $lon) is not finite" }
         val out = direct(maxOf(prepared.size, 1) * 4)
@@ -56,6 +58,8 @@ class CoverageEngine {
         val r = NativeEngine.nativePredictPoint(
             prepared.fields, prepared.size, prepared.terrainTables, prepared.terrainMasks, patterns?.buffer,
             patterns?.count ?: 0, lat, lon, area.ordinal, indoor, out,
+            buildings?.cover, buildings?.height, buildings?.southDeg ?: 0.0, buildings?.westDeg ?: 0.0, buildings?.rows ?: 0,
+            buildings?.cols ?: 0,
         )
         require(r == prepared.size) { "invalid point arguments ($r)" }
         return FloatArray(prepared.size).also { out.asFloatBuffer().get(it) }
@@ -105,7 +109,8 @@ class CoverageEngine {
 
     /**
      * Renders tile (z, x, y) of [prepared] (carriers without their own area class use [area]), with coverage threshold [thrDbm] (rule 8). The grid is 128
-     * for z <= 13 and 256 above (rule 9). [residuals] are the tile's residual rasters (Calibration rule 5). Returns null
+     * for z <= 13 and 256 above (rule 9). [residuals] are the tile's residual rasters (Calibration rule 5); [buildings]
+     * the building grid around the tile (rule 5a: per-pixel receiver environment; null = the carriers' classes). Returns null
      * when [cancel] fired.
      *
      * Output goes through per-thread direct scratch buffers (320 KiB, reused by every render on that thread) and
@@ -117,7 +122,7 @@ class CoverageEngine {
      */
     fun render(
         prepared: PreparedCarriers, z: Int, x: Int, y: Int, area: AreaClass, thrDbm: Float, cancel: CancelToken,
-        residuals: List<ResidualRaster> = emptyList(),
+        residuals: List<ResidualRaster> = emptyList(), buildings: BuildingGrid? = null,
     ): RenderedTile? {
         check(!prepared.isClosed) { "PreparedCarriers is closed" }
         require(residuals.size <= ResidualRaster.MAX_PER_TILE) { "${residuals.size} residual rasters (max ${ResidualRaster.MAX_PER_TILE})" }
@@ -129,6 +134,8 @@ class CoverageEngine {
             patterns?.count ?: 0, z, x, y, grid, area.ordinal, prepared.indoor, thrDbm,
             Array(residuals.size) { residuals[it].buffer }, IntArray(residuals.size) { residuals[it].networkMask }, cancel.buffer,
             s.rsrp, s.sinr, s.prob, s.best, s.stats,
+            buildings?.cover, buildings?.height, buildings?.southDeg ?: 0.0, buildings?.westDeg ?: 0.0, buildings?.rows ?: 0,
+            buildings?.cols ?: 0,
         )
         if (r == CANCELLED) return null
         require(r >= 0) { "invalid render arguments: z=$z x=$x y=$y area=$area" }

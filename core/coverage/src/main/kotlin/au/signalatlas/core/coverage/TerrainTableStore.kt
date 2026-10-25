@@ -12,7 +12,8 @@ import java.util.zip.CRC32
  * Identity of one terrain table: the tower extract it was built for ([stamp]), the site (position in 1e-5 degrees,
  * about 1 m), the Terrain rule 6 frequency key ([fkey], kHz: the 3GPP band centre, see [TerrainKeys]) and antenna
  * height key ([hkey], m, steps of 2), and [demId], which names the DEM rectangle the table was computed from (the
- * table's mask depends on it).
+ * table's mask depends on it). Since M3b that is always the site's *home* rectangle (the z10 tile containing the site,
+ * + 40 km), so a key, and its table, are the same whichever region asks for it.
  */
 internal data class TableKey(
     val stamp: String, val latE5: Int, val lonE5: Int, val fkey: Int, val hkey: Int, val demId: Long,

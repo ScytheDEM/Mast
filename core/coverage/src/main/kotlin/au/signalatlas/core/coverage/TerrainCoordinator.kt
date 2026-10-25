@@ -19,8 +19,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.CRC32
-import kotlin.math.cos
 import kotlin.math.roundToInt
 
 /** The terrain data of one tile area: the z10 tile containing the tile (or the tile itself above z10), for one selection and data version. */
@@ -31,53 +31,47 @@ internal data class TerrainKey(
 /** The terrain tables a region had ready at [version]: an immutable set, so a render never sees a half-published one. */
 internal class TerrainSnapshot(val version: Long, val tables: Map<TableKey, TerrainTable>)
 
-/** A table a region wants: [key] plus the site position the build needs. */
-internal class Demand(val key: TableKey, val lat: Double, val lon: Double)
+/**
+ * A table a tile wants: [key] plus the site position the build needs. [contender]: the carrier is the best server of
+ * >= [TerrainCoordinator.CONTENDER_SHARE] of the tile's covered pixels, so its table is built first.
+ */
+internal class Want(val key: TableKey, val lat: Double, val lon: Double, val contender: Boolean)
 
-/** Mutable state of one terrain region; every field after [chunks] is guarded by [TerrainCoordinator]'s lock. */
+/** One terrain region (a z10 tile): elevation availability and the tables published for it; guarded by the coordinator's lock. */
 internal class TerrainRegion(val key: TerrainKey, val bounds: GeoBounds, val chunks: Set<ChunkId>) {
-    /** Names the DEM rectangle (the chunk set); part of every table key. */
-    val demId: Long = chunks.sortedWith(compareBy({ it.latIdx }, { it.lonIdx })).let { sorted ->
-        val crc = CRC32()
-        for (c in sorted) crc.update("${c.latIdx},${c.lonIdx};".toByteArray())
-        crc.value or (sorted.size.toLong() shl 32)
-    }
+    /** Names the region's DEM rectangle (its chunk set); part of the version. */
+    val demId: Long = TerrainCoordinator.chunkSetId(chunks)
 
-    /** The DEM mosaic's extent: a site outside it cannot get a table. */
-    val extent = GeoBounds(
-        chunks.minOf { it.southDeg }, chunks.minOf { it.westDeg },
-        chunks.maxOf { it.southDeg } + 0.25, chunks.maxOf { it.westDeg } + 0.25,
-    )
+    /** Sites whose tables can serve the region's pixels: R_max is capped at 80 km (M2 rule 9). */
+    val reach: GeoBounds = TileMath.expand(bounds, CoverageTileService.REGION_MARGIN_M)
 
-    val openLock = Any()
     var available = false
     var snapshot = TerrainSnapshot(0L, emptyMap())
-    var demand: List<Demand>? = null
-    var demandRequested = false
-    val pending = HashSet<TableKey>()
-    val staged = HashMap<TableKey, TerrainTable>()
-    val failed = HashSet<TableKey>()
-    val tokens = HashSet<CancelToken>()
-    var handle: DemGridHandle? = null
-    var running = 0
     var retired = false
 }
 
 /**
- * The terrain half of [CoverageTileService] (Task 5). Per [TerrainRegion] (the z10 tile containing a tile at z >= 10, expanded by
- * 40 km for the elevation chunks):
+ * The terrain half of [CoverageTileService] (M3a Task 5, redesigned in M3b batch 1 to remove the CBD terrain seams).
  *
- * - **Availability.** Chunks = `ChunkMath.chunksFor(bounds, 40 km)`. All stored: the region is available and builds
- *   tables; otherwise it is quick-only and its [versionOf] is 0. Newly stored chunks ([onChunksChanged]) make it
- *   available and change its version.
- * - **Tables.** Wanted tables ([Demand]: the 128 nearest sites' (site, band-centre frequency, 2 m height) triples whose carriers
- *   reach the region) are built as [RenderPool] jobs one priority below visible renders, deduplicated per key, read
- *   from / written to [TerrainTableStore]. The DEM mosaic is opened by the first build and closed when the region
- *   has nothing pending (or is evicted). A mosaic with a missing chunk (evicted since the check) is dropped and the
- *   region falls back to quick; nothing relies on exceptions for that.
- * - **Versions.** A region's version is a hash of its chunk set and its ready table keys. Finished tables are *staged*
- *   and only published (new [TerrainSnapshot], new version, [epoch] + 1) when nothing is pending or [PUBLISH_BATCH]
- *   tables are staged, so a tile is rendered from exactly one snapshot and MapLibre is not told to refetch per table.
+ * - **Regions** (the z10 tile containing a tile at z >= 10) decide *whether* a tile uses terrain: its elevation chunks
+ *   (`ChunkMath.chunksFor(bounds, 40 km)`) are all stored (else it is quick-only, version 0). Newly stored chunks
+ *   ([onChunksChanged]) make it available.
+ * - **Tables are global**, owned per [TableKey] across regions. A table is always built from its site's *home* DEM
+ *   (the z10 tile containing the site, + 40 km), so it is the same whichever region asked for it, and every region
+ *   within 80 km of the site uses the same object. A table whose home chunks are missing waits for them (they are part
+ *   of the view's fetch).
+ * - **Demand is contender-aware** ([demand]): a rendered (or cached) tile asks for the tables of its best servers;
+ *   carriers serving >= 1% of its covered pixels are built first, the rest after.
+ *   Builds are [RenderPool] jobs below visible renders, deduplicated per key and read from / written to
+ *   [TerrainTableStore]. A job dropped with a panned-away tile is requeued under another visible tile that wants it.
+ * - **Versions.** A region's version is a hash of its chunk set and of the keys of the tables in its snapshot: every
+ *   published table whose site lies within 80 km of the region. Finished tables are *staged* and published together
+ *   (when nothing is pending, or [PUBLISH_BATCH] are staged); a publish adds the tables to every kept region within
+ *   reach, so neighbours across a z10 border change version together (no border where one side has a carrier's table
+ *   and the other not). The epoch (tile URL) follows, at most once per [TerrainSupport.minBumpMs].
+ * - **Labels.** A carrier without a table pays no terrain loss; its pixels count as terrain-incomplete in any tile
+ *   rendered with terrain (version != 0), so such a tile is [Accuracy.PARTIAL] rather than [Accuracy.TERRAIN]; only a
+ *   tile with no terrain applied at all is [Accuracy.QUICK] (see [Accuracy.of]). Only serving carriers count.
  * - **Network.** Camera-settle auto-caching on unmetered networks and [increaseResolution].
  */
 internal class TerrainCoordinator(
@@ -92,18 +86,40 @@ internal class TerrainCoordinator(
 
     private class View(val tiles: Set<TileAddress>, val z: Int)
 
+    /** A site's home DEM: the z10 tile containing it + 40 km. The mosaic is opened by the first build and shared. */
+    private class Home(val rx: Int, val ry: Int, val chunks: Set<ChunkId>) {
+        val openLock = Any()
+        var handle: DemGridHandle? = null
+        var users = 0
+        var lastUse = 0L
+    }
+
     private val lock = Any()
     private val regions = object : LinkedHashMap<TerrainKey, TerrainRegion>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TerrainKey, TerrainRegion>): Boolean {
             if (size <= MAX_REGIONS) return false
-            retireLocked(eldest.value)
+            eldest.value.retired = true
             return true
         }
     }
-    /** Keys [regionForDemand] has recreated; guarded by [lock]. */
-    private val demandRecreated = object : LinkedHashMap<TerrainKey, Unit>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TerrainKey, Unit>) = size > MAX_DEMAND_RECREATED
-    }
+
+    // ---- global table state, guarded by [lock] ----
+    /** Published tables, least recently used first; capped at [MAX_READY_TABLES] by [trimReadyLocked]. */
+    private val ready = LinkedHashMap<TableKey, TerrainTable>(64, 0.75f, true)
+    private val staged = HashMap<TableKey, TerrainTable>()
+    private val failed = HashSet<TableKey>()
+    /** Queued or running builds and the visible tiles that want each. */
+    private val pending = HashMap<TableKey, Pending>()
+    /** Tables whose home chunks are missing, with the tiles that wanted them. */
+    private val waiting = HashMap<TableKey, Pending>()
+    private var useTick = 0L
+
+    private class Pending(val want: Want, val tiles: MutableSet<TileAddress>)
+
+    private val homes = HashMap<Pair<Int, Int>, Home>()
+    /** Home chunk-set ids by home tile (computing a chunk set per carrier would be slow). */
+    private val homeIds = ConcurrentHashMap<Pair<Int, Int>, Long>()
+
     private val _epoch = MutableStateFlow(0L)
 
     /** Changes whenever any region's version does; the tile URL carries it. */
@@ -151,20 +167,13 @@ internal class TerrainCoordinator(
     /** The version of an existing region, or 0 without creating one. */
     fun peekVersion(k: TerrainKey?): Long = if (k == null) 0L else synchronized(lock) { regions[k]?.snapshot?.version ?: 0L }
 
-    /**
-     * The region a queued demand job works on: the kept one, or, if the LRU or a trim dropped it before the job ran, a
-     * recreated one, at most once per region and data key (selection, stamp and etag are part of [TerrainKey]). A
-     * region dropped again gets no second resurrection from a job (that could chase the LRU in a loop); the next tile
-     * request recreates it and claims its demand anew. Null when the job should do nothing.
-     */
-    fun regionForDemand(k: TerrainKey): TerrainRegion? = synchronized(lock) {
-        regions[k] ?: if (demandRecreated.put(k, Unit) == null) regionLocked(k) else null
-    }
-
     /** The region if it is still kept (a render in flight must not resurrect one that trim or the LRU dropped). */
     fun existingRegion(k: TerrainKey): TerrainRegion? = synchronized(lock) { regions[k] }
 
     val regionCount: Int get() = synchronized(lock) { regions.size }
+
+    /** Tables published and still in the global LRU (test hook). */
+    internal val readyCount: Int get() = synchronized(lock) { ready.size }
 
     private fun regionLocked(k: TerrainKey): TerrainRegion = regions.getOrPut(k) {
         val bounds = TileMath.bounds(k.zf, k.rx, k.ry)
@@ -173,16 +182,20 @@ internal class TerrainCoordinator(
         tr
     }
 
-    /** Caller holds [lock]. True if the version changed. */
+    /** Caller holds [lock]. True if the version changed. A region becoming available starts with every published table in reach. */
     private fun markAvailableLocked(tr: TerrainRegion): Boolean {
         tr.available = true
-        return setSnapshotLocked(tr, tr.snapshot.tables)
+        val tables = HashMap(tr.snapshot.tables)
+        for ((key, t) in ready) if (key.stamp == tr.key.stamp && inReach(tr, key)) tables.putIfAbsent(key, t)
+        return setSnapshotLocked(tr, tables)
     }
+
+    private fun inReach(tr: TerrainRegion, key: TableKey) = tr.reach.contains(key.latE5 / E5, key.lonE5 / E5)
 
     private fun setSnapshotLocked(tr: TerrainRegion, tables: Map<TableKey, TerrainTable>): Boolean {
         val v = if (!tr.available) 0L else versionHash(tr, tables.keys)
         val changed = v != tr.snapshot.version
-        tr.snapshot = TerrainSnapshot(v, tables)
+        tr.snapshot = TerrainSnapshot(v, if (tr.available) tables else emptyMap())
         return changed
     }
 
@@ -235,8 +248,6 @@ internal class TerrainCoordinator(
             }
             if (fire) onChange()
         }
-        // Cancelled by an absorbing bump (which cleared bumpJob itself) or with the scope: nothing to reset here
-        // unless it is still the registered job.
         job.invokeOnCompletion { synchronized(bumpLock) { if (bumpJob === job) bumpJob = null } }
         job.start()
         return job
@@ -250,206 +261,229 @@ internal class TerrainCoordinator(
      */
     fun tableLookup(k: TerrainKey?): ((CarrierBatch, Int) -> TerrainTable?)? {
         if (k == null) return null
-        val (tr, snap) = synchronized(lock) { regions[k]?.let { it to it.snapshot } } ?: return null
+        val snap = synchronized(lock) { regions[k]?.snapshot } ?: return null
         if (snap.tables.isEmpty()) return null
-        return { b, row -> tableKey(tr, b, row)?.let { snap.tables[it] } }
+        return { b, row -> tableKey(k.stamp, b, row)?.let { snap.tables[it] } }
     }
 
-    /** The table key of batch row [row] in [tr], or null for a carrier without a usable frequency. */
-    fun tableKey(tr: TerrainRegion, b: CarrierBatch, row: Int): TableKey? {
+    /** The table key of batch row [row] for tower extract [stamp], or null for a carrier without a usable frequency or position. */
+    fun tableKey(stamp: String, b: CarrierBatch, row: Int): TableKey? {
         val f = b.freqMhz[row]
-        if (!f.isFinite() || f <= 0f) return null
+        val lat = b.siteLat[row]
+        val lon = b.siteLon[row]
+        if (!f.isFinite() || f <= 0f || !lat.isFinite() || !lon.isFinite()) return null
+        val home = TileMath.locate(lat, lon, TERRAIN_ZOOM) ?: return null
+        val demId = homeIds.getOrPut(home.x to home.y) { chunkSetId(homeChunks(home.x, home.y)) }
         return TableKey(
-            tr.key.stamp, (b.siteLat[row] * E5).roundToInt(), (b.siteLon[row] * E5).roundToInt(),
-            TerrainKeys.frequencyKhz(f), TerrainKeys.heightM(b.heightM[row]), tr.demId,
+            stamp, (lat * E5).roundToInt(), (lon * E5).roundToInt(), TerrainKeys.frequencyKhz(f), TerrainKeys.heightM(b.heightM[row]), demId,
         )
+    }
+
+    private fun homeChunks(rx: Int, ry: Int) = ChunkMath.chunksFor(TileMath.bounds(TERRAIN_ZOOM, rx, ry), MARGIN_KM)
+
+    /** Caller holds [lock]. */
+    private fun homeOfLocked(key: TableKey): Home {
+        val at = TileMath.locate(key.latE5 / E5, key.lonE5 / E5, TERRAIN_ZOOM)!!
+        return homes.getOrPut(at.x to at.y) { Home(at.x, at.y, homeChunks(at.x, at.y)) }
     }
 
     // ---- demand and table builds ----------------------------------------------------------------------------------
 
     /**
-     * True once for a usable region of [k] that has no table demand yet and nobody is computing it: its tiles may be
-     * served from the tile cache (the region was recreated after an eviction), so no render will ask for tables.
-     * Pair with [demandDone].
+     * [tile] (visible, z >= 10, rendered with terrain) wants [wants], most pixels first. Queues a build for every key
+     * that is not published, staged, pending or failed (contenders at [RenderPool.PRIORITY_TABLE], the rest one lower);
+     * a key whose home chunks are not stored waits for them. Idempotent: the service calls it for every request of a tile.
      */
-    fun claimDemand(k: TerrainKey?): Boolean {
-        if (k == null) return false
-        return synchronized(lock) {
-            val tr = regionLocked(k)
-            if (tr.retired || !tr.available || tr.demand != null || tr.demandRequested) false else { tr.demandRequested = true; true }
-        }
-    }
-
-    fun demandDone(k: TerrainKey) = synchronized(lock) { regions[k]?.demandRequested = false }
-
-    /** True until [setDemand] has recorded what [tr] wants (the caller then computes [setDemand]'s servers). */
-    fun needsDemand(tr: TerrainRegion): Boolean = synchronized(lock) { tr.demand == null }
-
-    /**
-     * Records which tables [tr] wants, from [batch], the first time (the wanted set is stable for a region). [servers]
-     * are batch rows that serve the region's pixels in the quick model, most pixels first: their tables come first,
-     * because a tile is labelled terrain only if >= 95% of its covered pixels' *best servers* have tables (rule 6).
-     * The rest of the [MAX_TABLES_PER_REGION] budget goes to the nearest sites reaching the region (servers that may
-     * take over once terrain loss is applied).
-     */
-    fun setDemand(tr: TerrainRegion, batch: CarrierBatch, servers: IntArray) {
-        if (synchronized(lock) { tr.demand != null }) return
-        val list = demandOf(tr, batch, servers)
-        synchronized(lock) { if (tr.demand == null) tr.demand = list }
-    }
-
-    private fun demandOf(tr: TerrainRegion, b: CarrierBatch, servers: IntArray): List<Demand> {
-        val cLat = (tr.bounds.south + tr.bounds.north) / 2
-        val cLon = (tr.bounds.west + tr.bounds.east) / 2
-        val cos = cos(Math.toRadians(cLat))
-        fun d2(row: Int): Double {
-            val dy = b.siteLat[row] - cLat
-            val dx = (b.siteLon[row] - cLon) * cos
-            return dx * dx + dy * dy
-        }
-        val nearest = CarrierCulling.reaching(b, tr.bounds).sortedBy(::d2)
-        val seen = LinkedHashMap<TableKey, Demand>()
-        for (row in servers.asSequence() + nearest.asSequence()) {
-            if (seen.size >= MAX_TABLES_PER_REGION) break
-            if (!tr.extent.contains(b.siteLat[row], b.siteLon[row])) continue
-            val key = tableKey(tr, b, row) ?: continue
-            if (key !in seen) seen[key] = Demand(key, b.siteLat[row], b.siteLon[row])
-        }
-        return seen.values.toList()
-    }
-
-    /** Queues a build for every wanted table of [tr] that is not ready, pending, staged or failed; jobs sit under [tile]. */
-    fun ensureTables(tr: TerrainRegion, tile: TileAddress) {
+    fun demand(tile: TileAddress, tr: TerrainRegion, wants: List<Want>) {
+        val todo = ArrayList<Want>()
         var published = false
-        val todo = synchronized(lock) {
-            val demand = tr.demand
-            if (tr.retired || !tr.available || demand == null) return
-            val missing = demand.filter { d ->
-                val k = d.key
-                (k !in tr.snapshot.tables && k !in tr.staged && k !in tr.pending && k !in tr.failed).also { if (it) tr.pending += k }
+        var fetch = false
+        var lost = false
+        synchronized(lock) {
+            if (tr.retired || !tr.available) return
+            if (!tr.chunks.all(support.chunks::has)) {
+                // Evicted since the region was checked: quick-only again (version 0) rather than half terrain.
+                tr.available = false
+                lost = setSnapshotLocked(tr, emptyMap())
+            } else {
+                val snap = tr.snapshot.tables
+                for (w in wants) {
+                    val k = w.key
+                    if (k in snap || k in staged || k in failed) continue
+                    if (ready.containsKey(k)) continue // published after this tile's snapshot: the next version has it
+                    pending[k]?.let { it.tiles += tile; continue }
+                    val homeStored = homeOfLocked(k).chunks.all(support.chunks::has)
+                    waiting[k]?.let { if (homeStored) waiting.remove(k) else { it.tiles += tile; continue } }
+                    if (!homeStored) {
+                        waiting[k] = Pending(w, hashSetOf(tile))
+                        fetch = true
+                        continue
+                    }
+                    pending[k] = Pending(w, hashSetOf(tile))
+                    todo += w
+                }
             }
-            // Tables staged when a pan cancelled the rest are published as soon as the region is looked at again
-            // and nothing else is in flight (otherwise the last job to finish publishes them).
-            if (missing.isEmpty() && tr.pending.isEmpty() && tr.staged.isNotEmpty()) {
-                published = setSnapshotLocked(tr, tr.snapshot.tables + tr.staged)
-                tr.staged.clear()
-                closeIfIdleLocked(tr)
-            }
-            missing
+            // Tables staged when a pan cancelled the rest are published once a tile asks again and nothing is in flight.
+            if (todo.isEmpty() && pending.isEmpty() && staged.isNotEmpty()) published = publishLocked()
         }
-        if (published) bumped()
-        for (d in todo) {
-            pool.submit(
-                tile, RenderPool.PRIORITY_TABLE,
-                work = { cancel -> runJob(tr, d, tile, cancel) },
-                onCancelled = { finishJob(tr, d.key, tile, null, failed = false, counted = false) },
-            )
-        }
+        if (published || lost) bumped()
+        for (w in todo) submit(w, tile)
+        if (fetch) autoCache()
+    }
+
+    private fun submit(w: Want, tile: TileAddress) {
+        pool.submit(
+            tile, if (w.contender) RenderPool.PRIORITY_TABLE else RenderPool.PRIORITY_TABLE_LOW,
+            work = { cancel -> runJob(w, tile, cancel) },
+            onCancelled = { finishJob(w, tile, null, failed = false, cancelled = true) },
+        )
     }
 
     /** Runs on a pool thread. */
-    private fun runJob(tr: TerrainRegion, d: Demand, tile: TileAddress, cancel: CancelToken) {
-        val counted = synchronized(lock) {
-            if (tr.retired) false else { tr.running++; tr.tokens += cancel; true }
-        }
+    private fun runJob(w: Want, tile: TileAddress, cancel: CancelToken) {
         var table: TerrainTable? = null
         var failed = true // until the body completes: an Error must not look like a cancellation
+        var cancelled = false
         try {
-            if (counted && !cancel.isCancelled) {
-                table = support.tables.get(d.key)
-                if (table == null) {
-                    val dem = openDem(tr)
-                    if (dem != null && !cancel.isCancelled) {
-                        table = renderer.buildTerrainTable(dem, d.lat, d.lon, d.key.hkey.toFloat(), d.key.fkey / 1000f, cancel)
-                        if (table != null) support.tables.put(d.key, table)
-                    }
-                }
+            if (!cancel.isCancelled) {
+                table = support.tables.get(w.key)
+                if (table == null) table = build(w, cancel)
             }
+            cancelled = table == null && cancel.isCancelled
             failed = false
         } catch (e: CancellationException) {
             failed = false // a cancellation is not a failure of the table: it is asked for again
+            cancelled = true
         } catch (e: InterruptedException) {
             failed = false
+            cancelled = true
             Thread.currentThread().interrupt()
         } catch (e: Exception) {
-            warn("terrain table ${d.key.fileName} failed: $e")
+            warn("terrain table ${w.key.fileName} failed: $e")
         } finally {
-            finishJob(tr, d.key, tile, table, failed, counted, cancel)
+            finishJob(w, tile, table, failed, cancelled)
         }
     }
 
-    /**
-     * The region's DEM mosaic, opened on first use. Null when the region was retired or its chunks are no longer all
-     * stored: then it is quick-only again (version 0) instead of building from fabricated zeros.
-     */
-    private fun openDem(tr: TerrainRegion): DemGridHandle? = synchronized(tr.openLock) {
-        synchronized(lock) { if (tr.retired || !tr.available) return null; tr.handle?.let { return it } }
-        val h = DemGridHandle.open(support.chunks, tr.chunks)
-        var changed = false
-        val usable = synchronized(lock) {
-            when {
-                tr.retired -> false
-                !h.isComplete -> { tr.available = false; tr.staged.clear(); changed = setSnapshotLocked(tr, emptyMap()); false }
-                else -> { tr.handle = h; true }
+    /** Builds [w]'s table from its home mosaic; null when cancelled or when the home lost chunks (then it waits for them). */
+    private fun build(w: Want, cancel: CancelToken): TerrainTable? {
+        val home = synchronized(lock) { homeOfLocked(w.key).also { it.users++ } }
+        try {
+            val dem = synchronized(home.openLock) {
+                home.handle ?: run {
+                    val h = DemGridHandle.open(support.chunks, home.chunks)
+                    if (!h.isComplete) {
+                        h.close()
+                        null
+                    } else {
+                        home.handle = h
+                        h
+                    }
+                }
+            }
+            if (dem == null) {
+                lostChunks(w)
+                return null
+            }
+            if (cancel.isCancelled) return null
+            val t = renderer.buildTerrainTable(dem, w.lat, w.lon, w.key.hkey.toFloat(), w.key.fkey / 1000f, cancel)
+            if (t != null) support.tables.put(w.key, t)
+            return t
+        } finally {
+            synchronized(lock) {
+                home.users--
+                home.lastUse = ++useTick
+                closeIdleHomesLocked(if (pending.size <= 1) 0 else MAX_IDLE_HOMES)
             }
         }
-        if (!usable) h.close()
-        if (changed) bumped()
-        if (usable) h else null
     }
 
-    private fun finishJob(
-        tr: TerrainRegion, key: TableKey, tile: TileAddress, table: TerrainTable?, failed: Boolean, counted: Boolean,
-        cancel: CancelToken? = null,
-    ) {
+    /** [w]'s home lost chunks since the check (evicted): the key waits for them, and regions that lost theirs go quick. */
+    private fun lostChunks(w: Want) {
+        var changed = false
+        synchronized(lock) {
+            pending[w.key]?.let { waiting[w.key] = Pending(w, it.tiles) }
+            for (tr in regions.values) {
+                if (tr.available && !tr.chunks.all(support.chunks::has)) {
+                    tr.available = false
+                    changed = setSnapshotLocked(tr, emptyMap()) || changed
+                }
+            }
+        }
+        if (changed) bumped()
+    }
+
+    private fun finishJob(w: Want, tile: TileAddress, table: TerrainTable?, failed: Boolean, cancelled: Boolean) {
         var published = false
         var requeue: TileAddress? = null
         synchronized(lock) {
-            tr.pending.remove(key)
-            if (counted) { tr.running--; cancel?.let { tr.tokens -= it } }
-            if (failed) tr.failed += key
-            if (table != null && !tr.retired && tr.available) tr.staged[key] = table
-            // A cancelled job (null table, no failure) never publishes: a pan must not change versions.
-            val cancelled = table == null && !failed
-            if (!cancelled && !tr.retired && tr.available && tr.staged.isNotEmpty() &&
-                (tr.pending.isEmpty() || tr.staged.size >= PUBLISH_BATCH)
-            ) {
-                published = setSnapshotLocked(tr, tr.snapshot.tables + tr.staged)
-                tr.staged.clear()
+            val p = pending.remove(w.key)
+            if (failed) this.failed += w.key
+            if (table != null) staged[w.key] = table
+            if (cancelled && p != null) {
+                // Dropped with a panned-away tile: another visible tile that wants it takes the build over.
+                val shown = view?.tiles ?: emptySet()
+                requeue = p.tiles.firstOrNull { it in shown }
+                if (requeue != null) pending[w.key] = Pending(w, p.tiles.filterTo(HashSet()) { it in shown })
             }
-            if (!tr.retired && tr.available && table == null && !failed && tile !in (view?.tiles ?: emptySet())) {
-                requeue = visibleTileOfLocked(tr)
-            }
-            closeIfIdleLocked(tr)
+            // A cancellation never publishes: a pan must not change versions.
+            if (!cancelled && staged.isNotEmpty() && (pending.isEmpty() || staged.size >= PUBLISH_BATCH)) published = publishLocked()
+            if (pending.isEmpty()) closeIdleHomesLocked(0)
         }
         if (published) bumped()
-        requeue?.let { ensureTables(tr, it) }
+        requeue?.let { submit(w, it) }
     }
 
-    /** Caller holds [lock]. */
-    private fun visibleTileOfLocked(tr: TerrainRegion): TileAddress? {
-        val ctx = context ?: return null
-        return view?.tiles?.firstOrNull { (z, x, y) -> keyFor(ctx.selectionId, ctx.stamp, ctx.etag, z, x, y) == tr.key }
+    /** Caller holds [lock]: staged tables become published and join the snapshot of every kept region within reach. */
+    private fun publishLocked(): Boolean {
+        val fresh = HashMap(staged)
+        staged.clear()
+        ready.putAll(fresh)
+        trimReadyLocked()
+        var changed = false
+        for (tr in regions.values) {
+            if (tr.retired || !tr.available) continue
+            val add = fresh.filterKeys { it.stamp == tr.key.stamp && it !in tr.snapshot.tables && inReach(tr, it) }
+            if (add.isNotEmpty()) changed = setSnapshotLocked(tr, tr.snapshot.tables + add) || changed
+        }
+        return changed
     }
 
-    /** Caller holds [lock]: the mosaic is released once nothing builds or waits. */
-    private fun closeIfIdleLocked(tr: TerrainRegion) {
-        if (tr.running == 0 && (tr.retired || tr.pending.isEmpty())) {
-            tr.handle?.close()
-            tr.handle = null
+    /**
+     * Caller holds [lock]: evicts down to [MAX_READY_TABLES], least recently used first but tables of on-screen regions
+     * last. An evicted table also leaves the snapshots of off-screen regions (their versions change, so their tiles
+     * re-render when shown again), so the memory is really freed; on-screen snapshots keep theirs until they leave.
+     */
+    private fun trimReadyLocked() {
+        if (ready.size <= MAX_READY_TABLES) return
+        val ctx = context
+        val shownKeys = if (ctx == null) emptySet() else view?.tiles?.mapNotNull {
+            keyFor(ctx.selectionId, ctx.stamp, ctx.etag, it.first, it.second, it.third)
+        }?.toSet() ?: emptySet()
+        val onScreen = HashSet<TableKey>()
+        for (k in shownKeys) regions[k]?.let { onScreen += it.snapshot.tables.keys }
+        val evict = ArrayList<TableKey>()
+        val excess = ready.size - MAX_READY_TABLES
+        for (k in ready.keys) { if (evict.size >= excess) break; if (k !in onScreen) evict += k }
+        for (k in ready.keys) { if (evict.size >= excess) break; if (k in onScreen) evict += k }
+        val gone = evict.toHashSet()
+        for (k in evict) ready.remove(k)
+        for ((rk, tr) in regions) {
+            if (rk in shownKeys || tr.snapshot.tables.keys.none { it in gone }) continue
+            setSnapshotLocked(tr, tr.snapshot.tables.filterKeys { it !in gone })
         }
     }
 
-    /** Caller holds [lock]. */
-    private fun retireLocked(tr: TerrainRegion) {
-        tr.retired = true
-        tr.tokens.forEach { it.cancel() }
-        tr.pending.clear()
-        tr.staged.clear()
-        closeIfIdleLocked(tr)
+    /** Caller holds [lock]: closes the mosaics nobody uses, keeping the [keep] most recently used. */
+    private fun closeIdleHomesLocked(keep: Int) {
+        val idle = homes.values.filter { it.users == 0 && it.handle != null }.sortedByDescending { it.lastUse }
+        for (h in idle.drop(keep)) {
+            h.handle?.close()
+            h.handle = null
+        }
     }
 
-    // ---- viewport: table demand, auto-cache ------------------------------------------------------------------------
+    // ---- viewport: auto-cache ---------------------------------------------------------------------------------------
 
     /** The viewport changed (main-thread cheap). */
     fun onVisible(tiles: Set<TileAddress>, ctx: Context?) {
@@ -460,16 +494,7 @@ internal class TerrainCoordinator(
             return
         }
         val z = tiles.maxOf { it.first }
-        val top = tiles.filter { it.first == z }
         view = View(tiles.toSet(), z)
-        if (ctx != null) {
-            // Tables of a region whose tile is still on screen may have been dropped with a panned-away tile's job.
-            for (t in top) {
-                val k = keyFor(ctx.selectionId, ctx.stamp, ctx.etag, t.first, t.second, t.third) ?: continue
-                val tr = synchronized(lock) { regions[k] }
-                if (tr != null) ensureTables(tr, t)
-            }
-        }
         if (old == null || old.tiles != view!!.tiles) {
             settleJob?.cancel()
             settleJob = support.scope.launch {
@@ -480,23 +505,42 @@ internal class TerrainCoordinator(
     }
 
     /**
-     * Every chunk the terrain regions of the view's tiles need that is not stored. A region (the z10 tile + 40 km) only
-     * becomes available once *all* its chunks are in, and a z >= 11 viewport is smaller than its z10 tiles, so fetching
-     * just the viewport + 40 km would leave its regions quick for good.
+     * Every chunk the view needs that is not stored: the terrain regions of its tiles (a region, the z10 tile + 40 km,
+     * only becomes available once *all* its chunks are in, and a z >= 11 viewport is smaller than its z10 tiles), plus
+     * the home chunks of the tables its tiles are waiting for.
      */
     private fun missingFor(v: View): Set<ChunkId> {
         val need = HashSet<ChunkId>()
         for ((rx, ry) in v.tiles.filter { it.first == v.z }.map { (z, x, y) -> (x shr (z - TERRAIN_ZOOM)) to (y shr (z - TERRAIN_ZOOM)) }.toSet()) {
             need += ChunkMath.chunksFor(TileMath.bounds(TERRAIN_ZOOM, rx, ry), MARGIN_KM)
         }
+        synchronized(lock) {
+            for (p in waiting.values) if (p.tiles.any { it in v.tiles }) need += homeOfLocked(p.want.key).chunks
+        }
         return need.filterTo(HashSet()) { !support.chunks.has(it) }
     }
+
+    /** Building chunks (rule 5a) the view's z10 regions need that are not stored; empty without building support. */
+    private fun buildingsMissingFor(v: View): Set<ChunkId> {
+        val b = support.buildings ?: return emptySet()
+        val need = HashSet<ChunkId>()
+        for ((rx, ry) in v.tiles.filter { it.first == v.z }.map { (z, x, y) -> (x shr (z - TERRAIN_ZOOM)) to (y shr (z - TERRAIN_ZOOM)) }.toSet()) {
+            need += au.signalatlas.engine.BuildingGrid.chunksFor(TileMath.bounds(TERRAIN_ZOOM, rx, ry))
+        }
+        return need.filterTo(HashSet()) { !b.store.has(it) }
+    }
+
+    /** Building chunks were stored: tile keys near them changed (their buildings version), so MapLibre must refetch. */
+    fun onBuildingsChanged() = bumped()
 
     /** Background fetch of the view's missing chunks: only z >= 10, only on an unmetered network, no prompts. */
     private fun autoCache() {
         val v = view ?: return
         if (v.z < TERRAIN_ZOOM || !support.network.unmetered.value) return
-        val need = missingFor(v)
+        val dem = missingFor(v)
+        val bld = buildingsMissingFor(v)
+        // Building chunks are tagged apart so a DEM chunk and a building chunk with the same id never collide.
+        val need = dem + bld.map { ChunkId(it.latIdx + BUILDING_TAG, it.lonIdx) }
         if (need.isEmpty() || need == autoFailed) return
         synchronized(this) {
             // A fetch that already covers this view keeps going (a second trigger must not restart it).
@@ -505,7 +549,14 @@ internal class TerrainCoordinator(
             autoNeed = need
             autoJob = support.scope.launch {
                 try {
-                    support.source.fetch(need, false) {}
+                    if (dem.isNotEmpty()) support.source.fetch(dem, false) {}
+                    if (bld.isNotEmpty()) {
+                        try {
+                            support.buildings!!.source.fetch(bld, false) {}
+                        } finally {
+                            onBuildingsChanged()
+                        }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: InsufficientStorageException) {
@@ -522,12 +573,13 @@ internal class TerrainCoordinator(
     }
 
     /**
-     * Memory pressure: drops the table memory LRU, every mosaic no build is using, and the regions (with their table
+     * Memory pressure: drops the table memory LRUs, every mosaic no build is using, and the regions (with their table
      * snapshots) that are not on screen; disk files stay, so they come back cheaply.
      */
     fun trimMemory() {
         support.tables.dropMemory()
         synchronized(lock) {
+            ready.clear()
             val ctx = context
             val shown = if (ctx == null) emptySet() else view?.tiles?.mapNotNull {
                 keyFor(ctx.selectionId, ctx.stamp, ctx.etag, it.first, it.second, it.third)
@@ -535,23 +587,33 @@ internal class TerrainCoordinator(
             val it = regions.entries.iterator()
             while (it.hasNext()) {
                 val e = it.next()
-                if (e.key !in shown) { it.remove(); retireLocked(e.value) }
+                if (e.key !in shown) { it.remove(); e.value.retired = true }
             }
-            for (tr in regions.values) {
-                if (tr.running == 0 && tr.pending.isEmpty()) { tr.handle?.close(); tr.handle = null }
-            }
+            closeIdleHomesLocked(0)
         }
     }
 
-    /** Elevation chunks were stored: regions that were waiting for them become available and change version. */
+    /** Elevation chunks were stored: regions waiting for them become available, and waiting tables of visible tiles are queued. */
     fun onChunksChanged() {
         var changed = false
+        val resume = ArrayList<Pair<Want, TileAddress>>()
         synchronized(lock) {
             for (tr in regions.values) {
                 if (!tr.retired && !tr.available && tr.chunks.all(support.chunks::has)) changed = markAvailableLocked(tr) || changed
             }
+            val shown = view?.tiles ?: emptySet()
+            val it = waiting.entries.iterator()
+            while (it.hasNext()) {
+                val (k, p) = it.next()
+                if (!homeOfLocked(k).chunks.all(support.chunks::has)) continue
+                it.remove()
+                val tile = p.tiles.firstOrNull { t -> t in shown } ?: continue // asked again when a tile wants it
+                pending[k] = Pending(p.want, p.tiles.filterTo(HashSet()) { t -> t in shown })
+                resume += p.want to tile
+            }
         }
         if (changed) bumped()
+        for ((w, t) in resume) submit(w, t)
     }
 
     fun isOnline(): Boolean = support.network.isOnline()
@@ -561,7 +623,9 @@ internal class TerrainCoordinator(
         if (!support.network.isOnline()) return null
         val v = view?.takeIf { it.z >= TERRAIN_ZOOM } ?: return null
         val need = missingFor(v)
-        return if (need.isEmpty()) 0L else support.source.estimateBytes(need)
+        val bld = buildingsMissingFor(v)
+        return (if (need.isEmpty()) 0L else support.source.estimateBytes(need)) +
+            (if (bld.isEmpty()) 0L else support.buildings!!.source.estimateBytes(bld))
     }
 
     /** Estimate, then download the view's missing chunks (see [CoverageTileService.increaseResolution]). */
@@ -573,18 +637,35 @@ internal class TerrainCoordinator(
             v.z < TERRAIN_ZOOM -> send(FetchProgress.Failed("zoom in"))
             else -> {
                 val need = missingFor(v)
-                if (need.isEmpty()) {
+                val bld = buildingsMissingFor(v)
+                if (need.isEmpty() && bld.isEmpty()) {
                     send(FetchProgress.Done)
                     return@channelFlow
                 }
                 try {
-                    send(FetchProgress.Estimating(support.source.estimateBytes(need)))
+                    val demBytes = if (need.isEmpty()) 0L else support.source.estimateBytes(need)
+                    val bldBytes = if (bld.isEmpty()) 0L else support.buildings!!.source.estimateBytes(bld)
+                    send(FetchProgress.Estimating(demBytes + bldBytes))
                     if (!allowMetered && support.network.isMetered()) {
                         send(FetchProgress.Failed("metered"))
                         return@channelFlow
                     }
-                    support.source.fetch(need, allowMetered) { trySend(FetchProgress.Fetching(it.coerceIn(0f, 1f))) }
-                    onChunksChanged()
+                    // Progress by bytes over both downloads (elevation first).
+                    val total = (demBytes + bldBytes).coerceAtLeast(1L).toFloat()
+                    if (need.isNotEmpty()) {
+                        support.source.fetch(need, allowMetered) { trySend(FetchProgress.Fetching((it * demBytes / total).coerceIn(0f, 1f))) }
+                        onChunksChanged()
+                    }
+                    if (bld.isNotEmpty()) {
+                        try {
+                            support.buildings!!.source.fetch(bld, allowMetered) {
+                                trySend(FetchProgress.Fetching(((demBytes + it * bldBytes) / total).coerceIn(0f, 1f)))
+                            }
+                        } finally {
+                            onBuildingsChanged()
+                        }
+                    }
+                    if (need.isEmpty() || bld.isNotEmpty()) trySend(FetchProgress.Fetching(1f))
                     send(FetchProgress.Done)
                 } catch (e: CancellationException) {
                     throw e
@@ -604,12 +685,25 @@ internal class TerrainCoordinator(
         const val MARGIN_KM = 40.0
         const val TERRAIN_ZOOM = 10
         const val MAX_REGIONS = 12
-        const val MAX_TABLES_PER_REGION = 128
+        /** Published tables kept in memory (about 100 KiB each, so about 40 MB); see [trimReadyLocked]. */
+        const val MAX_READY_TABLES = 400
         const val PUBLISH_BATCH = 64
-        /** Remembered demand-job recreations; far more than [MAX_REGIONS], so a key leaves only long after its region. */
-        private const val MAX_DEMAND_RECREATED = 256
+        /** A carrier serving at least this share of a tile's covered pixels is a contender (its table comes first). */
+        const val CONTENDER_SHARE = 0.01
+        /** Open home mosaics kept between builds while more are pending (each a few MB). */
+        private const val MAX_IDLE_HOMES = 2
         private const val E5 = 100_000.0
+        /** Offsets building chunk ids in the auto-cache bookkeeping (never a real latitude index). */
+        private const val BUILDING_TAG = 100_000
         private const val FNV_OFFSET = -3750763034362895579L // 0xcbf29ce484222325
         private const val FNV_PRIME = 1099511628211L
+
+        /** A chunk set's id (count in the high word, CRC of the sorted ids below): names a DEM rectangle. */
+        fun chunkSetId(chunks: Set<ChunkId>): Long {
+            val sorted = chunks.sortedWith(compareBy({ it.latIdx }, { it.lonIdx }))
+            val crc = CRC32()
+            for (c in sorted) crc.update("${c.latIdx},${c.lonIdx};".toByteArray())
+            return crc.value or (sorted.size.toLong() shl 32)
+        }
     }
 }

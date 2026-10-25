@@ -183,8 +183,30 @@ def with_carrier_areas(model, carriers):
     return carriers
 
 
+def synthetic_buildings(z, x, y):
+    """A deterministic building grid (rule 5a) over the tile + 0.02 degrees: 0.01 degree cells cycling through all four
+    classes at about 1 km scale, with a strip of cells without data along the north edge's west end."""
+    s, n, w, e = ref.tile_bounds(z, x, y)
+    south = math.floor((s - 0.02) * 100.0) / 100.0
+    west = math.floor((w - 0.02) * 100.0) / 100.0
+    rows = int(math.ceil((n + 0.02 - south) * 100.0))
+    cols = int(math.ceil((e + 0.02 - west) * 100.0))
+    fractions = (0.0, 0.08, 0.25, 0.45, 0.6)
+    heights = (0.0, 4.0, 9.0, 20.0, 32.0)
+    cover, height = [], []
+    for r in range(rows):
+        for c in range(cols):
+            if r >= rows - 3 and c < cols // 2:
+                cover.append(ref.BUILDING_NO_DATA)
+                height.append(0)
+                continue
+            cover.append(ref.round_half_up(fractions[(r * 2 + c * 3) % 5] * ref.COVER_SCALE))
+            height.append(ref.round_half_up(heights[(r + c * 2) % 5] / ref.HEIGHT_STEP_M))
+    return {"south": south, "west": west, "step": 0.01, "rows": rows, "cols": cols, "cover": cover, "height": height}
+
+
 def render(model, z, x, y, grid=None, networks=("TELSTRA",), area=None, indoor=False, families=None,
-           carrier_areas=False):
+           carrier_areas=False, buildings=None):
     """Render a tile; `area` overrides the tile-centre class (the renderer's fallback, an input). `carrier_areas`
     gives every carrier its own class (rule 5 as amended)."""
     derived, n_sites = ref.tile_area(model["sites"].values(), z, x, y)
@@ -193,9 +215,10 @@ def render(model, z, x, y, grid=None, networks=("TELSTRA",), area=None, indoor=F
     carriers = tile_carriers(model, networks, families)
     if carrier_areas:
         carriers = with_carrier_areas(model, carriers)
-    out = ref.render_tile(carriers, [], z, x, y, grid, area, indoor, -118.0)
+    out = ref.render_tile(carriers, [], z, x, y, grid, area, indoor, -118.0, buildings=buildings)
     return {"area": area, "derivedArea": derived, "sites": n_sites, "grid": grid, "networks": list(networks),
-            "families": None if families is None else list(families), "indoor": indoor, "carriers": carriers, "out": out}
+            "families": None if families is None else list(families), "indoor": indoor, "carriers": carriers, "out": out,
+            "buildings": buildings}
 
 
 def uncovered_share(out):
@@ -232,6 +255,12 @@ def write_tile(path, z, x, y, rendered):
         ("indoor", rendered["indoor"]), ("thrDbm", -118.0),
         ("selection", selection),
         ("patterns", []), ("carriers", carriers), ("evaluated", out["evaluated"]),
+    ]
+    b = rendered.get("buildings")
+    if b is not None:
+        doc += [("bldSouth", b["south"]), ("bldWest", b["west"]), ("bldRows", b["rows"]), ("bldCols", b["cols"]),
+                ("bldCover", b["cover"]), ("bldHeight", b["height"])]
+    doc += [
         ("rsrpCodes", out["rsrpCodes"]), ("sinrCodes", out["sinrCodes"]),
         ("probCodes", out["probCodes"]), ("best", out["best"]),
     ]
@@ -276,6 +305,11 @@ def main():
     if ref.AREAS.index(per_carrier["area"]) in per_carrier["carriers"]["carrierArea"]:
         raise ValueError("carrier-area tile: some carrier has the tile's own class, so the vector cannot tell them apart")
     write_tile(os.path.join(out_dir, "tile_canberra_z13_carrier_area.json"), TILE_Z, x, y, per_carrier)
+    buildings = synthetic_buildings(TILE_Z, x, y)
+    built = render(model, TILE_Z, x, y, networks=("TELSTRA", "OPTUS"), carrier_areas=True, buildings=buildings)
+    if built["out"]["rsrpCodes"] == per_carrier["out"]["rsrpCodes"]:
+        raise ValueError("buildings tile: the building grid changed nothing")
+    write_tile(os.path.join(out_dir, "tile_canberra_z13_buildings.json"), TILE_Z, x, y, built)
     x, y, rendered = find_fringe_tile(model, FRINGE_Z)
     write_tile(os.path.join(out_dir, "tile_edge_z12.json"), FRINGE_Z, x, y, rendered)
 

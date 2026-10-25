@@ -113,14 +113,15 @@ class TileCacheTest {
         assertThat(a.coveredPixels).isEqualTo(1000)
         assertThat(a.terrainIncompletePixels).isEqualTo(40)
         assertThat(Accuracy.of(terrain, a)).isEqualTo(Accuracy.TERRAIN)
-        assertThat(Accuracy.of(key(2).copy(terrainVersion = 99), fresh.getDisk(key(2).copy(terrainVersion = 99))!!)).isEqualTo(Accuracy.QUICK)
+        assertThat(Accuracy.of(key(2).copy(terrainVersion = 99), fresh.getDisk(key(2).copy(terrainVersion = 99))!!)).isEqualTo(Accuracy.PARTIAL)
         assertThat(Accuracy.of(key(3), fresh.getDisk(key(3))!!)).isEqualTo(Accuracy.QUICK)
     }
 
     @Test fun theNinetyFivePercentRuleIsInclusiveAndAnEmptyTileIsQuick() {
         val k = key(1).copy(terrainVersion = 5)
         assertThat(Accuracy.of(k, counted(1, 1000, 50))).isEqualTo(Accuracy.TERRAIN)
-        assertThat(Accuracy.of(k, counted(1, 1000, 51))).isEqualTo(Accuracy.QUICK)
+        assertThat(Accuracy.of(k, counted(1, 1000, 51))).isEqualTo(Accuracy.PARTIAL) // M3b: some terrain, not enough
+        assertThat(Accuracy.of(k, counted(1, 1000, 1000))).isEqualTo(Accuracy.QUICK) // no pixel had terrain
         assertThat(Accuracy.of(k, counted(1, 0, 0))).isEqualTo(Accuracy.QUICK) // nothing predicted with terrain
         assertThat(Accuracy.of(key(1), counted(1, 0, 0))).isEqualTo(Accuracy.QUICK)
     }

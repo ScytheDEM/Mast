@@ -14,8 +14,9 @@ namespace sa {
 // lookup when the carrier has a table, and the calibration terms, exactly as renderTile evaluates a grid sample (no residual raster, no culling: carriers beyond R_max are still predicted).
 // Carriers with a non-finite position or EIRP get NaN. Returns c.n, or kRenderInvalid for a bad n, a missing array,
 // a null `outRsrp` (when n > 0) or a non-finite point.
+// `buildings` (nullable) gives the receiver environment class at the point (rule 5a), as for a tile sample.
 int32_t predictPoint(const CarrierArrays& c, const PatternTable& patterns, double lat, double lon, Area area,
-                     bool indoor, float* outRsrp);
+                     bool indoor, float* outRsrp, const BuildingGrid* buildings = nullptr);
 
 }  // namespace sa
 

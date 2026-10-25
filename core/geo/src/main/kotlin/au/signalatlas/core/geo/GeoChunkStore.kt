@@ -12,8 +12,9 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
 /**
- * The on-device elevation cache: one `<latIdx>_<lonIdx>.dem` file per [ChunkId] in [dir] (see [DemChunk] for the
- * format), kept under [budgetBytes] by evicting the least recently used chunks.
+ * An on-device cache of 0.25 degree chunks: one `<latIdx>_<lonIdx>.<extension>` file per [ChunkId] in [dir] (the
+ * subclass encodes and decodes a chunk), kept under [budgetBytes] by evicting the least recently used chunks. Elevation
+ * ([DemChunkStore]) and buildings ([BuildingChunkStore]) share it.
  *
  * - Writes are atomic: build in memory, write a unique `<name>.<n>.tmp`, fsync, rename. Leftover `.tmp` files are removed on open.
  * - A chunk that fails validation (CRC, header, length) when read is deleted and reported as a miss.
@@ -25,11 +26,22 @@ import java.nio.file.StandardCopyOption
  *
  * Thread-safe. Reads of chunk files happen outside the lock.
  */
-class DemChunkStore(
+abstract class GeoChunkStore<T : Any>(
     val dir: File,
     private val budgetBytes: () -> Long,
-    private val clock: () -> Long = System::currentTimeMillis,
+    private val clock: () -> Long,
+    private val extension: String,
 ) {
+    /** The file bytes of [chunk]. */
+    protected abstract fun encode(chunk: T): ByteArray
+
+    /** The chunk in [bytes] if they are a valid file of chunk [id], else null. */
+    protected abstract fun decode(bytes: ByteArray, id: ChunkId): T?
+
+    protected abstract fun idOf(chunk: T): ChunkId
+
+    private val name = Regex("""(\d+)_(\d+)\.""" + Regex.escape(extension))
+
     private val lock = Any()
     private val sizes = HashMap<ChunkId, Long>()
     private val lastAccess = HashMap<ChunkId, Long>()
@@ -67,16 +79,16 @@ class DemChunkStore(
     /** True if a chunk file is present (its content is validated by [get]). */
     fun has(id: ChunkId): Boolean = synchronized(lock) { id in sizes }
 
-    fun get(latIdx: Int, lonIdx: Int): DemChunk? = get(ChunkId(latIdx, lonIdx))
+    fun get(latIdx: Int, lonIdx: Int): T? = get(ChunkId(latIdx, lonIdx))
 
     /** The chunk, or null if absent or invalid (an invalid file is deleted). A hit counts as a use for the LRU. */
-    fun get(id: ChunkId): DemChunk? {
+    fun get(id: ChunkId): T? {
         if (!has(id)) return null
         val file = fileOf(id)
         val length = file.length()
         val modified = file.lastModified()
         val chunk = try {
-            DemChunk.decode(file.readBytes())?.takeIf { it.id == id }
+            decode(file.readBytes(), id)
         } catch (_: IOException) {
             return null // evicted or replaced while reading: a miss, nothing to clean up
         }
@@ -98,10 +110,11 @@ class DemChunkStore(
      * the same chunk: each write goes to its own temp file, writers of one chunk take turns, and the rename happens
      * under the store lock, so a reader or evictor sees the old file or the new one, never a mix.
      */
-    fun put(chunk: DemChunk) {
-        val bytes = chunk.encode()
-        val file = fileOf(chunk.id)
-        synchronized(writeLocks.computeIfAbsent(chunk.id) { Any() }) {
+    fun put(chunk: T) {
+        val bytes = encode(chunk)
+        val id = idOf(chunk)
+        val file = fileOf(id)
+        synchronized(writeLocks.computeIfAbsent(id) { Any() }) {
             val tmp = File(dir, "${file.name}.${tempCounter.incrementAndGet()}.tmp")
             try {
                 FileOutputStream(tmp).use { out ->
@@ -113,8 +126,8 @@ class DemChunkStore(
                     Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE)
                     val now = tick()
                     file.setLastModified(now)
-                    sizes[chunk.id] = bytes.size.toLong()
-                    lastAccess[chunk.id] = now
+                    sizes[id] = bytes.size.toLong()
+                    lastAccess[id] = now
                     _bytesUsed.value = sizes.values.sum()
                     evictLocked()
                 }
@@ -158,7 +171,7 @@ class DemChunkStore(
     }
 
     /** Runs [block] with [ids] protected from eviction. */
-    inline fun <T> use(ids: Collection<ChunkId>, block: () -> T): T {
+    inline fun <R> use(ids: Collection<ChunkId>, block: () -> R): R {
         acquire(ids)
         try {
             return block()
@@ -168,7 +181,7 @@ class DemChunkStore(
     }
 
     /** Reads [id] and runs [block] on it (null when absent) with the chunk protected from eviction. */
-    inline fun <T> use(id: ChunkId, block: (DemChunk?) -> T): T = use(listOf(id)) { block(get(id)) }
+    inline fun <R> use(id: ChunkId, block: (T?) -> R): R = use(listOf(id)) { block(get(id)) }
 
     /** Deletes every chunk that is neither pinned nor in use. */
     fun clear() = synchronized(lock) {
@@ -214,10 +227,10 @@ class DemChunkStore(
         return lastTick
     }
 
-    private fun fileOf(id: ChunkId) = File(dir, "${id.key}.dem")
+    private fun fileOf(id: ChunkId) = File(dir, "${id.key}.$extension")
 
     private fun parseName(name: String): ChunkId? {
-        val m = NAME.matchEntire(name) ?: return null
+        val m = this.name.matchEntire(name) ?: return null
         return ChunkId(m.groupValues[1].toIntOrNull() ?: return null, m.groupValues[2].toIntOrNull() ?: return null)
     }
 
@@ -256,6 +269,16 @@ class DemChunkStore(
 
     private companion object {
         const val PINS_FILE = "pins.json"
-        val NAME = Regex("""(\d+)_(\d+)\.dem""")
     }
+}
+
+/** The elevation cache: `<latIdx>_<lonIdx>.dem` files (see [DemChunk] for the format). */
+class DemChunkStore(
+    dir: File,
+    budgetBytes: () -> Long,
+    clock: () -> Long = System::currentTimeMillis,
+) : GeoChunkStore<DemChunk>(dir, budgetBytes, clock, "dem") {
+    override fun encode(chunk: DemChunk): ByteArray = chunk.encode()
+    override fun decode(bytes: ByteArray, id: ChunkId): DemChunk? = DemChunk.decode(bytes)?.takeIf { it.id == id }
+    override fun idOf(chunk: DemChunk): ChunkId = chunk.id
 }

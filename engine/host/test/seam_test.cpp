@@ -10,6 +10,8 @@
 #include <vector>
 
 #include "render/tile.h"
+#include "terrain/dem_grid.h"
+#include "terrain/polar_table.h"
 #include "tile_fixtures.h"
 
 namespace {
@@ -124,6 +126,58 @@ TEST(Seam, EdgeStepNearASiteFollowsTheLocalGradient) {
                 worse, worstExcess);
     ASSERT_GT(compared, 100);
     EXPECT_EQ(worse, 0);
+}
+
+// M3b (seam report H3): with terrain, a carrier serving both sides of a z10 border must render with its terrain table on
+// both sides. The tables are now global (one per site key, built from the site's home DEM), so both regions hand the
+// renderer the same table and the edge stays continuous; before, one region could lack the table (per-region budget),
+// which left a step of L_terr at the border. A ridge between the site and the border makes L_terr large there.
+TEST(Seam, TerrainEdgeAcrossAZ10BorderIsContinuousWithOneSharedTable) {
+    Vec v = loadVec("tile_canberra_z13.json");
+    v.n = 1;
+    v.area.assign(1, static_cast<uint8_t>(sa::Area::Urban));
+    v.az[0] = std::nanf("");  // omni
+    v.eirpRe[0] += 20.0f;  // strong enough to cover both tiles behind the ridge
+    const int32_t z10x = static_cast<int32_t>(std::floor((v.lon[0] + 180.0) / 360.0 * 1024.0));
+    const double borderLon = (z10x + 1) / 1024.0 * 360.0 - 180.0;
+    const double mPerDegLon = 111195.0 * std::cos(v.lat[0] * M_PI / 180.0);
+    v.lon[0] = borderLon - 1500.0 / mPerDegLon;  // 1.5 km west of the z10 border
+    const double ridgeLon = v.lon[0] + 700.0 / mPerDegLon;
+
+    // Flat 600 m DEM, 0.2 degrees around the site, with a 15 m N-S ridge 0.7 km east of it.
+    constexpr int32_t kN = 481;
+    const double south = std::floor((v.lat[0] - 0.1) * 1200.0) / 1200.0, west = std::floor((v.lon[0] - 0.1) * 1200.0) / 1200.0;
+    std::vector<int16_t> h(static_cast<size_t>(kN) * kN, 600);
+    for (int32_t r = 0; r < kN; ++r) {
+        for (int32_t c = 0; c < kN; ++c) {
+            if (std::abs(west + c / 1200.0 - ridgeLon) * mPerDegLon < 150.0) h[static_cast<size_t>(r) * kN + c] = 615;
+        }
+    }
+    const sa::DemGrid dem{south, west, 1.0 / 1200.0, kN, kN, h.data()};
+    std::vector<uint8_t> table(sa::kPolarTableCells), mask(sa::kPolarMaskBytes);
+    ASSERT_EQ(sa::buildPolarTable(dem, v.lat[0], v.lon[0], v.hTx[0], v.freqMhz[0], table.data(), mask.data(), nullptr), 0);
+    v.terrainTable.assign(1, table.data());
+    v.terrainMask.assign(1, mask.data());
+
+    const int32_t z = 13, x = z10x * 8 + 7;  // the z13 tiles either side of the z10 border
+    const double latR = v.lat[0] * M_PI / 180.0;
+    const int32_t y = static_cast<int32_t>(std::floor((1.0 - std::log(std::tan(latR) + 1.0 / std::cos(latR)) / M_PI) / 2.0 * 8192.0));
+    const Out west13 = renderAt(v, z, x, y, sa::Area::Urban, 128);
+    const Out east13 = renderAt(v, z, x + 1, y, sa::Area::Urban, 128);
+    const EdgeStats shared = eastWestEdge(west13, east13);
+    ASSERT_GT(west13.covered, 0);
+    EXPECT_EQ(west13.incomplete, 0);
+    EXPECT_EQ(east13.incomplete, 0);
+
+    v.terrainTable.assign(1, nullptr);  // the old failure: the east region never got this carrier's table
+    v.terrainMask.assign(1, nullptr);
+    const Out eastQuick = renderAt(v, z, x + 1, y, sa::Area::Urban, 128);
+    const EdgeStats mixed = eastWestEdge(west13, eastQuick);
+    std::printf("[ seam ] z10 border with terrain: shared table worst %.1f dB (%d pairs); table on one side only %.1f dB\n",
+                shared.worstDb, shared.pairs, mixed.worstDb);
+    ASSERT_GT(shared.pairs, 100);
+    EXPECT_LE(shared.worstDb, kMaxEdgeDeltaDb);
+    EXPECT_GT(mixed.worstDb, 5.0) << "documents the bug: a table on one side only is an L_terr step";
 }
 
 // A carrier with an out-of-range class value falls back to the tile's class, exactly as with no array.
