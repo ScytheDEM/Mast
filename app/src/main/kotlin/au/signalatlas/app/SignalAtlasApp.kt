@@ -2,6 +2,8 @@ package au.signalatlas.app
 
 import android.app.Application
 import androidx.work.Configuration
+import androidx.work.DelegatingWorkerFactory
+import au.signalatlas.app.packs.PackWorkerFactory
 import au.signalatlas.core.update.TowerUpdateWorkerFactory
 
 class SignalAtlasApp : Application(), Configuration.Provider {
@@ -23,6 +25,11 @@ class SignalAtlasApp : Application(), Configuration.Provider {
     /** WorkManager's default initializer is removed in the manifest so the worker gets its deps. */
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
-            .setWorkerFactory(TowerUpdateWorkerFactory(container.updateDeps, container.hrpDeps))
+            .setWorkerFactory(
+                DelegatingWorkerFactory().apply {
+                    addFactory(TowerUpdateWorkerFactory(container.updateDeps, container.hrpDeps))
+                    addFactory(PackWorkerFactory(container.packDeps, container.packNotifications))
+                },
+            )
             .build()
 }

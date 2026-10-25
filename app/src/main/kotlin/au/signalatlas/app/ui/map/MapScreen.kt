@@ -96,6 +96,8 @@ import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.window.core.layout.WindowSizeClass
 import au.signalatlas.app.R
+import au.signalatlas.app.ui.offline.DrawBoxHooks
+import au.signalatlas.app.ui.offline.DrawBoxOverlay
 import au.signalatlas.app.connected.CalibrationHooks
 import au.signalatlas.app.connected.ConnectedStatus
 import au.signalatlas.app.connected.ConnectedUi
@@ -193,6 +195,9 @@ fun MapScreen(
     hints: UiHints = remember { UiHints.InMemory() },
     calibration: CalibrationHooks = CalibrationHooks.None,
     trip: TripUi = TripUi.None,
+    onOpenOffline: () -> Unit = {},
+    /** Draw-a-box mode for offline regions (see [DrawBoxOverlay]); null = off. */
+    drawBox: DrawBoxHooks? = null,
 ) {
     val tripState by trip.state.collectAsStateWithLifecycle()
     val camera = viewModel<MapCameraHolder>().camera
@@ -490,6 +495,7 @@ fun MapScreen(
                 filterCount = state.filter.activeCount(),
                 onFilters = onFilters,
                 onOpenUpdates = onOpenUpdates,
+                onOpenOffline = onOpenOffline,
                 onMyLocation = onMyLocation,
                 onIncrease = vm::openIncreaseResolution,
                 coverageOptionsOpen = coverageOptionsOpen,
@@ -583,6 +589,7 @@ fun MapScreen(
             if (modalPane != Pane.None) lastPane = modalPane
             key(lastPane) { CompactSheet(modalPane, onDismiss = closePane, paneContent) }
         }
+        if (drawBox?.active == true) DrawBoxOverlay(camera, drawBox.onResult)
     }
 
     state.coverage.increase?.let {
@@ -759,6 +766,7 @@ private fun MapControls(
     filterCount: Int,
     onFilters: () -> Unit,
     onOpenUpdates: () -> Unit,
+    onOpenOffline: () -> Unit,
     onMyLocation: () -> Unit,
     onIncrease: () -> Unit,
     coverageOptionsOpen: Boolean,
@@ -785,7 +793,7 @@ private fun MapControls(
                 TowerSearchBar(
                     search = state.search,
                     expanded = searchExpanded, onExpandedChange = onSearchExpandedChange,
-                    onQueryChange = onQueryChange, onResultClick = onResultClick, onOpenUpdates = onOpenUpdates,
+                    onQueryChange = onQueryChange, onResultClick = onResultClick, onOpenUpdates = onOpenUpdates, onOpenOffline = onOpenOffline,
                     docked = docked, filterCount = filterCount, onFilters = onFilters, modifier = m,
                 )
             }

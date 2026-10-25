@@ -33,6 +33,10 @@ import au.signalatlas.app.ui.calibration.CalibrationViewModel
 import au.signalatlas.app.ui.map.ConnectedActions
 import au.signalatlas.app.ui.map.MapScreen
 import au.signalatlas.app.ui.map.MapViewModel
+import au.signalatlas.app.R
+import au.signalatlas.app.ui.offline.DrawBoxHooks
+import au.signalatlas.app.ui.offline.OfflineRegionsScreen
+import au.signalatlas.app.ui.offline.OfflineViewModel
 import au.signalatlas.app.ui.storage.StorageScreen
 import au.signalatlas.app.ui.storage.StorageViewModel
 import au.signalatlas.app.ui.updates.UpdatesScreen
@@ -50,6 +54,8 @@ fun AppScaffold(container: AppContainer) {
     val context = LocalContext.current
     var showUpdates by rememberSaveable { mutableStateOf(false) }
     var showStorage by rememberSaveable { mutableStateOf(false) }
+    var showOffline by rememberSaveable { mutableStateOf(false) }
+    var drawing by rememberSaveable { mutableStateOf(false) }
     var showCalibration by rememberSaveable { mutableStateOf(false) }
     var showTrip by rememberSaveable { mutableStateOf(false) }
     val tripConfig by container.tripSettings.config.collectAsStateWithLifecycle()
@@ -73,6 +79,8 @@ fun AppScaffold(container: AppContainer) {
     }
     val calibrationVm: CalibrationViewModel = viewModel { container.calibrationViewModel() }
     val calibration by calibrationVm.state.collectAsStateWithLifecycle()
+    val offlineVm: OfflineViewModel = viewModel { OfflineViewModel(container.packs) }
+    val offline by offlineVm.state.collectAsStateWithLifecycle()
     val storageVm: StorageViewModel = viewModel { container.storageViewModel() }
     val storage by storageVm.state.collectAsStateWithLifecycle()
 
@@ -106,6 +114,12 @@ fun AppScaffold(container: AppContainer) {
                     hints = container.hints,
                     calibration = calibrationHooks,
                     trip = tripUi,
+                    onOpenOffline = { showOffline = true },
+                    drawBox = DrawBoxHooks(drawing) { box ->
+                        drawing = false
+                        showOffline = true
+                        box?.let { offlineVm.offerCustom(it, context.getString(R.string.offline_custom_name)) }
+                    },
                 )
             }
         }
@@ -129,6 +143,24 @@ fun AppScaffold(container: AppContainer) {
                 onOpenStorage = { showStorage = true },
                 onOpenCalibration = { showCalibration = true },
                 onOpenTrip = { showTrip = true },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showOffline && !drawing && root == Root.Map,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it } + fadeOut(),
+        ) {
+            OfflineRegionsScreen(
+                state = offline,
+                onOffer = offlineVm::offer,
+                onDrawBox = { showOffline = false; drawing = true },
+                onUpdate = { askNotifications(); offlineVm.update(it.id, it.allowMetered) },
+                onDelete = offlineVm::delete,
+                onMobileData = offlineVm::setAllowMetered,
+                onDismissOffer = offlineVm::dismissOffer,
+                onConfirmOffer = { askNotifications(); offlineVm.confirmOffer() },
+                onBack = { showOffline = false },
             )
         }
 
@@ -174,6 +206,8 @@ fun AppScaffold(container: AppContainer) {
     BackHandler(enabled = showTrip) { showTrip = false }
     BackHandler(enabled = showCalibration && !showTrip) { showCalibration = false }
     BackHandler(enabled = showStorage) { showStorage = false }
+    BackHandler(enabled = drawing) { drawing = false; showOffline = true }
+    BackHandler(enabled = showOffline && !drawing) { showOffline = false }
 }
 
 /**

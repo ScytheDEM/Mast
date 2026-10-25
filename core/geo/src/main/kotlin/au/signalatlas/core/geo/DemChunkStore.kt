@@ -59,6 +59,9 @@ class DemChunkStore(
         _bytesUsed.value = sizes.values.sum()
     }
 
+    /** Bytes on disk of those of [ids] that are stored. */
+    fun bytesOf(ids: Collection<ChunkId>): Long = synchronized(lock) { ids.sumOf { sizes[it] ?: 0L } }
+
     fun has(latIdx: Int, lonIdx: Int): Boolean = has(ChunkId(latIdx, lonIdx))
 
     /** True if a chunk file is present (its content is validated by [get]). */
