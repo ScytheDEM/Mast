@@ -1,13 +1,14 @@
 package au.signalatlas.core.acma
 
-/** Tower DB schema v1 (`towers.db`). `network`/`tech` columns hold enum ordinals. */
+/** Tower DB schema v2 (`towers.db`). `network`/`tech` columns hold enum ordinals; `site_kind` is a
+ * [au.signalatlas.core.model.SiteKind] ordinal (v2). */
 object TowerDbSchema {
-    const val VERSION = 1
+    const val VERSION = 2
 
     val TABLES: List<String> = listOf(
         "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         "CREATE TABLE site(id INTEGER PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL, name TEXT NOT NULL, " +
-            "state TEXT, postcode TEXT, elevation_m REAL)",
+            "state TEXT, postcode TEXT, elevation_m REAL, site_kind INTEGER NOT NULL DEFAULT 0)",
         "CREATE TABLE antenna(id INTEGER PRIMARY KEY, gain_dbi REAL, f2b_db REAL, h_bw_deg REAL, model TEXT, " +
             "manufacturer TEXT)",
         "CREATE TABLE sector(id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL, network INTEGER NOT NULL, " +

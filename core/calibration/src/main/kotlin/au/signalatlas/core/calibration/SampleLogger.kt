@@ -56,7 +56,7 @@ class SampleLogger(
         val cell = state.serving?.takeIf { it.registered } ?: return null
         val rsrp = cell.rsrp ?: return null
         if (elapsedNowMs() - state.updatedAtElapsedMs > MAX_RADIO_AGE_MS) return null
-        if (!(fix.accuracyM <= CalibrationMath.MAX_FIX_ACCURACY_M)) return null
+        if (fix.deadReckoned || !(fix.accuracyM <= CalibrationMath.MAX_FIX_ACCURACY_M)) return null
         if (!CalibrationMath.throttleOk(lastStored, fix)) return null
         val m = matcher.match(network, cell, fix) ?: return null
         if (m.confidence == Confidence.UNCERTAIN) return null

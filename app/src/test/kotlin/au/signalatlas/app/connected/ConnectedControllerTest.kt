@@ -47,6 +47,30 @@ class ConnectedControllerTest {
         compute = StandardTestDispatcher(testScheduler),
     )
 
+    @Test fun matchedDasTowerGetsADasBadgeOnThePhoneCard() = runTest {
+        val towers = CandidateSource { _: Network, _: Tech, _: Double, _: Double, _: Double ->
+            CandidateSet(
+                listOf(
+                    au.signalatlas.core.calibration.Candidate(
+                        1, 11L, "77|0|0|900|300", Network.TELSTRA, -35.0, 149.0, 800.0, -90.0, 20.0,
+                    ),
+                ),
+                AreaClass.RURAL,
+            )
+        }
+        fixes.value = Fix(-35.001, 149.0, 5.0, 1L)
+        val c = ConnectedController(
+            radioState, fixes, CellMatcher(towers, RecordingMap()), settings, backgroundScope,
+            startRadio = {}, stopRadio = {}, startLogger = {}, stopLogger = {},
+            compute = StandardTestDispatcher(testScheduler),
+            siteKind = { if (it == 77) au.signalatlas.core.model.SiteKind.DAS_BUILDING else au.signalatlas.core.model.SiteKind.MACRO },
+        )
+        c.start()
+        runCurrent()
+        assertThat(c.ui.value.tower?.siteId).isEqualTo(77)
+        assertThat(c.ui.value.dasKind).isEqualTo(au.signalatlas.core.model.SiteKind.DAS_BUILDING)
+    }
+
     @Test fun nothingRunsUntilTheMapScreenStartsAndEverythingStopsWithIt() = runTest {
         val c = controller()
         runCurrent()

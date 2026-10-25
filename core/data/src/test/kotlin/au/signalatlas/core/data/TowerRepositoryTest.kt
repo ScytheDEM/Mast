@@ -168,7 +168,7 @@ class TowerRepositoryTest {
     }
 
     @Test fun startTreatsASchemaMismatchAsNoDb() = runTest {
-        install("202610010000", schemaVersion = 2)
+        install("202610010000", schemaVersion = 3)
         val r = repository(backgroundScope)
         r.start()
         assertThat(r.store.value).isNull()

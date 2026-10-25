@@ -11,4 +11,7 @@ class TowerFilterTest {
     @Test fun techMismatch() = assertThat(TowerFilter(techs = setOf(Tech.LTE)).matches(site)).isFalse()
     @Test fun bandMismatch() = assertThat(TowerFilter(bands = setOf("B28")).matches(site)).isFalse()
     @Test fun bandOverlap() = assertThat(TowerFilter(bands = setOf("n78", "B28")).matches(site)).isTrue()
+    @Test fun dasOnlyHidesMacro() = assertThat(TowerFilter(dasOnly = true).matches(site)).isFalse()
+    @Test fun dasOnlyKeepsDas() =
+        assertThat(TowerFilter(dasOnly = true).matches(site.copy(kind = SiteKind.DAS_TUNNEL))).isTrue()
 }

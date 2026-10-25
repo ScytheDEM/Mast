@@ -13,7 +13,8 @@ import kotlin.math.abs
 object TowerLayer {
     /**
      * One Point per site with properties `id`, `net` (primary network: the first in enum order),
-     * `n` (network count) and `nr` (whether the site has any NR carrier).
+     * `n` (network count), `nr` (whether the site has any NR carrier) and `das` (the [SiteKind] ordinal: 0 macro,
+     * 1 in-building DAS, 2 tunnel DAS).
      */
     fun featureCollection(sites: List<SiteSummary>): String {
         val sb = StringBuilder(64 + sites.size * 120)
@@ -27,6 +28,7 @@ object TowerLayer {
                 .append(""","net":""").append(if (primary == null) "null" else "\"${primary.name}\"")
                 .append(""","n":""").append(s.networks.size)
                 .append(""","nr":""").append(Tech.NR in s.techs)
+                .append(""","das":""").append(s.kind.ordinal)
                 .append("}}")
         }
         return sb.append("]}").toString()
@@ -35,6 +37,13 @@ object TowerLayer {
     /** Filter for the selected-site layer: just the feature whose `id` is [selectedId], or nothing. */
     fun selectedFilter(selectedId: Int?): Expression =
         if (selectedId == null) literal(false) else eq(get("id"), literal(selectedId))
+
+    /** Ring colour of a DAS site by its `das` property: building magenta, tunnel purple. */
+    const val DAS_BUILDING_ARGB = 0xFFD81B60.toInt()
+    const val DAS_TUNNEL_ARGB = 0xFF5E35B1.toInt()
+
+    /** Matches sites whose `das` property is non-zero. */
+    fun dasFilter(): Expression = Expression.gt(get("das"), literal(0))
 
     /** JSON number without exponent notation (Kotlin prints 1.0E-4 for tiny values). */
     private fun num(d: Double): String =

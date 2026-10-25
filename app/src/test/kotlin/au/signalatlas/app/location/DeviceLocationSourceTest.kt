@@ -74,6 +74,15 @@ class DeviceLocationSourceTest {
         assertThat(source.last.value).isEqualTo(-35.28 to 149.13)
     }
 
+    @Test fun deadReckonedFixesMarkThePositionAsEstimatedUntilARealFixArrives() {
+        assertThat(source.estimated.value).isFalse()
+        source.feed(au.signalatlas.core.calibration.Fix(-35.28, 149.13, 80.0, 1_000L, deadReckoned = true))
+        assertThat(source.estimated.value).isTrue()
+        assertThat(source.last.value).isEqualTo(-35.28 to 149.13)
+        source.feed(au.signalatlas.core.calibration.Fix(-35.29, 149.13, 5.0, 2_000L))
+        assertThat(source.estimated.value).isFalse()
+    }
+
     @Test fun staleUpdatesAreIgnored() {
         source.start()
         shadowOf(manager).simulateLocation(fix(37.42, -122.08, ageMs = 10 * 60_000L))

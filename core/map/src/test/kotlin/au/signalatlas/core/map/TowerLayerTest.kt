@@ -56,6 +56,13 @@ class TowerLayerTest {
     }
 
     @Test
+    fun dasPropertyCarriesTheSiteKind() {
+        val f = features(sites + sites[1].copy(id = 12, kind = au.signalatlas.core.model.SiteKind.DAS_TUNNEL))
+        assertThat(f[0].props.getValue("das").jsonPrimitive.int).isEqualTo(0)
+        assertThat(f[2].props.getValue("das").jsonPrimitive.int).isEqualTo(2)
+    }
+
+    @Test
     fun emptyListIsAnEmptyCollection() {
         assertThat(features(emptyList())).isEmpty()
     }

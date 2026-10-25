@@ -78,6 +78,7 @@ import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.PropertyFactory.textHaloColor
 import org.maplibre.android.style.layers.PropertyFactory.textHaloWidth
 import org.maplibre.android.style.layers.PropertyFactory.textOptional
+import org.maplibre.android.style.layers.PropertyFactory.textOffset
 import org.maplibre.android.style.layers.PropertyFactory.textPadding
 import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
@@ -172,6 +173,8 @@ private const val SITES_SOURCE = "sites"
 private const val LAYER_CLUSTERS = "sites-clusters"
 private const val LAYER_CLUSTER_COUNT = "sites-cluster-count"
 private const val LAYER_POINTS = "sites-points"
+private const val LAYER_DAS_RING = "sites-das-ring"
+private const val LAYER_DAS_GLYPH = "sites-das-glyph"
 private const val LAYER_SELECTED = "sites-selected"
 private const val BEAMS_SOURCE = "site-beams"
 private const val LAYER_BEAMS = "site-beams-fill"
@@ -183,6 +186,7 @@ private const val LAYER_CONNECTED_NEIGHBOURS = "connected-neighbours"
 private const val LAYER_CONNECTED_RING = "connected-ring"
 private const val LAYER_CONNECTED_DOT = "connected-dot"
 private const val EMPTY_COLLECTION = """{"type":"FeatureCollection","features":[]}"""
+private const val ESTIMATED_ACCURACY_M = 70f
 private const val PULSE_STEPS = 24
 private const val PULSE_FRAME_MS = 70L
 
@@ -206,6 +210,8 @@ fun TowerMap(
     /** The user's position (lat, lon) for the location dot; pass null without location permission. */
     userLocation: Pair<Double, Double>? = null,
     userLocationColor: Int = selectedColor,
+    /** The location is estimated (dead-reckoned in a tunnel): a fainter dot with a soft pulse and a wide accuracy halo. */
+    userLocationEstimated: Boolean = false,
     /** Tile URL template of the coverage overlay (`CoverageTileService.tileUrlTemplate()`); null = no overlay. */
     coverageUrlTemplate: String? = null,
     coverageView: CoverageSelection.View = CoverageSelection.View.RSRP,
@@ -403,18 +409,23 @@ fun TowerMap(
     // The location dot: MapLibre's LocationComponent fed by us (no location engine of its own).
     // Activated once per map; it re-adds its layers itself when the style is replaced.
     val showDot = userLocation != null
-    LaunchedEffect(style, showDot, userLocationColor) {
+    LaunchedEffect(style, showDot, userLocationColor, userLocationEstimated) {
         val m = map ?: return@LaunchedEffect
         val s = style?.takeIf { it.isFullyLoaded } ?: return@LaunchedEffect
-        setUserLocationVisible(m, s, context, showDot, userLocationColor)
+        setUserLocationVisible(m, s, context, showDot, userLocationColor, userLocationEstimated)
     }
-    LaunchedEffect(style, userLocation) {
+    LaunchedEffect(style, userLocation, userLocationEstimated) {
         val m = map ?: return@LaunchedEffect
         val at = userLocation ?: return@LaunchedEffect
         if (style?.isFullyLoaded != true) return@LaunchedEffect
         val lc = m.locationComponent
         if (lc.isLocationComponentActivated && lc.isLocationComponentEnabled) {
-            lc.forceLocationUpdate(Location("signal-atlas").apply { latitude = at.first; longitude = at.second })
+            val loc = Location("signal-atlas").apply {
+                latitude = at.first
+                longitude = at.second
+                if (userLocationEstimated) accuracy = ESTIMATED_ACCURACY_M
+            }
+            lc.forceLocationUpdate(loc)
         }
     }
 
@@ -423,18 +434,21 @@ fun TowerMap(
 
 /** No location engine runs, so no permission is used here; the caller only passes a position it may show. */
 @SuppressLint("MissingPermission")
-private fun setUserLocationVisible(map: MapLibreMap, style: Style, context: Context, visible: Boolean, color: Int) {
+private fun setUserLocationVisible(map: MapLibreMap, style: Style, context: Context, visible: Boolean, color: Int, estimated: Boolean) {
     val lc = map.locationComponent
     if (!visible) {
         if (lc.isLocationComponentActivated && lc.isLocationComponentEnabled) lc.isLocationComponentEnabled = false
         return
     }
     val options = LocationComponentOptions.builder(context)
-        .foregroundTintColor(color)
-        .backgroundTintColor(0xFFFFFFFF.toInt())
+        .foregroundTintColor(if (estimated) (color and 0x00FFFFFF) or 0x99000000.toInt() else color)
+        .backgroundTintColor(if (estimated) 0xB3FFFFFF.toInt() else 0xFFFFFFFF.toInt())
         .accuracyColor(color)
-        .accuracyAlpha(0.12f)
-        .pulseEnabled(false)
+        .accuracyAlpha(if (estimated) 0.2f else 0.12f)
+        .pulseEnabled(estimated)
+        .pulseColor(color)
+        .pulseSingleDuration(2500f)
+        .pulseMaxRadius(36f)
         .build()
     if (lc.isLocationComponentActivated) {
         lc.applyStyle(options)
@@ -517,6 +531,37 @@ private fun addTowerLayers(style: Style, dark: Boolean) {
             circleStrokeWidth(1.5f),
         ),
     )
+    // DAS (in-building / tunnel) sites: a coloured ring around the dot plus a D / T glyph once zoomed in.
+    val dasColor = match(
+        get("das"), color(TowerLayer.DAS_BUILDING_ARGB),
+        stop(2, color(TowerLayer.DAS_TUNNEL_ARGB)),
+    )
+    style.addLayer(
+        CircleLayer(LAYER_DAS_RING, SITES_SOURCE)
+            .withFilter(org.maplibre.android.style.expressions.Expression.all(not(has("point_count")), TowerLayer.dasFilter()))
+            .withProperties(
+                circleColor(0x00000000),
+                circleRadius(interpolate(linear(), zoom(), stop(8, 8), stop(16, 14))),
+                circleStrokeColor(dasColor),
+                circleStrokeWidth(3f),
+            ),
+    )
+    style.addLayer(
+        SymbolLayer(LAYER_DAS_GLYPH, SITES_SOURCE)
+            .withFilter(org.maplibre.android.style.expressions.Expression.all(not(has("point_count")), TowerLayer.dasFilter()))
+            .withProperties(
+                textField(match(get("das"), literal("D"), stop(2, literal("T")))),
+                textFont(arrayOf("Noto Sans Medium")),
+                textSize(11f),
+                textColor(dasColor),
+                textHaloColor(0xFFFFFFFF.toInt()),
+                textHaloWidth(1.5f),
+                textOffset(arrayOf(0f, -1.6f)),
+                textAllowOverlap(true),
+                textIgnorePlacement(true),
+            ),
+    )
+    style.getLayerAs<SymbolLayer>(LAYER_DAS_GLYPH)?.minZoom = 12f
     // Drawn on top; its filter is the only thing that changes when the selection does.
     style.addLayer(
         CircleLayer(LAYER_SELECTED, SITES_SOURCE)

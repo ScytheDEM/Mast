@@ -121,6 +121,7 @@ class MapViewModel(
 
         location.last.onEach { it?.let { (lat, lon) -> onLocation(lat, lon) } }.launchIn(viewModelScope)
         location.enabled.onEach { on -> _state.update { it.copy(locationEnabled = on) } }.launchIn(viewModelScope)
+        location.estimated.onEach { on -> _state.update { it.copy(locationEstimated = on) } }.launchIn(viewModelScope)
 
         combine(data.changes, filter, granted, position) { snap, f, ok, pos -> NearbyQuery(snap, f, ok, pos) }
             .mapLatest { q ->

@@ -8,6 +8,18 @@ import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import au.signalatlas.app.car.CarBridge
 import au.signalatlas.app.connected.ConnectedController
+import au.signalatlas.app.data.BeaconPrefs
+import au.signalatlas.app.data.BeaconSettings
+import au.signalatlas.app.das.AndroidDasNotifier
+import au.signalatlas.app.das.DasDetector
+import au.signalatlas.app.das.DasMonitor
+import au.signalatlas.core.beacons.AndroidBeaconScanner
+import au.signalatlas.core.beacons.BeaconLearner
+import au.signalatlas.core.beacons.BeaconRepository
+import au.signalatlas.core.beacons.BeaconSnapper
+import au.signalatlas.core.beacons.BeaconStore
+import au.signalatlas.core.beacons.LazyBeaconRepository
+import au.signalatlas.feature.trip.BeaconSupport
 import au.signalatlas.app.connected.ReadOnlyCellMap
 import au.signalatlas.app.data.PrefsUiHints
 import au.signalatlas.app.data.RepositoryPatternAccess
@@ -71,6 +83,7 @@ import au.signalatlas.core.roads.PmtilesReader
 import au.signalatlas.core.roads.PmtilesRoadSource
 import au.signalatlas.core.roads.RoadGraphProvider
 import au.signalatlas.core.map.MapHttp
+import au.signalatlas.core.model.SiteKind
 import au.signalatlas.core.model.TowerFilter
 import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.core.update.AcmaRemote
@@ -214,6 +227,28 @@ class AppContainer(context: Context) {
 
     val tripSettings: TripSettings = TripPrefs(app)
 
+    val beaconPrefs = BeaconPrefs(app)
+    private val beaconStore = lazy { BeaconStore.open(File(app.filesDir, "beacons/beacons.db")) }
+    private val beaconRepo = LazyBeaconRepository(lazy<BeaconRepository> { beaconStore.value })
+
+    /** "Use Bluetooth beacons in tunnels" and the beacon CSV import (Settings). */
+    val beaconSettings = BeaconSettings(
+        beaconPrefs.enabled, beaconPrefs::setEnabled,
+        count = { withContext(Dispatchers.IO) { beaconStore.value.count() } },
+        importCsv = { uri ->
+            withContext(Dispatchers.IO) {
+                try {
+                    val text = app.contentResolver.openInputStream(uri)?.use { readCapped(it, CSV_MAX_BYTES) }
+                    text?.let { beaconStore.value.importCsv(it) }
+                } catch (e: IOException) {
+                    null
+                } catch (e: SecurityException) {
+                    null
+                }
+            }
+        },
+    )
+
     val radio = RadioMonitor(app, appScope)
 
     /** The radio polling and the sample logger are shared by the map screen and a running trip. */
@@ -236,8 +271,18 @@ class AppContainer(context: Context) {
             startRadio = { radioRun.acquire(MAP_USER) }, stopRadio = { radioRun.release(MAP_USER) },
             startLogger = { loggerRun.acquire(MAP_USER) }, stopLogger = { loggerRun.release(MAP_USER) },
             radioStates = radio.states, dataSubId = radio.dataSubscriptionId,
+            siteKind = { id -> repo.store.value?.summary(id)?.kind ?: SiteKind.MACRO },
         )
     }
+
+    /** DAS announcements (banner and `das_detected` notification); created once calibration.db is warm, see [linkCalibration]. */
+    private val dasMonitor = lazy {
+        DasMonitor(
+            appScope, connected.ui, trip.tunnel, radio.state, location.last,
+            DasDetector({ towerData.current() }), AndroidDasNotifier(app),
+        )
+    }
+    val das: DasMonitor get() = dasMonitor.value
 
     /** Android Auto: its own location source and connected-tower feature, so the phone's map screen is unaffected. */
     private val carLocation by lazy { DeviceLocationSource(app) }
@@ -324,6 +369,7 @@ class AppContainer(context: Context) {
             launchService = { TripService.start(app) }, haltService = { TripService.stop(app) },
         ),
         roads = roads,
+        beacons = BeaconSupport(beaconPrefs.enabled, AndroidBeaconScanner(app), BeaconSnapper(beaconRepo), BeaconLearner(beaconRepo)),
     ).also {
         TripRuntime.controller = it
         TripRuntime.voiceEnabled = { tripSettings.config.value.voice }
@@ -365,6 +411,7 @@ class AppContainer(context: Context) {
         if (calibrationLinked) return
         calibrationLinked = true
         withContext(Dispatchers.IO) { calibration }
+        das // starts watching for DAS
         appScope.launch { calibration.snapshot.collect { calibrationSnapshot.value = it } }
         appScope.launch(Dispatchers.IO) { repo.store.collect { calibration.onTowersChanged() } }
     }
@@ -400,6 +447,19 @@ class AppContainer(context: Context) {
         const val TRIP_USER = "trip"
         const val CAR_USER = "car"
         const val CAR_TOWERS = 80
+        const val CSV_MAX_BYTES = 4_000_000
+
+        /** The stream as UTF-8 text, or null when it is longer than [max] bytes. */
+        fun readCapped(input: java.io.InputStream, max: Int): String? {
+            val buf = ByteArray(max + 1)
+            var n = 0
+            while (n < buf.size) {
+                val r = input.read(buf, n, buf.size - n)
+                if (r < 0) break
+                n += r
+            }
+            return if (n > max) null else String(buf, 0, n, Charsets.UTF_8)
+        }
         const val THERMAL_FORECAST_S = 10
         /** Per-phase import timings: `phase=<name> ms=<elapsed>`, then `phase=total`. */
         const val IMPORT_LOG_TAG = "AcmaImporter"

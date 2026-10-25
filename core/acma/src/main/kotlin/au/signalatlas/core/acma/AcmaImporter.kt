@@ -10,6 +10,8 @@ import au.signalatlas.core.acma.csv.CsvReader
 import au.signalatlas.core.model.BandPlan
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.NetworkMapping
+import au.signalatlas.core.model.SiteClassifier
+import au.signalatlas.core.model.SiteKind
 import java.io.File
 import java.io.FilterInputStream
 import java.io.InputStream
@@ -24,7 +26,7 @@ import kotlinx.serialization.json.Json
 class ImportCancelledException : Exception("ACMA import cancelled")
 
 /**
- * Builds the tower DB on the device from an ACMA RRL zip, applying the shared Import rules 1–10.
+ * Builds the tower DB on the device from an ACMA RRL zip, applying the shared Import rules 1–12.
  *
  * Entries are streamed in the order client → licence → device_details → site → antenna, so
  * sites and antennas are filtered against the devices already kept. Only the ~537k distinct
@@ -37,7 +39,7 @@ class AcmaImporter(
     private val log: (String) -> Unit = {},
 ) {
     /**
-     * Builds a complete schema-v1 DB at [out] (overwritten). [cancel] is polled every 10 000 rows
+     * Builds a complete schema-v2 DB at [out] (overwritten). [cancel] is polled every 10 000 rows
      * and between the finalise steps.
      */
     fun import(
@@ -368,6 +370,7 @@ private class ImportRun(
         step("renumber") { renumberSectors() }
         progress(PHASE_FINALISE, 0.6f)
 
+        step("kind") { classifySites() }
         step("summary") { fillSiteSummary() }
         conn.execSQL("COMMIT")
         progress(PHASE_FINALISE, 0.9f)
@@ -431,6 +434,30 @@ private class ImportRun(
         conn.execSQL("UPDATE sector SET id = -(SELECT new FROM sector_renum WHERE old = sector.id)")
         conn.execSQL("UPDATE sector SET id = -id")
         conn.execSQL("DROP TABLE sector_renum")
+    }
+
+    /** Rule 12: tag DAS sites (the column defaults to MACRO). */
+    private fun classifySites() {
+        val das = ArrayList<Pair<Long, SiteKind>>()
+        conn.prepare(
+            """SELECT s.id, s.name, MAX(sec.height_m), MAX(c.eirp_dbm),
+                      MIN(CASE WHEN sec.azimuth_deg IS NULL OR a.h_bw_deg >= 90 THEN 1 ELSE 0 END)
+               FROM site s JOIN sector sec ON sec.site_id = s.id JOIN carrier c ON c.sector_id = sec.id
+               LEFT JOIN antenna a ON a.id = sec.antenna_id GROUP BY s.id""",
+        ).use { st ->
+            while (st.step()) {
+                val kind = SiteClassifier.classify(st.getText(1), st.getDouble(2), st.getDouble(3), st.getLong(4) == 1L)
+                if (kind != SiteKind.MACRO) das += st.getLong(0) to kind
+            }
+        }
+        conn.prepare("UPDATE site SET site_kind = ? WHERE id = ?").use { st ->
+            for ((id, kind) in das) {
+                st.reset()
+                st.bindLong(1, kind.ordinal.toLong())
+                st.bindLong(2, id)
+                st.step()
+            }
+        }
     }
 
     private fun fillSiteSummary() {

@@ -16,6 +16,7 @@ import au.signalatlas.core.model.Sector
 import au.signalatlas.core.model.SectorIdentity
 import au.signalatlas.core.model.Site
 import au.signalatlas.core.model.SiteDetail
+import au.signalatlas.core.model.SiteKind
 import au.signalatlas.core.model.SiteSummary
 import au.signalatlas.core.model.Tech
 import au.signalatlas.core.model.TowerFilter
@@ -53,6 +54,12 @@ class TowerStore private constructor(
             if (f.matches(s)) result.add(s)
         }
         return result
+    }
+
+    /** The in-memory summary of one site (name, networks, DAS kind), or null; no SQLite access. */
+    fun summary(siteId: Int): SiteSummary? {
+        val i = summaries.asList().binarySearch { it.id.compareTo(siteId) }
+        return if (i >= 0) summaries[i] else null
     }
 
     fun allSites(f: TowerFilter): List<SiteSummary> = summaries.filter { f.matches(it) }
@@ -99,13 +106,14 @@ class TowerStore private constructor(
     fun siteDetail(siteId: Int): SiteDetail? = synchronized(lock) {
         if (closed) return null
         val site = conn.prepare(
-            "SELECT id, lat, lon, name, state, postcode, elevation_m FROM site WHERE id = ?",
+            "SELECT id, lat, lon, name, state, postcode, elevation_m, site_kind FROM site WHERE id = ?",
         ).use { st ->
             st.bindLong(1, siteId.toLong())
             if (!st.step()) return null
             Site(
                 id = st.getLong(0).toInt(), lat = st.getDouble(1), lon = st.getDouble(2), name = st.getText(3),
                 state = st.textOrNull(4), postcode = st.textOrNull(5), elevationM = st.doubleOrNull(6),
+                kind = SiteKind.fromOrdinal(st.getLong(7).toInt()),
             )
         }
 
@@ -316,19 +324,21 @@ class TowerStore private constructor(
             val summaries = ArrayList<SiteSummary>()
             val postcodes = ArrayList<String?>()
             conn.prepare(
-                """SELECT s.id, s.lat, s.lon, s.name, s.postcode, m.network_mask, m.tech_mask, m.bands
+                """SELECT s.id, s.lat, s.lon, s.name, s.postcode, s.site_kind, m.network_mask, m.tech_mask, m.bands
                    FROM site s JOIN site_summary m ON m.site_id = s.id ORDER BY s.id""",
             ).use { st ->
                 while (st.step()) {
-                    val nm = st.getLong(5).toInt()
-                    val tm = st.getLong(6).toInt()
-                    val bands = st.getText(7)
+                    val kind = SiteKind.fromOrdinal(st.getLong(5).toInt())
+                    val nm = st.getLong(6).toInt()
+                    val tm = st.getLong(7).toInt()
+                    val bands = st.getText(8)
                     summaries.add(
                         SiteSummary(
                             id = st.getLong(0).toInt(), lat = st.getDouble(1), lon = st.getDouble(2), name = st.getText(3),
                             networks = networkSets.getOrPut(nm) { Network.entries.filter { nm and (1 shl it.ordinal) != 0 }.toSet() },
                             techs = techSets.getOrPut(tm) { Tech.entries.filter { tm and (1 shl it.ordinal) != 0 }.toSet() },
                             bands = bandSets.getOrPut(bands) { if (bands.isEmpty()) emptySet() else bands.split(',').toSet() },
+                            kind = kind,
                         ),
                     )
                     postcodes.add(st.textOrNull(4)?.trim())

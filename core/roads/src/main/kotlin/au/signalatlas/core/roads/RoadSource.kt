@@ -24,8 +24,8 @@ import kotlin.math.tan
 /** Road classes in increasing importance; [rank] orders them at junctions. */
 enum class RoadClass(val rank: Int) { MINOR(1), MEDIUM(2), MAJOR(3), HIGHWAY(4) }
 
-/** One drivable road line (a Protomaps `roads` feature) with its vertices in degrees. */
-class RoadWay(val roadClass: RoadClass, val name: String?, val points: List<LatLon>)
+/** One drivable road line (a Protomaps `roads` feature, [isTunnel] = its `is_tunnel` property) with its vertices in degrees. */
+class RoadWay(val roadClass: RoadClass, val name: String?, val points: List<LatLon>, val isTunnel: Boolean = false)
 
 /**
  * Where road geometry comes from: the z14 tile at [x]/[y]. Null means unavailable right now (offline and not cached),
@@ -63,6 +63,9 @@ object RoadTiles {
 
 /** Decodes the `roads` layer of a z14 MVT into drivable [RoadWay]s (kind highway / major_road / medium_road / minor_road). */
 object RoadTileDecoder {
+    /** MVT booleans arrive as `true`; tolerate numeric 1 and the string "true" from other tilers. */
+    private fun isTrue(v: Any?): Boolean = v == true || (v is Number && v.toLong() == 1L) || v == "true"
+
     fun decode(mvt: ByteArray, x: Int, y: Int): List<RoadWay> {
         val layer = Mvt.decode(mvt, setOf("roads")).firstOrNull() ?: return emptyList()
         val out = ArrayList<RoadWay>()
@@ -76,6 +79,7 @@ object RoadTileDecoder {
                 else -> continue
             }
             val name = f.properties["name"] as? String
+            val tunnel = isTrue(f.properties["is_tunnel"])
             for (line in f.geometry) {
                 if (line.size < 4) continue
                 val pts = ArrayList<LatLon>(line.size / 2)
@@ -85,7 +89,7 @@ object RoadTileDecoder {
                         RoadTiles.lon(x + line[i].toDouble() / layer.extent),
                     )
                 }
-                out += RoadWay(cls, name, pts)
+                out += RoadWay(cls, name, pts, tunnel)
             }
         }
         return out

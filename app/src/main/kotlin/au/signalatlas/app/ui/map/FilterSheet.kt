@@ -63,11 +63,14 @@ private fun <T> toggle(current: Set<T>, value: T, all: Set<T>): Set<T> {
     return next.ifEmpty { all }
 }
 
+fun TowerFilter.toggleDas(): TowerFilter = copy(dasOnly = !dasOnly)
+
 /** Number of individual selections narrowing the map: selected networks and technologies (when narrowed) plus bands. */
 fun TowerFilter.activeCount(): Int =
     (if (networks.size < Network.entries.size) networks.size else 0) +
         (if (techs.size < Tech.entries.size) techs.size else 0) +
-        (bands?.size ?: 0)
+        (bands?.size ?: 0) +
+        (if (dasOnly) 1 else 0)
 
 /** Everything on again. */
 fun TowerFilter.reset(): TowerFilter = TowerFilter()
@@ -125,6 +128,19 @@ fun FiltersContent(
                     modifier = Modifier.testTag("filter-tech-${t.name}"),
                 )
             }
+        }
+        FilterGroup(R.string.filters_site_type) {
+            FilterChip(
+                selected = filter.dasOnly,
+                onClick = { onFilter(filter.toggleDas()) },
+                label = { Text(stringResource(R.string.filters_das)) },
+                trailingIcon = if (filter.dasOnly) {
+                    { Icon(Icons.Filled.Check, null, Modifier.size(FilterChipDefaults.IconSize)) }
+                } else {
+                    null
+                },
+                modifier = Modifier.testTag("filter-das"),
+            )
         }
         // ACMA band names: LTE bands are "B…", NR bands are "n…".
         val (nr, lte) = availableBands.partition { it.startsWith("n") }

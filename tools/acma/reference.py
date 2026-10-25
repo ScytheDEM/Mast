@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import math
+import re
 import sys
 import time
 import zipfile
@@ -129,6 +130,46 @@ def eirp_dbm(dev, antennas):
     return round(d + gain - loss, 2)
 
 
+# Rule 12: DAS site classification (tower DB schema v2 `site.site_kind`: 0 MACRO, 1 DAS_BUILDING, 2 DAS_TUNNEL).
+TUNNEL_RE = re.compile(r"\b(tunnel|tunl)\b", re.I | re.A)
+DAS_NAME_RE = re.compile(
+    r"\b(ibc|in[- ]?building|das|distributed antenna|shopping (centre|center)|westfield|stadium|arena|station"
+    r"|airport terminal|hospital|university|plaza|tower \d+(?!\.\d)|level \d+(?!\.\d)|carpark)\b",
+    re.I | re.A,
+)
+# Phrases blanked out of the name before DAS_NAME_RE: macro structure types ("Lattice Tower 21", "50m tower 39 ...")
+# and street / rural "station" uses ("Station Pier", "Repeater Station Road", "pump station").
+DAS_NAME_NEG_RE = re.compile(
+    r"\b(lattice|monopole|guyed|mast|pole|steel|\d+ ?m) tower\b"
+    r"|\bstation (road|rd|street|st|avenue|ave|pier|drive|dr|lane|ln|way|parade|pde|creek|hill|point)\b"
+    r"|\b(repeater|pump|pumping|fire|police|petrol|service|power|cattle|sheep|weather) station\b",
+    re.I | re.A,
+)
+MACRO, DAS_BUILDING, DAS_TUNNEL = 0, 1, 2
+
+
+def site_kind(name, max_height_m, max_eirp_dbm, all_wide):
+    """Rule 12. `all_wide`: every sector is omni (null azimuth) or has an antenna with H_BW >= 90."""
+    if TUNNEL_RE.search(name):
+        return DAS_TUNNEL
+    if DAS_NAME_RE.search(DAS_NAME_NEG_RE.sub(" ", name)) or (max_height_m <= 6 and max_eirp_dbm <= 40 and all_wide):
+        return DAS_BUILDING
+    return MACRO
+
+
+def site_kinds(data):
+    """Site id -> site_kind for every kept site of load()'s result."""
+    stats = {}  # site -> [max height, max eirp, all_wide]
+    for c in data["carriers"]:
+        hbw = data["antennas"].get(c["antenna_id"], {}).get("hbw")
+        wide = c["azimuth_deg"] is None or (hbw is not None and hbw >= 90)
+        st = stats.setdefault(c["site_id"], [c["height_m"], c["eirp_dbm"], True])
+        st[0] = max(st[0], c["height_m"])
+        st[1] = max(st[1], c["eirp_dbm"])
+        st[2] = st[2] and wide
+    return {sid: site_kind(data["site_names"][sid], *stats[sid]) for sid in stats}
+
+
 def round1(x):
     """Rule 6 rounding: floor(x * 10 + 0.5) / 10 in double, -0.0 -> 0.0."""
     return math.floor(x * 10 + 0.5) / 10 + 0.0
@@ -150,7 +191,8 @@ def load(zip_path):
     "carriers" lists the kept carriers in export order as dicts (sdd_id, site_id, sector_id,
     network, tech, band, freq_hz, bw_hz, eirp_dbm, tilt_deg, height_m, azimuth_deg,
     antenna_id), de-duplicated on SDD_ID with the first device winning (as the Kotlin
-    importer's INSERT OR IGNORE). "sites" maps kept site id -> (lat, lon); "antennas" maps
+    importer's INSERT OR IGNORE). "sites" maps kept site id -> (lat, lon); "site_names" maps
+    kept site id -> trimmed NAME (last duplicate row wins); "antennas" maps
     antenna id -> {"gain", "f2b", "hbw"} (None = not supplied).
     """
     zf = zipfile.ZipFile(zip_path)
@@ -170,11 +212,13 @@ def load(zip_path):
                 licence_network[r["LICENCE_NO"].strip()] = net
 
     sites = {}
+    site_names = {}
     for r in read_csv(zf, "site.csv"):
         sid = parse_id(r["SITE_ID"], INT32_MAX)
         lat, lon = num(r["LATITUDE"]), num(r["LONGITUDE"])
         if sid is not None and lat is not None and lon is not None and -55 <= lat <= -9 and 72 <= lon <= 169:
             sites[sid] = (lat, lon)
+            site_names[sid] = r["NAME"].strip()
 
     antennas = {}
     for r in read_csv(zf, "antenna.csv"):
@@ -257,6 +301,7 @@ def load(zip_path):
         "carriers": list(carriers.values()),
         "sites": {s: sites[s] for s in sorted(kept_sites)},
         "antennas": antennas,
+        "site_names": site_names,
     }
 
 

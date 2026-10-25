@@ -6,6 +6,7 @@ import au.signalatlas.core.calibration.MatchResult
 import au.signalatlas.core.map.ConnectedHighlight
 import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.SectorIdentity
+import au.signalatlas.core.model.SiteKind
 import au.signalatlas.core.model.Tech
 import au.signalatlas.core.radio.ObservedCell
 import au.signalatlas.core.radio.Permission
@@ -55,6 +56,8 @@ data class ConnectedUi(
     val predictedDbm: Int? = null,
     /** The other active SIMs of a dual-SIM phone, each as its own compact row (set on the primary only). */
     val otherSims: List<ConnectedUi> = emptyList(),
+    /** The matched serving site is a DAS site (in-building / tunnel): the phone card shows a DAS badge. */
+    val dasKind: SiteKind? = null,
 ) {
     /** The primary SIM first, then the others. */
     val allSims: List<ConnectedUi> get() = listOf(this) + otherSims

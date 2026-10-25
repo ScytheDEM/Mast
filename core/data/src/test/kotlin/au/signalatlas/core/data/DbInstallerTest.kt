@@ -104,7 +104,7 @@ class DbInstallerTest {
     @Test fun wrongSchemaVersionIsRejected() {
         val cand = build()
         BundledSQLiteDriver().open(cand.path).use {
-            it.execSQL("UPDATE meta SET value = '2' WHERE key = 'schema_version'")
+            it.execSQL("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
         }
         val r = DbValidator(1).validate(cand) as Validation.Invalid
         assertThat(r.reason).contains("schema version")

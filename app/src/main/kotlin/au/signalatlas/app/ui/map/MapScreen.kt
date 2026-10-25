@@ -198,8 +198,10 @@ fun MapScreen(
     onOpenOffline: () -> Unit = {},
     /** Draw-a-box mode for offline regions (see [DrawBoxOverlay]); null = off. */
     drawBox: DrawBoxHooks? = null,
+    das: DasUi = DasUi.None,
 ) {
     val tripState by trip.state.collectAsStateWithLifecycle()
+    val dasBanner by das.banner.collectAsStateWithLifecycle()
     val camera = viewModel<MapCameraHolder>().camera
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -476,6 +478,7 @@ fun MapScreen(
                 modifier = Modifier.fillMaxSize(),
                 userLocation = state.location.takeIf { state.locationGranted },
                 userLocationColor = MaterialTheme.colorScheme.primary.toArgb(),
+                userLocationEstimated = state.locationEstimated,
                 connected = connected?.highlight,
                 siteBeams = siteBeams,
                 beamLengthM = SectorBeams.lengthMetersForZoom(state.zoom),
@@ -507,6 +510,8 @@ fun MapScreen(
                 onConnectedBar = onConnectedBar,
                 tripRunning = tripState is TripState.Running,
                 tripBanner = (tripState as? TripState.Running)?.stats?.banner,
+                dasBanner = dasBanner,
+                onDismissDas = das.onDismiss,
                 onTrip = onTrip,
                 onSelectSection = selectSection,
                 // On compact windows a selected site's peek sheet takes the bottom; the bar and controls make way.
@@ -778,6 +783,8 @@ private fun MapControls(
     onConnectedBar: () -> Unit,
     tripRunning: Boolean,
     tripBanner: String?,
+    dasBanner: String?,
+    onDismissDas: () -> Unit,
     onTrip: () -> Unit,
     onSelectSection: (MapSection) -> Unit,
     sitePeek: Boolean,
@@ -805,6 +812,7 @@ private fun MapControls(
             if (!searchExpanded || docked) {
                 Spacer(Modifier.height(10.dp))
                 tripBanner?.let { TripBanner(it, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+                dasBanner?.let { DasBanner(it, onDismissDas, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
                 AnimatedVisibility(state.update.showsChip(), enter = fadeIn(), exit = fadeOut()) {
                     UpdateChip(state.update, onClick = onOpenUpdates, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
                 }

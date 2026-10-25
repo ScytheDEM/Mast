@@ -170,3 +170,41 @@ class RoadGraphTest {
         assertThat(g.match(p.lat, p.lon, 0.0)).isNull()
     }
 }
+
+class TunnelRoadTest {
+    @Test fun mvtBooleanIsTunnelIsExposedByTheDecoderAndTheRoadWay() {
+        val tile = TestMvt.roadsTile(listOf("kind" to "highway", "is_tunnel" to true))
+        assertThat(Mvt.decode(tile).single().features.single().properties["is_tunnel"]).isEqualTo(true)
+        val way = RoadTileDecoder.decode(tile, 14932, 9897).single()
+        assertThat(way.roadClass).isEqualTo(RoadClass.HIGHWAY)
+        assertThat(way.isTunnel).isTrue()
+        val plain = TestMvt.roadsTile(listOf("kind" to "highway", "is_tunnel" to false))
+        assertThat(RoadTileDecoder.decode(plain, 14932, 9897).single().isTunnel).isFalse()
+        assertThat(RoadTileDecoder.decode(TestMvt.roadsTile(listOf("kind" to "highway")), 14932, 9897).single().isTunnel).isFalse()
+    }
+
+    private fun tunnelWay() = RoadWay(RoadClass.HIGHWAY, "M5", listOf(ll(1000.0, 0.0), ll(1500.0, 0.0), ll(2000.0, 0.0)), isTunnel = true)
+    private fun surfaceWay() = RoadWay(RoadClass.HIGHWAY, "M5", listOf(ll(0.0, 0.0), ll(500.0, 0.0), ll(1000.0, 0.0)))
+    private fun graph() = RoadGraph.build(LAT0, LON0, listOf(surfaceWay(), tunnelWay()))
+
+    @Test fun matchReportsWhetherTheEdgeIsATunnel() {
+        val g = graph()
+        val a = ll(1200.0, 3.0)
+        val b = ll(300.0, 3.0)
+        assertThat(g.match(a.lat, a.lon, 90.0)!!.isTunnel).isTrue()
+        assertThat(g.match(b.lat, b.lon, 90.0)!!.isTunnel).isFalse()
+    }
+
+    @Test fun tunnelDistanceAndNearestOnRoad() {
+        val g = graph()
+        val near = ll(700.0, 0.0) // 300 m before the tunnel mouth
+        assertThat(g.tunnelDistanceM(near.lat, near.lon, 500.0)!!).isWithin(2.0).of(300.0)
+        assertThat(g.tunnelDistanceM(near.lat, near.lon, 200.0)).isNull()
+        val p = ll(1700.0, 40.0)
+        val (snapped, m) = g.nearestOnRoad(p.lat, p.lon, 100.0, tunnelOnly = true)!!
+        assertThat(xy(snapped).second).isWithin(0.5).of(0.0)
+        assertThat(xy(snapped).first).isWithin(0.5).of(1700.0)
+        assertThat(m.isTunnel).isTrue()
+        assertThat(g.nearestOnRoad(p.lat, p.lon, 20.0, tunnelOnly = true)).isNull()
+    }
+}

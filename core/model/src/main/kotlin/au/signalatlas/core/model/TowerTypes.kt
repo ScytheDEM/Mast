@@ -10,6 +10,7 @@ data class Site(
     val state: String?,
     val postcode: String?,
     val elevationM: Double?,
+    val kind: SiteKind = SiteKind.MACRO,
 )
 
 data class Antenna(
@@ -50,6 +51,7 @@ data class SiteSummary(
     val networks: Set<Network>,
     val techs: Set<Tech>,
     val bands: Set<String>,
+    val kind: SiteKind = SiteKind.MACRO,
 )
 
 data class SiteDetail(val site: Site, val sectors: List<Sector>)
@@ -58,9 +60,12 @@ data class TowerFilter(
     val networks: Set<Network> = Network.entries.toSet(),
     val techs: Set<Tech> = Tech.entries.toSet(),
     val bands: Set<String>? = null,
+    /** Only in-building / tunnel (DAS) sites. */
+    val dasOnly: Boolean = false,
 ) {
     fun matches(s: SiteSummary): Boolean =
         s.networks.any { it in networks } &&
             s.techs.any { it in techs } &&
-            (bands == null || s.bands.any { it in bands })
+            (bands == null || s.bands.any { it in bands }) &&
+            (!dasOnly || s.kind.isDas)
 }

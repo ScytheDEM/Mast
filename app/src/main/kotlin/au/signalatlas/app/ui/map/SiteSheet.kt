@@ -87,6 +87,7 @@ fun SiteSheetContent(
                     )
                     Spacer(Modifier.height(12.dp))
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (site.kind.isDas) DasBadge(site.kind, Modifier.testTag("site-das-badge"))
                         groups.keys.forEach { NetworkPill(it) }
                     }
                 }
