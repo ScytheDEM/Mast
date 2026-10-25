@@ -19,6 +19,13 @@ android {
         }
     }
 
+    // fullMap: sideload build for Android Auto with its own map surface (navigation category). play: template-only.
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("fullMap") { dimension = "distribution" }
+        create("play") { dimension = "distribution" }
+    }
+
     buildTypes {
         release {
             // R8 full mode is AGP's default (android.enableR8.fullMode is not overridden).
@@ -61,6 +68,7 @@ dependencies {
     implementation(project(":core:radio"))
     implementation(project(":core:calibration"))
     implementation(project(":feature:trip"))
+    implementation(project(":car"))
     implementation(project(":engine"))
 
     implementation(platform(libs.androidx.compose.bom))

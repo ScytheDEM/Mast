@@ -322,6 +322,7 @@ class RadioMonitor(
 
     private fun buildState(permission: Permission, airplane: Boolean, sim: SimInfo?, cells: List<ObservedCell>, override: Int): RadioState {
         val split = CellMapper.split(cells)
+        val ca = readCa(sim, permission, airplane)
         return RadioState(
             permission = permission,
             sim = sim,
@@ -331,7 +332,22 @@ class RadioMonitor(
             displayFiveG = !airplane && CellMapper.displayFiveG(split.serving, override),
             airplane = airplane,
             updatedAtElapsedMs = clock(),
+            ca = ca,
+            displayLabel = if (airplane) null else DisplayLabel.of(split.serving?.tech, override, ca),
         )
+    }
+
+    /** `ServiceState.getCellBandwidths()` of [subId]; null on a missing permission or an empty array. */
+    private fun readCa(sim: SimInfo?, permission: Permission, airplane: Boolean): CarrierAggregation? {
+        if (permission != Permission.GRANTED || airplane) return null
+        return try {
+            val tm = sim?.let { forSub(it.subId) } ?: telephonyManager()
+            CarrierAggregation.from(tm.serviceState?.cellBandwidths)
+        } catch (_: SecurityException) {
+            null
+        } catch (_: RuntimeException) {
+            null
+        }
     }
 }
 

@@ -12,6 +12,7 @@ okhttp = "5.5.1"
 coroutines = "1.11.0"
 serialization = "1.12.0"
 maplibre = "13.7.1"
+carApp = "1.7.0"
 androidxWindow = "1.5.1"
 sqlite = "2.7.1"
 junit = "4.13.2"
@@ -54,6 +55,9 @@ kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-c
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+androidx-car-app = { module = "androidx.car.app:app", version.ref = "carApp" }
+androidx-car-app-testing = { module = "androidx.car.app:app-testing", version.ref = "carApp" }
+androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
 maplibre-android = { module = "org.maplibre.gl:android-sdk-vulkan", version.ref = "maplibre" }
 junit = { module = "junit:junit", version.ref = "junit" }
 truth = { module = "com.google.truth:truth", version.ref = "truth" }

@@ -6,6 +6,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import au.signalatlas.app.car.CarBridge
 import au.signalatlas.app.connected.ConnectedController
 import au.signalatlas.app.connected.ReadOnlyCellMap
 import au.signalatlas.app.data.PrefsUiHints
@@ -33,6 +34,7 @@ import au.signalatlas.app.data.RepositoryTowerData
 import au.signalatlas.app.location.DeviceLocationSource
 import au.signalatlas.app.ui.map.MapViewModel
 import au.signalatlas.app.ui.storage.StorageViewModel
+import au.signalatlas.car.CarRuntime
 import au.signalatlas.core.acma.AcmaImporter
 import au.signalatlas.core.acma.hrp.HrpImporter
 import au.signalatlas.core.data.DbInstaller
@@ -54,6 +56,7 @@ import au.signalatlas.core.geo.GeoNetwork
 import au.signalatlas.core.geo.GeoPrefs
 import au.signalatlas.core.map.BasemapLocator
 import au.signalatlas.core.map.MapHttp
+import au.signalatlas.core.model.TowerFilter
 import au.signalatlas.engine.CoverageEngine
 import au.signalatlas.core.update.AcmaRemote
 import au.signalatlas.core.update.HrpDeps
@@ -215,6 +218,17 @@ class AppContainer(context: Context) {
         )
     }
 
+    /** Android Auto: its own location source and connected-tower feature, so the phone's map screen is unaffected. */
+    private val carLocation by lazy { DeviceLocationSource(app) }
+    private val carConnected = lazy {
+        ConnectedController(
+            radio.state, carLocation.fixes, CellMatcher(candidates, ReadOnlyCellMap(calibration)), calibrationSettings, appScope,
+            startRadio = { radioRun.acquire(CAR_USER) }, stopRadio = { radioRun.release(CAR_USER) },
+            startLogger = {}, stopLogger = {},
+            radioStates = radio.states, dataSubId = radio.dataSubscriptionId,
+        )
+    }
+
     init {
         // Every tile request blocks one dispatcher thread until its render is done, so the per-host limit has to
         // exceed the render pool and MapLibre's concurrent tile requests.
@@ -260,6 +274,17 @@ class AppContainer(context: Context) {
     ).also {
         TripRuntime.controller = it
         TripRuntime.voiceEnabled = { tripSettings.config.value.voice }
+    }
+
+    init {
+        CarRuntime.source = CarBridge(
+            app, appScope, carConnected, radio.states, carLocation.fixes,
+            startLocation = { carLocation.start() }, stopLocation = { carLocation.stop() },
+            controller = trip,
+            nearest = { lat, lon -> towerData.current()?.nearest(lat, lon, TowerFilter(), CAR_TOWERS).orEmpty().map { it.first.lat to it.first.lon } },
+            basemapKey = { basemap.currentKey() },
+            selection = coverage.selection, tileTemplate = coverage::tileUrlTemplate,
+        )
     }
 
     /** Opens the installed DB (after crash recovery) once per process. */
@@ -320,6 +345,8 @@ class AppContainer(context: Context) {
         const val TAG = "SignalAtlas"
         const val MAP_USER = "map"
         const val TRIP_USER = "trip"
+        const val CAR_USER = "car"
+        const val CAR_TOWERS = 80
         const val THERMAL_FORECAST_S = 10
         /** Per-phase import timings: `phase=<name> ms=<elapsed>`, then `phase=total`. */
         const val IMPORT_LOG_TAG = "AcmaImporter"
