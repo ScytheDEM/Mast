@@ -24,11 +24,16 @@ interface BeaconPositions {
     fun get(id: String): KnownBeacon?
 }
 
+/** [BeaconPositions] that can also store a position ([BeaconStore] is the database-backed one). */
+interface BeaconRepository : BeaconPositions {
+    fun put(b: KnownBeacon)
+}
+
 /**
  * `beacons.db` (schema v1): `beacon(id, lat, lon, weight_sum, n, peak_rssi, source, updated_ms)`. Positions are held in
  * memory too (a few hundred rows at most), so [get] never touches SQLite. Blocking and thread-safe.
  */
-class BeaconStore private constructor(private val conn: SQLiteConnection) : BeaconPositions, Closeable {
+class BeaconStore private constructor(private val conn: SQLiteConnection) : BeaconRepository, Closeable {
     private val lock = Any()
     private val cache = HashMap<String, KnownBeacon>()
 
@@ -54,7 +59,9 @@ class BeaconStore private constructor(private val conn: SQLiteConnection) : Beac
 
     fun all(): List<KnownBeacon> = synchronized(lock) { cache.values.toList() }
 
-    fun put(b: KnownBeacon, nowMs: Long = System.currentTimeMillis()) = synchronized(lock) {
+    override fun put(b: KnownBeacon) = put(b, System.currentTimeMillis())
+
+    fun put(b: KnownBeacon, nowMs: Long) = synchronized(lock) {
         conn.prepare(
             "INSERT OR REPLACE INTO beacon(id, lat, lon, weight_sum, n, peak_rssi, source, updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         ).use { st ->

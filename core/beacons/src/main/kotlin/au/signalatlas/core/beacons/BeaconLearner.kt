@@ -9,7 +9,7 @@ import kotlin.math.pow
  * >= [MIN_RSSI] adds its fix to the beacon's centroid, weighted by received power relative to [MIN_RSSI] (10^(dB/10)), so
  * the position converges on where the signal peaked. Imported (CSV) positions are authoritative and never moved.
  */
-class BeaconLearner(private val store: BeaconStore, private val clockMs: () -> Long = System::currentTimeMillis) {
+class BeaconLearner(private val store: BeaconRepository) {
     /** Applies one sighting made at [fix]; returns whether it was used. */
     fun learn(sighting: BeaconSighting, fix: LatLon, fixAccuracyM: Double): Boolean {
         if (!(fixAccuracyM <= MAX_FIX_ACCURACY_M) || sighting.rssi < MIN_RSSI) return false
@@ -29,7 +29,7 @@ class BeaconLearner(private val store: BeaconStore, private val clockMs: () -> L
                 KnownBeacon.Source.LEARNED, total, known.n + 1, max(known.peakRssi, sighting.rssi),
             )
         }
-        store.put(updated, clockMs())
+        store.put(updated)
         return true
     }
 

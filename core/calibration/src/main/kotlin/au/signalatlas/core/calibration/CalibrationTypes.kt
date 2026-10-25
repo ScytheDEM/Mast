@@ -4,8 +4,11 @@ import au.signalatlas.core.model.Network
 import au.signalatlas.core.model.Tech
 import au.signalatlas.engine.AreaClass
 
-/** A location fix: wall-clock [timeMs], horizontal [accuracyM] (68%). */
-data class Fix(val lat: Double, val lon: Double, val accuracyM: Double, val timeMs: Long)
+/**
+ * A location fix: wall-clock [timeMs], horizontal [accuracyM] (68%). [deadReckoned] marks a position estimated along a
+ * tunnel road while GPS is lost (never a calibration sample).
+ */
+data class Fix(val lat: Double, val lon: Double, val accuracyM: Double, val timeMs: Long, val deadReckoned: Boolean = false)
 
 /** Rule 2. Only [LIKELY] and [CONFIRMED] matches become samples (rule 3). */
 enum class Confidence { UNCERTAIN, LIKELY, CONFIRMED }

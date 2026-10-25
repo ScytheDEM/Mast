@@ -32,6 +32,7 @@ dependencies {
     api(project(":core:data"))
     api(project(":core:model"))
     api(project(":core:roads"))
+    api(project(":core:beacons"))
     api(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
 

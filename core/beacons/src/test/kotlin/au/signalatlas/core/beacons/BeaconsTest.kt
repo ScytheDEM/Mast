@@ -85,7 +85,7 @@ class BeaconStoreTest {
 
 class BeaconLearnerTest {
     private val store = BeaconStore.openInMemory()
-    private val learner = BeaconLearner(store) { 1L }
+    private val learner = BeaconLearner(store)
     private fun s(rssi: Int) = BeaconSighting("eurl:t", rssi)
 
     @Test fun weightedCentroidLeansTowardThePeak() {

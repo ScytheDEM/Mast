@@ -1,5 +1,9 @@
 package au.signalatlas.feature.trip
 
+import au.signalatlas.core.beacons.BeaconLearner
+import au.signalatlas.core.beacons.BeaconScanner
+import au.signalatlas.core.beacons.BeaconSnapper
+import au.signalatlas.core.beacons.BeaconSighting
 import au.signalatlas.core.calibration.Fix
 import au.signalatlas.core.coverage.CoverageSelection
 import au.signalatlas.core.coverage.PointPrediction
@@ -54,6 +58,10 @@ data class TripStats(
     val stationary: Boolean = false,
     /** Why there is no status yet: "Waiting for GPS…", "Choose a network on the map". */
     val message: String? = null,
+    /** The position is dead-reckoned along a tunnel road (GPS lost); the map shows the "estimated" dot. */
+    val estimated: Boolean = false,
+    /** Map-matched to a tunnel road (or GPS lost just after matching onto one). */
+    val inTunnel: Boolean = false,
 ) {
     /** "Trip · Telstra 4G · next dead zone in 6.2 km", "Trip · Telstra 4G · No dead zones ahead". */
     val banner: String
@@ -69,6 +77,14 @@ sealed interface TripState {
     data object Idle : TripState
     data class Running(val stats: TripStats) : TripState
 }
+
+/** BLE beacon positioning for tunnels: the scanner, the learned/imported positions and the "use beacons" setting. */
+class BeaconSupport(
+    val enabled: StateFlow<Boolean>,
+    val scanner: BeaconScanner,
+    val snapper: BeaconSnapper,
+    val learner: BeaconLearner,
+)
 
 /** Stationary after [afterMs] of GPS speed under [SPEED_MPS]; moving again as soon as a fix is faster. */
 class StationaryDetector(private val afterMs: Long = 60_000L) {
@@ -114,6 +130,9 @@ class TripController(
     private val evalIntervalMs: Long = EVAL_INTERVAL_MS,
     /** Roads around the vehicle for the look-ahead to follow; null (or not yet loaded) means the arc extrapolation. */
     private val roads: RoadGraphProvider? = null,
+    /** Beacon positioning in tunnels; null = off. */
+    private val beacons: BeaconSupport? = null,
+    private val deadReckonIntervalMs: Long = DEAD_RECKON_INTERVAL_MS,
 ) {
     private val lock = Any()
     private val _state = MutableStateFlow<TripState>(TripState.Idle)
@@ -125,6 +144,15 @@ class TripController(
 
     private val _alerts = MutableSharedFlow<Alert>(extraBufferCapacity = 16)
     val alerts: SharedFlow<Alert> = _alerts.asSharedFlow()
+
+    private val _tunnel = MutableStateFlow(false)
+
+    /** Whether the vehicle is on a tunnel road (the DAS "tunnel coverage" rule). False outside a trip. */
+    val tunnel: StateFlow<Boolean> = _tunnel.asStateFlow()
+
+    private val positioning = TunnelPositioning()
+    private var drLoop: Job? = null
+    private var lastRealFix: TripFix? = null
 
     private val detector = StationaryDetector()
     private val track = ArrayDeque<TrackFix>()
@@ -146,6 +174,9 @@ class TripController(
             odometerM = 0.0
             alertCount = 0
             detector.reset()
+            positioning.reset()
+            lastRealFix = null
+            _tunnel.value = false
             _stationary.value = false
             startedAtMs = clockMs()
             engineInstance = AlertEngine { AlertConfig(settings.config.value) }
@@ -156,6 +187,12 @@ class TripController(
                 while (isActive) {
                     evaluateOnce()
                     delay(evalIntervalMs)
+                }
+            }
+            drLoop = scope.launch {
+                while (isActive) {
+                    delay(deadReckonIntervalMs)
+                    deadReckonOnce()
                 }
             }
         }
@@ -177,6 +214,11 @@ class TripController(
         if (!isRunning) return false
         loop?.cancel()
         loop = null
+        drLoop?.cancel()
+        drLoop = null
+        beacons?.scanner?.stop()
+        beacons?.snapper?.clear()
+        _tunnel.value = false
         hooks.stopLogger()
         hooks.stopRadio()
         _stationary.value = false
@@ -188,6 +230,12 @@ class TripController(
     fun onLocation(fix: TripFix) {
         synchronized(lock) {
             if (!isRunning) return
+            val graph = roads?.graphNear(fix.lat, fix.lon, clockMs())
+            val heading = LookAhead.project(track.toList(), 0.0).headingDeg
+            val use = positioning.onFix(fix, graph, heading, derivedSpeed())
+            lastRealFix = fix
+            _tunnel.value = positioning.inTunnel(fix.timeMs)
+            if (!use) return // a poor fix in a tunnel: the estimate carries on
             last?.let { prev ->
                 val d = distanceM(prev.lat, prev.lon, fix.lat, fix.lon)
                 if (d >= MIN_STEP_M && fix.accuracyM <= MAX_ODOMETER_ACCURACY_M) odometerM += d
@@ -200,6 +248,59 @@ class TripController(
         }
         hooks.publishFix(Fix(fix.lat, fix.lon, fix.accuracyM, fix.timeMs))
     }
+
+    /** One dead-reckoning step (internal for tests): publishes an estimated position when GPS is lost in a tunnel. Never throws. */
+    internal fun deadReckonOnce() {
+        try {
+            val now = clockMs()
+            val fix: TripFix
+            synchronized(lock) {
+                if (!isRunning) return
+                val ref = last ?: return
+                val graph = roads?.graphNear(ref.lat, ref.lon, now)
+                updateScanning(graph, ref)
+                val target = beacons?.snapper?.target(elapsedMs()) { p ->
+                    graph?.nearestOnRoad(p.lat, p.lon, BEACON_PROJECT_M, tunnelOnly = true)?.first
+                }
+                val est = positioning.tick(now, graph, target)
+                _tunnel.value = positioning.inTunnel(now)
+                if (est == null) return
+                fix = est
+                last?.let { prev ->
+                    val d = distanceM(prev.lat, prev.lon, fix.lat, fix.lon)
+                    if (d >= MIN_STEP_M) odometerM += d
+                }
+                last = fix
+                track.addLast(TrackFix(fix.timeMs, fix.lat, fix.lon))
+                while (track.isNotEmpty() && fix.timeMs - track.first().timeMs > TRACK_KEEP_MS) track.removeFirst()
+            }
+            hooks.publishFix(Fix(fix.lat, fix.lon, fix.accuracyM, fix.timeMs, deadReckoned = true))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Positioning is best-effort; the next tick tries again.
+        }
+    }
+
+    /** BLE scanning runs only with the setting on, during a trip, within [BEACON_NEAR_TUNNEL_M] of a tunnel road. */
+    private fun updateScanning(graph: au.signalatlas.core.roads.RoadGraph?, at: TripFix) {
+        val b = beacons ?: return
+        val want = isRunning && b.enabled.value && graph?.tunnelDistanceM(at.lat, at.lon, BEACON_NEAR_TUNNEL_M) != null
+        if (want && !b.scanner.scanning) {
+            b.scanner.start { s -> onBeacon(s) }
+        } else if (!want && b.scanner.scanning) {
+            b.scanner.stop()
+            b.snapper.clear()
+        }
+    }
+
+    private fun onBeacon(s: BeaconSighting) {
+        val b = beacons ?: return
+        b.snapper.onSighting(s)
+        val fix = synchronized(lock) { lastRealFix?.takeIf { clockMs() - it.timeMs <= BEACON_FIX_AGE_MS } } ?: return
+        b.learner.learn(s, LatLon(fix.lat, fix.lon), fix.accuracyM)
+    }
+
 
     private fun derivedSpeed(): Double = LookAhead.project(track.toList(), 0.0).speedMps
 
@@ -249,6 +350,7 @@ class TripController(
                 _state.value = TripState.Running(
                     TripStats(
                         startedAtMs, odometerM, networkName(network), floorLabel(cfg.floor), result.status, alertCount, _stationary.value,
+                        estimated = positioning.active, inTunnel = _tunnel.value,
                     ),
                 )
             }
@@ -262,7 +364,12 @@ class TripController(
     private fun publish(message: String) {
         synchronized(lock) {
             if (!isRunning) return
-            _state.value = TripState.Running(TripStats(startedAtMs, odometerM, alertCount = alertCount, stationary = _stationary.value, message = message))
+            _state.value = TripState.Running(
+                TripStats(
+                    startedAtMs, odometerM, alertCount = alertCount, stationary = _stationary.value, message = message,
+                    estimated = positioning.active, inTunnel = _tunnel.value,
+                ),
+            )
         }
     }
 
@@ -293,6 +400,11 @@ class TripController(
 
     companion object {
         const val EVAL_INTERVAL_MS = 2_000L
+        const val DEAD_RECKON_INTERVAL_MS = 1_000L
+        /** BLE scanning only within this distance of a tunnel road. */
+        const val BEACON_NEAR_TUNNEL_M = 500.0
+        private const val BEACON_PROJECT_M = 60.0
+        private const val BEACON_FIX_AGE_MS = 3_000L
         const val WAITING_GPS = "Waiting for GPS…"
         const val CHOOSE_NETWORK = "Choose a network on the map"
         private const val STALE_FIX_MS = 15_000L
