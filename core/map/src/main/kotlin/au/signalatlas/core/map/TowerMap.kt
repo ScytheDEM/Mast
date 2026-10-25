@@ -115,6 +115,10 @@ class MapCameraState(initialLat: Double = -27.0, initialLon: Double = 134.0, ini
         }
     }
 
+    /** The (lat, lon) under the screen point ([xPx], [yPx]) of the map view; null before the map is ready. */
+    fun latLngAt(xPx: Float, yPx: Float): Pair<Double, Double>? =
+        map?.projection?.fromScreenLocation(android.graphics.PointF(xPx, yPx))?.let { it.latitude to it.longitude }
+
     internal fun attach(m: MapLibreMap) {
         map = m
         pending?.let { (la, lo, z) -> m.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(la, lo), z)) }

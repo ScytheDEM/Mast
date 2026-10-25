@@ -68,6 +68,7 @@ fun TowerSearchBar(
     onResultClick: (SiteSummary) -> Unit,
     onOpenUpdates: () -> Unit,
     docked: Boolean,
+    onOpenOffline: () -> Unit = {},
     modifier: Modifier = Modifier,
     /** Active filters (badges the overflow icon); [onFilters] opens the filters from the overflow menu. */
     filterCount: Int = 0,
@@ -117,7 +118,7 @@ fun TowerSearchBar(
                     text.isNotEmpty() -> IconButton(onClick = { setText("") }) {
                         Icon(Icons.Filled.Close, stringResource(R.string.clear))
                     }
-                    !expanded -> OverflowMenu(onOpenUpdates, filterCount, onFilters)
+                    !expanded -> OverflowMenu(onOpenUpdates, onOpenOffline, filterCount, onFilters)
                 }
             },
         )
@@ -146,7 +147,7 @@ fun TowerSearchBar(
 }
 
 @Composable
-private fun OverflowMenu(onOpenUpdates: () -> Unit, filterCount: Int, onFilters: () -> Unit) {
+private fun OverflowMenu(onOpenUpdates: () -> Unit, onOpenOffline: () -> Unit, filterCount: Int, onFilters: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     val description = if (filterCount > 0) {
         stringResource(R.string.more_options) + ", " + pluralStringResource(R.plurals.filters_badge_description, filterCount, filterCount)
@@ -172,6 +173,12 @@ private fun OverflowMenu(onOpenUpdates: () -> Unit, filterCount: Int, onFilters:
                 text = { Text(stringResource(R.string.menu_tower_data)) },
                 leadingIcon = { Icon(painterResource(R.drawable.ic_cell_tower), null) },
                 onClick = { open = false; onOpenUpdates() },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.menu_offline_regions)) },
+                leadingIcon = { Icon(painterResource(R.drawable.ic_coverage), null) },
+                onClick = { open = false; onOpenOffline() },
+                modifier = Modifier.testTag("menu-offline"),
             )
         }
     }
