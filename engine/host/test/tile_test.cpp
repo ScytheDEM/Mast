@@ -80,7 +80,7 @@ TEST(TileBuildings, PointQueryUsesTheSameEnvironmentAndNoGridIsUnchanged) {
         for (int32_t i = 3; i < 256; i += 41) {
             const double lat = sa::merc::tileLatDeg(v.params.y + (j + 0.5) / 256.0, v.params.z);
             const double lon = sa::merc::tileLonDeg(v.params.x + (i + 0.5) / 256.0, v.params.z);
-            differentClass += sa::environmentAt(withGrid.buildings, lat, lon) != sa::kNoEnv;
+            differentClass += sa::environmentAt(withGrid.buildings, lat, lon).valid;
             ASSERT_EQ(v.n, sa::predictPoint(v.arrays(), kNoPatterns, lat, lon, v.params.area, false, got.data(), withGrid.buildings));
             int32_t best = 0;
             for (int32_t k = 1; k < v.n; ++k) {
@@ -98,6 +98,35 @@ TEST(TileBuildings, PointQueryUsesTheSameEnvironmentAndNoGridIsUnchanged) {
     render(plain, a);
     render(stripped, b);
     EXPECT_EQ(a.rsrp, b.rsrp);
+}
+
+// Rule 5a (continuous, 2026-10-25): the environment term varies smoothly, so neighbouring z14 pixels differ by at most
+// 1 dB through it, even over the synthetic grid's abrupt cell-to-cell jumps (0 to 60% coverage between 1 km cells).
+TEST(TileBuildings, EnvironmentTermHasNoStepAboveOneDbBetweenAdjacentPixels) {
+    Vec v = loadVec("tile_canberra_z13_buildings.json");
+    const sa::RenderParams withGrid = v.withBuildings(v.params);
+    for (const float f : {700.0f, 1800.0f}) {
+        const sa::PreparedPathLoss pl = sa::preparePathLoss(f, 30.0f, sa::Area::Suburban);
+        double worst = 0.0, lo = 1e9, hi = -1e9;
+        const int32_t z = 14, n = 512;  // the four z14 children of the z13 tile, pixel centres
+        for (int32_t row = 0; row < n; row += 7) {
+            double prev = std::nan("");
+            for (int32_t col = 0; col < n; ++col) {
+                const double lat = sa::merc::tileLatDeg(v.params.y * 2 + (row + 0.5) / 256.0, z);
+                const double lon = sa::merc::tileLonDeg(v.params.x * 2 + (col + 0.5) / 256.0, z);
+                const sa::EnvWeights w = sa::environmentAt(withGrid.buildings, lat, lon);
+                if (!w.valid) { prev = std::nan(""); continue; }
+                const double term = pl.evalD(1.0, &w).pl - pl.evalD(1.0).pl;
+                if (std::isfinite(prev)) worst = std::max(worst, std::abs(term - prev));
+                prev = term;
+                lo = std::min(lo, term);
+                hi = std::max(hi, term);
+            }
+        }
+        std::printf("[ env ] %.0f MHz: environment term %.1f..%.1f dB, worst adjacent step %.2f dB\n", f, lo, hi, worst);
+        EXPECT_LE(worst, 1.0);
+        EXPECT_GT(hi - lo, 10.0) << "the grid should span the classes";
+    }
 }
 
 TEST(Tile, NoCarriersInRangeIsAllZeroAndFast) {

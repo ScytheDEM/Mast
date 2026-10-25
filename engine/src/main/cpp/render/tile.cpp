@@ -180,9 +180,10 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
         colCh[static_cast<size_t>(i)] = std::cos(lr / 2.0);
     }
     for (int32_t j = 0; j < N; ++j) rowLatDeg[static_cast<size_t>(j)] = merc::tileLatDeg(p.y + (j + 0.5) / N, p.z);
-    // Rule 5a: the receiver environment class of every grid sample (kNoEnv = the carrier's own class), and per block
-    // the set of classes present (bit e = class e, bit 4 = no data), so the bound can use the most optimistic one.
-    std::vector<uint8_t> gEnv;
+    // Rule 5a: the receiver environment blend of every grid sample (not valid = the carrier's own class), and per block
+    // the classes with weight anywhere in it (bit e = class e, bit 4 = no data). The blended loss is a convex
+    // combination of the classes' losses, so the smallest of those present bounds it from below.
+    std::vector<EnvWeights> gEnv;
     if (p.buildings != nullptr) {
         gEnv.resize(NN);
         for (int32_t j = 0; j < N; ++j) {
@@ -243,8 +244,14 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 envMask = 0;
                 for (int32_t j = bj * B; j < (bj + 1) * B; ++j) {
                     for (int32_t i = bi * B; i < (bi + 1) * B; ++i) {
-                        const uint8_t e = gEnv[static_cast<size_t>(j) * N + i];
-                        envMask |= e <= 3 ? 1u << e : 1u << 4;
+                        const EnvWeights& e = gEnv[static_cast<size_t>(j) * N + i];
+                        if (!e.valid) {
+                            envMask |= 1u << 4;
+                            continue;
+                        }
+                        for (uint32_t c = 0; c < 4; ++c) {
+                            if (e.w[c] > 0.0) envMask |= 1u << c;
+                        }
                     }
                 }
             }
@@ -285,7 +292,8 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                         if (!((envMask >> 4) & 1u)) pl.plDb = std::numeric_limits<float>::infinity();
                         for (uint8_t e = 0; e < 4; ++e) {
                             if (!((envMask >> e) & 1u)) continue;
-                            const PathLoss q = indoor ? cr.pl.evaluateIndoor(d3Km, e) : cr.pl.evaluate(d3Km, e);
+                            const EnvWeights only{true, {e == 0 ? 1.0 : 0.0, e == 1 ? 1.0 : 0.0, e == 2 ? 1.0 : 0.0, e == 3 ? 1.0 : 0.0}};
+                            const PathLoss q = indoor ? cr.pl.evaluateIndoor(d3Km, &only) : cr.pl.evaluate(d3Km, &only);
                             if (q.plDb < pl.plDb) pl = q;
                         }
                     }
@@ -374,7 +382,7 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                 const int32_t* bgord = &gord[bi * KK];
                 const double* bgsum = &gsum[bi * static_cast<size_t>(G)];
                 const double cs = colSh[static_cast<size_t>(i)], cc = colCh[static_cast<size_t>(i)];
-                const uint8_t envHere = gEnv.empty() ? kNoEnv : gEnv[static_cast<size_t>(j) * N + i];
+                const EnvWeights* envHere = gEnv.empty() ? nullptr : &gEnv[static_cast<size_t>(j) * N + i];
                 ++stamp;
                 double bestR = -std::numeric_limits<double>::infinity();
                 float bestSigma = 8.0f;

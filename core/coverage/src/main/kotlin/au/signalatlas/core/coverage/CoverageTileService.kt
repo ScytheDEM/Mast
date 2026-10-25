@@ -517,6 +517,9 @@ class CoverageTileService internal constructor(
         }
     }
 
+    /** Terrain tables published and kept in memory (test hook). */
+    internal val terrainReadyCount: Int get() = terrain?.readyCount ?: 0
+
     /** Number of terrain regions kept (test hook). */
     internal val terrainRegionCount: Int get() = terrain?.regionCount ?: 0
 

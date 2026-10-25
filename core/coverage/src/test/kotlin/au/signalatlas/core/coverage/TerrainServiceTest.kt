@@ -480,6 +480,7 @@ class TerrainServiceTest {
         }.toSet()
         assertThat(keys.size).isGreaterThan(128)
         val r = rig(towers = FakeTowers().apply { batchFor = { batch } })
+        r.service.setVisible(setOf(r.tile)) // on screen: its tables are kept even past the memory cap
         r.render()
         waitUntil(timeoutMs = 20_000, what = "all ${keys.size} tables built") { r.renderer.builds.size == keys.size }
         r.awaitEpochAbove(0)
@@ -717,6 +718,33 @@ class TerrainServiceTest {
         
         r.awaitEpochAbove(1)
         assertThat(r.renderer.buildCalls).hasSize(builds)
+    }
+
+    /** The global table LRU is capped at 400; off-screen regions' tables go first, and leave those regions' snapshots. */
+    @Test fun theTableCacheIsCappedAndEvictsOffScreenTablesFirst() {
+        assertThat(TerrainCoordinator.MAX_READY_TABLES).isEqualTo(400)
+        val r0 = TerrainRig(tmp, chunksPresent = true, towers = FakeTowers()).also { rig = it }
+        val far = Triple(10, r0.at.x + 40, r0.at.y)
+        val farLat = TileMath.centreLat(10, far.third)
+        val farLon = TileMath.centreLon(10, far.second)
+        fun site(n: Int, lat: Double, lon: Double) = sydneyBatch(FloatArray(n) { 700f }, FloatArray(n) { 4f + 2 * it }, sameSite = true)
+            .also { b -> for (i in 0 until n) { b.siteLat[i] = lat; b.siteLon[i] = lon } }
+        val a = site(300, -33.87, 151.21)
+        val b = site(200, farLat, farLon)
+        r0.rig.towers.batchFor = { bounds -> if (bounds.contains(-33.87, 151.21)) a else b }
+        r0.putChunks(ChunkMathRegion.of(far.second, far.third))
+        r0.service.setVisible(setOf(r0.tile))
+        r0.render()
+        waitUntil(timeoutMs = 20_000, what = "300 tables") { r0.renderer.builds.size == 300 && r0.service.terrainReadyCount == 300 }
+        r0.awaitEpochAbove(0)
+        val nearKey = r0.key()
+        r0.service.setVisible(setOf(far))
+        r0.render(far.first, far.second, far.third)
+        waitUntil(timeoutMs = 20_000, what = "500 builds") { r0.renderer.builds.size == 500 }
+        waitUntil(what = "trimmed") { r0.service.terrainReadyCount == 400 }
+        r0.render(far.first, far.second, far.third)
+        assertThat(r0.renderer.preparedTables.last()).hasSize(200) // the on-screen region kept all of its tables
+        assertThat(r0.key()).isNotEqualTo(nearKey) // the off-screen region lost the evicted ones (and re-renders later)
     }
 
     /** M2 rule 5a (M3b): building data arrives with Increase resolution, changes tile keys, and reaches the renderer. */

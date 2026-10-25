@@ -44,11 +44,16 @@ struct PreparedPathLoss {
     double sLos, sNlos;
     double rK, rC, rH, rPl1Dbp; // RMa PL1 terms and PL1(d_BP)
 
-    // Raw double evaluation. `d3dKm` is the 3D distance, finite. `env` (rule 5a) is the receiver environment class
-    // (an Area value) or kNoEnv; it only changes the Hata / COST-231 terms of the receiver's surroundings.
-    Pl evalD(double d3dKm, uint8_t env = kNoEnv) const {
+    // Raw double evaluation. `d3dKm` is the 3D distance, finite. `env` (rule 5a, nullable) blends the four classes'
+    // Hata / COST-231 receiver terms by its weights; it changes nothing for TR 38.901 or when not valid.
+    Pl evalD(double d3dKm, const EnvWeights* env = nullptr) const {
         const double d = d3dKm < 0.02 ? 0.02 : d3dKm;
-        if (kind == Kind::Hata || kind == Kind::Cost231) return {(env <= 3 ? envBase[env] : base) + slope * std::log10(d), 8.0};
+        if (kind == Kind::Hata || kind == Kind::Cost231) {
+            const double b = env != nullptr && env->valid
+                                 ? env->w[0] * envBase[0] + env->w[1] * envBase[1] + env->w[2] * envBase[2] + env->w[3] * envBase[3]
+                                 : base;
+            return {b + slope * std::log10(d), 8.0};
+        }
         const double dd = d * 1000.0;
         double d2 = std::sqrt(std::fmax(dd * dd - dh * dh, 0.0));
         d2 = std::fmax(d2, 10.0);
@@ -78,13 +83,13 @@ struct PreparedPathLoss {
     }
 
     // `d3dKm` is the 3D distance, floored at 0.02 km; NaN is treated as 80 km.
-    PathLoss evaluate(float d3dKm, uint8_t env = kNoEnv) const {
+    PathLoss evaluate(float d3dKm, const EnvWeights* env = nullptr) const {
         const Pl r = evalD(sane(d3dKm, 0.02, 1.0e4, 80.0), env);
         return {static_cast<float>(r.pl), static_cast<float>(r.sigma)};
     }
 
     // Rule 7: PL + O2I low loss, and sigma combined with the O2I sigma in quadrature.
-    PathLoss evaluateIndoor(float d3dKm, uint8_t env = kNoEnv) const {
+    PathLoss evaluateIndoor(float d3dKm, const EnvWeights* env = nullptr) const {
         const Pl r = evalD(sane(d3dKm, 0.02, 1.0e4, 80.0), env);
         return {static_cast<float>(r.pl + o2iDb),
                 static_cast<float>(std::sqrt(r.sigma * r.sigma + kO2iSigmaDb * kO2iSigmaDb))};

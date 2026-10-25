@@ -317,9 +317,10 @@ python3 -I tools/engine/make_calibration_vectors.py engine/host/test/vectors
 
 ## Receiver environment (rule 5a, M3b, 2026-10-24)
 
-`reference.environment_at(grid, lat, lon)` classifies a point from a building grid (dict: `south`, `west`, `step`
+`reference.environment_at(grid, lat, lon)` gives a point's class blend weights (`environment_weights`, amended
+2026-10-25: ramps instead of a hard switch) from a building grid (dict: `south`, `west`, `step`
 0.01, `rows`, `cols`, row-major `cover` codes `round(fraction * 250)` with 255 = no data, `height` codes in 0.5 m),
-interpolating fraction and height bilinearly between cell centres. `carrier_rsrp(..., env=)` uses the class in place of
-the carrier's own only for f <= 2200 MHz (the Hata / COST-231 receiver terms). `make_vectors.py` writes
+interpolating fraction and height bilinearly between cell centres. `carrier_rsrp(..., env=)` uses the weighted sum of the classes' path
+losses in place of the carrier's class only for f <= 2200 MHz (the Hata / COST-231 receiver terms). `make_vectors.py` writes
 `tile_canberra_z13_buildings.json` (the carrier-area tile plus a synthetic grid in `bldSouth`, `bldWest`, `bldRows`,
 `bldCols`, `bldCover`, `bldHeight`); the other vectors carry no grid and are unchanged.

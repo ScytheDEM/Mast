@@ -144,22 +144,25 @@ COVER_SCALE = 250.0
 HEIGHT_STEP_M = 0.5
 
 
-def classify_environment(fraction, height_m):
-    """Rule 5a: the receiver's environment class from the building coverage fraction and mean height (m)."""
-    if fraction >= 0.35 and height_m >= 15.0:
-        return "DENSE_URBAN"
-    if fraction >= 0.2:
-        return "URBAN"
-    if fraction >= 0.05:
-        return "SUBURBAN"
-    return "RURAL"
+def _ramp(x, lo, hi):
+    return clamp((x - lo) / (hi - lo), 0.0, 1.0)
+
+
+def environment_weights(fraction, height_m):
+    """Rule 5a (continuous, 2026-10-25): blend weights of AREAS (DENSE_URBAN, URBAN, SUBURBAN, RURAL), summing to 1:
+    piecewise-linear on the coverage fraction with ramps of +-0.05 around 0.05, 0.2 and 0.35, the dense ramp also
+    on mean height over 12-18 m."""
+    s1 = _ramp(fraction, 0.0, 0.1)
+    s2 = _ramp(fraction, 0.15, 0.25)
+    s3 = min(s2, _ramp(fraction, 0.30, 0.40) * _ramp(height_m, 12.0, 18.0))
+    return (s3, s2 - s3, s1 - s2, 1.0 - s1)
 
 
 def environment_at(grid, lat, lon):
-    """Rule 5a: the class at (lat, lon) from a building grid dict (south, west, step, rows, cols, cover, height: row-major
-    codes, row 0 = south; cover = round(fraction * 250), 255 = no data; height in 0.5 m steps). The fraction and height
-    are interpolated bilinearly between the centres of the four surrounding cells. None (the carrier's own class) for no
-    grid, a point outside the cell centres, or a cell without data among the four."""
+    """Rule 5a: the blend weights at (lat, lon) from a building grid dict (south, west, step, rows, cols, cover, height:
+    row-major codes, row 0 = south; cover = round(fraction * 250), 255 = no data; height in 0.5 m steps). The fraction
+    and height are interpolated bilinearly between the centres of the four surrounding cells. None (the carrier's own
+    class) for no grid, a point outside the cell centres, or a cell without data among the four."""
     if grid is None:
         return None
     rows, cols, step = grid["rows"], grid["cols"], grid["step"]
@@ -177,7 +180,7 @@ def environment_at(grid, lat, lon):
 
     def bil(a):
         return (a[idx[0]] * (1.0 - tc) + a[idx[1]] * tc) * (1.0 - tr) + (a[idx[2]] * (1.0 - tc) + a[idx[3]] * tc) * tr
-    return classify_environment(bil(cover) / COVER_SCALE, bil(height) * HEIGHT_STEP_M)
+    return environment_weights(bil(cover) / COVER_SCALE, bil(height) * HEIGHT_STEP_M)
 
 
 # ---------------------------------------------------------------- rule 6: path loss
@@ -473,12 +476,11 @@ def carrier_usable(carriers, i):
 def carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain=None, env=None):
     """One carrier at one point: (RSRP dBm, sigma dB, terrain complete). Rules 3-8, Terrain rule 5, Calibration rules
     4 and 6 (the optional `calOffsetDb`, `calSlope`, `calDmedKm`, `calSigmaScale` columns; no residual raster).
-    `area` is the fallback for a carrier without its own `carrierArea` (rule 5). `env` (rule 5a) is the receiver's
-    environment class at the point, or None: it replaces the carrier's class in the Hata / COST-231 receiver terms
-    (f <= 2200 MHz: a(h_m), the SUBURBAN / RURAL corrections and C_m); TR 38.901 keeps the carrier's scenario."""
+    `area` is the fallback for a carrier without its own `carrierArea` (rule 5). `env` (rule 5a) is the receiver
+    environment's blend weights at the point (`environment_at`), or None: for f <= 2200 MHz the path loss is the
+    weighted sum over the classes (only a(h_m), the SUBURBAN / RURAL corrections and C_m differ between them); TR 38.901
+    keeps the carrier's scenario."""
     area = carrier_area(carriers, i, area)
-    if env is not None and carriers["freqMhz"][i] <= 2200.0:
-        area = env
     h = h_tx_clamped(carriers["hTx"][i])
     d2 = haversine_m(carriers["lat"][i], carriers["lon"][i], lat, lon)
     d3 = math.sqrt(d2 * d2 + (h - H_RX) ** 2)
@@ -489,6 +491,8 @@ def carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain=None, en
                             carriers["gain"][i], carriers["tilt"][i], carriers["hTx"][i],
                             carriers["freqMhz"][i], att, carriers["hrpPeak"][i])
     pl, sg, _ = path_loss(carriers["freqMhz"][i], d3 / 1000.0, carriers["hTx"][i], area)
+    if env is not None and carriers["freqMhz"][i] <= 2200.0:
+        pl = sum(w * path_loss(carriers["freqMhz"][i], d3 / 1000.0, carriers["hTx"][i], a)[0] for w, a in zip(env, AREAS))
     if indoor:
         pl += o2i_low_loss_db(carriers["freqMhz"][i])
         sg = indoor_sigma(sg)

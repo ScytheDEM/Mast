@@ -237,19 +237,22 @@ class Environment(unittest.TestCase):
     def grid(self, cover, height, rows=2, cols=2):
         return {"south": -35.0, "west": 149.0, "step": 0.01, "rows": rows, "cols": cols, "cover": cover, "height": height}
 
-    def test_thresholds(self):
-        self.assertEqual(ref.classify_environment(0.35, 15.0), "DENSE_URBAN")
-        self.assertEqual(ref.classify_environment(0.35, 14.9), "URBAN")
-        self.assertEqual(ref.classify_environment(0.2, 50.0), "URBAN")
-        self.assertEqual(ref.classify_environment(0.05, 0.0), "SUBURBAN")
-        self.assertEqual(ref.classify_environment(0.049, 0.0), "RURAL")
+    def test_weights_ramp_around_the_thresholds(self):
+        self.assertEqual(ref.environment_weights(0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+        self.assertEqual(ref.environment_weights(0.05, 0.0), (0.0, 0.0, 0.5, 0.5))
+        self.assertEqual(ref.environment_weights(0.12, 0.0), (0.0, 0.0, 1.0, 0.0))
+        self.assertAlmostEqual(ref.environment_weights(0.2, 0.0)[1], 0.5)
+        self.assertEqual(ref.environment_weights(0.5, 30.0), (1.0, 0.0, 0.0, 0.0))
+        self.assertEqual(ref.environment_weights(0.5, 12.0), (0.0, 1.0, 0.0, 0.0))
+        w = ref.environment_weights(0.35, 15.0)
+        self.assertAlmostEqual(w[0], 0.25)
+        self.assertAlmostEqual(sum(w), 1.0)
 
     def test_bilinear_between_cell_centres_and_no_data(self):
         g = self.grid([0, 102, 0, 102], [0, 60, 0, 60])  # west column empty, east column 0.41 / 30 m
-        self.assertEqual(ref.environment_at(g, -34.99, 149.0051), "RURAL")       # at the west centres
-        self.assertEqual(ref.environment_at(g, -34.99, 149.0149), "DENSE_URBAN")  # at the east centres
-        self.assertEqual(ref.environment_at(g, -34.99, 149.01), "URBAN")         # halfway: 0.204, 15 m -> not dense
-        self.assertIsNone(ref.environment_at(g, -34.99, 149.001))                # west of the centres
+        self.assertGreater(ref.environment_at(g, -34.99, 149.0051)[3], 0.9)  # near the west centres: rural
+        self.assertGreater(ref.environment_at(g, -34.99, 149.0149)[0], 0.9)  # at the east centres: dense
+        self.assertIsNone(ref.environment_at(g, -34.99, 149.001))  # west of the centres
         self.assertIsNone(ref.environment_at(self.grid([0, 255, 0, 100], [0] * 4), -34.99, 149.01))
         self.assertIsNone(ref.environment_at(None, -34.99, 149.01))
 
@@ -260,12 +263,12 @@ class Environment(unittest.TestCase):
                     "sectorKey": [1, 2], "freqKey": [1, 2], "hrpId": [0, 0], "hrpPeak": [0, 0], "carrierArea": [1, 1]}
         lat, lon = -35.02, 149.01
         urban = [ref.carrier_rsrp(carriers, i, [], lat, lon, "URBAN", False)[0] for i in range(2)]
-        rural = [ref.carrier_rsrp(carriers, i, [], lat, lon, "URBAN", False, env="RURAL")[0] for i in range(2)]
+        rural = [ref.carrier_rsrp(carriers, i, [], lat, lon, "URBAN", False, env=(0, 0, 0, 1.0))[0] for i in range(2)]
         d = ref.haversine_m(-35.0, 149.0, lat, lon)
         d3 = math.sqrt(d * d + 28.5 ** 2) / 1000.0
         self.assertAlmostEqual(urban[0] - rural[0], ref.hata(758.0, d3, 30.0, "RURAL") - ref.hata(758.0, d3, 30.0, "URBAN"))
         self.assertEqual(urban[1], rural[1])  # TR 38.901: the carrier's scenario only
-        indoor = ref.carrier_rsrp(carriers, 0, [], lat, lon, "URBAN", True, env="RURAL")[0]
+        indoor = ref.carrier_rsrp(carriers, 0, [], lat, lon, "URBAN", True, env=(0, 0, 0, 1.0))[0]
         self.assertAlmostEqual(rural[0] - indoor, ref.o2i_low_loss_db(758.0))  # O2I unchanged
 
 

@@ -17,7 +17,7 @@ int32_t predictPoint(const CarrierArrays& c, const PatternTable& patterns, doubl
         return kRenderInvalid;
     }
     if (!std::isfinite(lat) || !std::isfinite(lon) || std::fabs(lat) > 90.0) return kRenderInvalid;
-    const uint8_t env = environmentAt(buildings, lat, lon);
+    const EnvWeights env = environmentAt(buildings, lat, lon);
     for (int32_t i = 0; i < c.n; ++i) {
         if (!carrierUsable(c, i)) {
             outRsrp[i] = std::numeric_limits<float>::quiet_NaN();
@@ -26,7 +26,7 @@ int32_t predictPoint(const CarrierArrays& c, const PatternTable& patterns, doubl
         const Carrier cr = prepareCarrier(c, patterns, i, area);
         const double d2 = merc::haversineM(c.lat[i], c.lon[i], lat, lon);
         const double brg = merc::bearingDeg(c.lat[i], c.lon[i], lat, lon);
-        outRsrp[i] = static_cast<float>(evaluateCarrier(cr, brg, d2, indoor, env).rsrp);
+        outRsrp[i] = static_cast<float>(evaluateCarrier(cr, brg, d2, indoor, &env).rsrp);
     }
     return c.n;
 }

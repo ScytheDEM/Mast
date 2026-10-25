@@ -73,7 +73,7 @@ struct RenderParams {
     const ResidualRaster* residuals = nullptr;
     int32_t residualCount = 0;
     // Rule 5a (M3b): the building grid around the tile (borrowed for the call), or null. Each grid sample's receiver
-    // environment class (environmentAt) replaces the carrier's class in the Hata / COST-231 receiver terms; samples
+    // environment blend (environmentAt) replaces the carrier's class in the Hata / COST-231 receiver terms; samples
     // without building data keep the carrier's class.
     const BuildingGrid* buildings = nullptr;
 };

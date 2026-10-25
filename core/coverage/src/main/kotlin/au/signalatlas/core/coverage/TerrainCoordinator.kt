@@ -104,10 +104,8 @@ internal class TerrainCoordinator(
     }
 
     // ---- global table state, guarded by [lock] ----
-    /** Published tables, most recently used last; snapshots keep their own references, so eviction only stops reuse. */
-    private val ready = object : LinkedHashMap<TableKey, TerrainTable>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TableKey, TerrainTable>) = size > MAX_READY_TABLES
-    }
+    /** Published tables, least recently used first; capped at [MAX_READY_TABLES] by [trimReadyLocked]. */
+    private val ready = LinkedHashMap<TableKey, TerrainTable>(64, 0.75f, true)
     private val staged = HashMap<TableKey, TerrainTable>()
     private val failed = HashSet<TableKey>()
     /** Queued or running builds and the visible tiles that want each. */
@@ -441,6 +439,7 @@ internal class TerrainCoordinator(
         val fresh = HashMap(staged)
         staged.clear()
         ready.putAll(fresh)
+        trimReadyLocked()
         var changed = false
         for (tr in regions.values) {
             if (tr.retired || !tr.available) continue
@@ -448,6 +447,31 @@ internal class TerrainCoordinator(
             if (add.isNotEmpty()) changed = setSnapshotLocked(tr, tr.snapshot.tables + add) || changed
         }
         return changed
+    }
+
+    /**
+     * Caller holds [lock]: evicts down to [MAX_READY_TABLES], least recently used first but tables of on-screen regions
+     * last. An evicted table also leaves the snapshots of off-screen regions (their versions change, so their tiles
+     * re-render when shown again), so the memory is really freed; on-screen snapshots keep theirs until they leave.
+     */
+    private fun trimReadyLocked() {
+        if (ready.size <= MAX_READY_TABLES) return
+        val ctx = context
+        val shownKeys = if (ctx == null) emptySet() else view?.tiles?.mapNotNull {
+            keyFor(ctx.selectionId, ctx.stamp, ctx.etag, it.first, it.second, it.third)
+        }?.toSet() ?: emptySet()
+        val onScreen = HashSet<TableKey>()
+        for (k in shownKeys) regions[k]?.let { onScreen += it.snapshot.tables.keys }
+        val evict = ArrayList<TableKey>()
+        val excess = ready.size - MAX_READY_TABLES
+        for (k in ready.keys) { if (evict.size >= excess) break; if (k !in onScreen) evict += k }
+        for (k in ready.keys) { if (evict.size >= excess) break; if (k in onScreen) evict += k }
+        val gone = evict.toHashSet()
+        for (k in evict) ready.remove(k)
+        for ((rk, tr) in regions) {
+            if (rk in shownKeys || tr.snapshot.tables.keys.none { it in gone }) continue
+            setSnapshotLocked(tr, tr.snapshot.tables.filterKeys { it !in gone })
+        }
     }
 
     /** Caller holds [lock]: closes the mosaics nobody uses, keeping the [keep] most recently used. */
@@ -661,11 +685,8 @@ internal class TerrainCoordinator(
         const val MARGIN_KM = 40.0
         const val TERRAIN_ZOOM = 10
         const val MAX_REGIONS = 12
-        /**
-         * Published tables kept for reuse by regions created later (about 100 KiB each; region snapshots hold their
-         * own). A dense CBD view needs a few hundred.
-         */
-        const val MAX_READY_TABLES = 768
+        /** Published tables kept in memory (about 100 KiB each, so about 40 MB); see [trimReadyLocked]. */
+        const val MAX_READY_TABLES = 400
         const val PUBLISH_BATCH = 64
         /** A carrier serving at least this share of a tile's covered pixels is a contender (its table comes first). */
         const val CONTENDER_SHARE = 0.01
