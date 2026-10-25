@@ -33,9 +33,11 @@ class CellMatcher(private val candidates: CandidateSource, private val cellMap: 
         val measured = cell.rsrp ?: return null
         val set = candidates.candidates(sim, cell.tech, freq, fix.lat, fix.lon) ?: return null
         if (set.candidates.isEmpty()) return null
-        val scored = set.candidates.map { c ->
-            val d = CalibrationMath.distanceM(c.siteLat, c.siteLon, fix.lat, fix.lon)
-            Triple(c, CalibrationMath.matchScore(c.predictedDbm, measured.toDouble(), d, cell.taMeters, c.rMaxKm), d)
+        val distances = set.candidates.map { CalibrationMath.distanceM(it.siteLat, it.siteLon, fix.lat, fix.lon) }
+        val nearest = distances.min()
+        val scored = set.candidates.mapIndexed { i, c ->
+            val d = distances[i]
+            Triple(c, CalibrationMath.matchScore(c.predictedDbm, measured.toDouble(), d, cell.taMeters, c.rMaxKm, nearest), d)
         }.sortedBy { it.second }
         fun result(t: Triple<Candidate, Double, Double>, conf: Confidence) =
             MatchResult(
@@ -65,8 +67,8 @@ class CellMatcher(private val candidates: CandidateSource, private val cellMap: 
         const val MAX_OTHERS = 4
 
         fun cellKey(sim: Network, cell: ObservedCell): String? = when {
-            cell.cellId != null -> "c:${sim.ordinal}:${cell.tech.ordinal}:${cell.cellId}"
-            cell.pci != null && cell.channel != null -> "p:${sim.ordinal}:${cell.tech.ordinal}:${cell.pci}:${cell.channel}"
+            cell.cellId != null -> "v2c:${sim.ordinal}:${cell.tech.ordinal}:${cell.cellId}"
+            cell.pci != null && cell.channel != null -> "v2p:${sim.ordinal}:${cell.tech.ordinal}:${cell.pci}:${cell.channel}"
             else -> null
         }
     }

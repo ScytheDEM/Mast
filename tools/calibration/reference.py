@@ -15,6 +15,9 @@ MAX_FIX_ACCURACY_M = 50.0
 TA_STEP_M = 150.0
 TA_DB_PER_STEP = 3.0
 OUT_OF_RANGE_PENALTY = 100.0
+MISMATCH_CAP_DB = 20.0
+DB_PER_DOUBLING = 6.0
+NEAR_FLOOR_M = 300.0
 LIKELY_MARGIN = 3.0
 CONFIRM_AFTER = 5
 # Rule 3
@@ -50,9 +53,12 @@ def is_candidate(carrier_freq_mhz, channel_freq_mhz, distance_m):
         distance_m <= CANDIDATE_RADIUS_KM * 1000.0
 
 
-def match_score(predicted_dbm, measured_dbm, distance_m, ta_m, r_max_km):
-    """Rule 2 (lower is better). `ta_m` None = no timing advance."""
-    s = abs(predicted_dbm - measured_dbm)
+def match_score(predicted_dbm, measured_dbm, distance_m, ta_m, r_max_km, nearest_m=None):
+    """Rule 2 (lower is better). `ta_m` None = no timing advance; `nearest_m` = nearest candidate's distance."""
+    if nearest_m is None:
+        nearest_m = distance_m
+    s = min(abs(predicted_dbm - measured_dbm), MISMATCH_CAP_DB)
+    s += DB_PER_DOUBLING * max(0.0, math.log2(distance_m / max(nearest_m, NEAR_FLOOR_M)))
     if ta_m is not None:
         s += abs(distance_m - ta_m) / TA_STEP_M * TA_DB_PER_STEP
     if distance_m > r_max_km * 1000.0:

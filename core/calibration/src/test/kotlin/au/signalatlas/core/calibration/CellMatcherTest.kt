@@ -79,8 +79,8 @@ class CellMatcherTest {
     }
 
     @Test fun cellKeysPreferTheCellIdAndNeedSomething() {
-        assertThat(CellMatcher.cellKey(Network.OPTUS, cell(cellId = 77L))).isEqualTo("c:1:0:77")
-        assertThat(CellMatcher.cellKey(Network.OPTUS, cell())).isEqualTo("p:1:0:101:9410")
+        assertThat(CellMatcher.cellKey(Network.OPTUS, cell(cellId = 77L))).isEqualTo("v2c:1:0:77")
+        assertThat(CellMatcher.cellKey(Network.OPTUS, cell())).isEqualTo("v2p:1:0:101:9410")
         assertThat(CellMatcher.cellKey(Network.OPTUS, cell(pci = null))).isNull()
         assertThat(CellMatcher.cellKey(Network.OPTUS, cell(channel = null))).isNull()
         cands.list = listOf(candidate(1, -95.0))
@@ -92,5 +92,12 @@ class CellMatcherTest {
         assertThat(EngineCandidateSource.servingNetworks(Network.TELSTRA)).containsExactly(Network.TELSTRA)
         assertThat(EngineCandidateSource.servingNetworks(Network.OPTUS)).containsExactly(Network.OPTUS, Network.OPTUS_TPG_JV)
         assertThat(EngineCandidateSource.servingNetworks(Network.TPG)).containsExactly(Network.TPG, Network.OPTUS_TPG_JV)
+    }
+
+    @Test fun aNearbyTowerBeatsAFarOneWhosePredictionHappensToFit() {
+        // Glenmore Park vs Concord: no timing advance, the far site predicted spot on, the near one 15 dB off.
+        val near = CalibrationMath.matchScore(-95.0, -80.0, 1_000.0, null, 60.0, nearestM = 1_000.0)
+        val far = CalibrationMath.matchScore(-80.0, -80.0, 35_000.0, null, 60.0, nearestM = 1_000.0)
+        assertThat(near).isLessThan(far - CalibrationMath.LIKELY_MARGIN)
     }
 }

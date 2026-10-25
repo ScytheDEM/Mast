@@ -42,8 +42,9 @@ def scores(rng):
         d = rng.uni(20, 45000)
         ta = None if k % 3 == 0 else d + rng.uni(-2000, 2000)
         r_max = rng.uni(2, 60)
-        out.append({"predicted": pred, "measured": meas, "distanceM": d, "taM": ta, "rMaxKm": r_max,
-                    "score": ref.match_score(pred, meas, d, ta, r_max)})
+        nearest = d * rng.uni(0.02, 1.0)
+        out.append({"predicted": pred, "measured": meas, "distanceM": d, "taM": ta, "rMaxKm": r_max, "nearestM": nearest,
+                    "score": ref.match_score(pred, meas, d, ta, r_max, nearest)})
     return out
 
 

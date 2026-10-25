@@ -31,7 +31,7 @@ class CalibrationVectorsTest {
         assertThat(arr("scores")).hasSize(40)
         for (e in arr("scores")) {
             val o = e.jsonObject
-            val got = CalibrationMath.matchScore(o["predicted"]!!.d(), o["measured"]!!.d(), o["distanceM"]!!.d(), o["taM"]!!.dOrNull(), o["rMaxKm"]!!.d())
+            val got = CalibrationMath.matchScore(o["predicted"]!!.d(), o["measured"]!!.d(), o["distanceM"]!!.d(), o["taM"]!!.dOrNull(), o["rMaxKm"]!!.d(), o["nearestM"]!!.d())
             assertThat(got).isWithin(1e-9).of(o["score"]!!.d())
         }
     }

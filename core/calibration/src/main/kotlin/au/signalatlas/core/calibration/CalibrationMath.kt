@@ -5,6 +5,7 @@ import kotlin.math.abs
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.log10
+import kotlin.math.log2
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
@@ -23,6 +24,9 @@ object CalibrationMath {
     private const val TA_STEP_M = 150.0
     private const val TA_DB_PER_STEP = 3.0
     private const val OUT_OF_RANGE_PENALTY = 100.0
+    const val MISMATCH_CAP_DB = 20.0
+    const val DB_PER_DOUBLING = 6.0
+    const val NEAR_FLOOR_M = 300.0
     const val LIKELY_MARGIN = 3.0
     const val CONFIRM_AFTER = 5
     // Rule 3
@@ -54,8 +58,18 @@ object CalibrationMath {
         abs(carrierFreqMhz - channelFreqMhz) <= FREQ_TOLERANCE_MHZ + 1e-9 && distanceM <= CANDIDATE_RADIUS_KM * 1000.0
 
     /** Rule 2 (lower is better): |P - M| + (TA ? |d - TA| / 150 m * 3 dB : 0) + (d > R_max ? 100 : 0). */
-    fun matchScore(predictedDbm: Double, measuredDbm: Double, distanceM: Double, taM: Double?, rMaxKm: Double): Double {
-        var s = abs(predictedDbm - measuredDbm)
+    /**
+     * Rule 2 (lower is better). The prediction mismatch is capped at [MISMATCH_CAP_DB] (predictions can be that far
+     * off in rough terrain, so a big miss must not rule a site out), and every doubling of distance beyond the nearest
+     * candidate ([nearestM], floored at [NEAR_FLOOR_M]) adds [DB_PER_DOUBLING]: without timing advance, a far site
+     * whose prediction happens to equal the measurement must not beat the tower down the road.
+     */
+    fun matchScore(
+        predictedDbm: Double, measuredDbm: Double, distanceM: Double, taM: Double?, rMaxKm: Double,
+        nearestM: Double = distanceM,
+    ): Double {
+        var s = min(abs(predictedDbm - measuredDbm), MISMATCH_CAP_DB)
+        s += DB_PER_DOUBLING * max(0.0, log2(distanceM / max(nearestM, NEAR_FLOOR_M)))
         if (taM != null) s += abs(distanceM - taM) / TA_STEP_M * TA_DB_PER_STEP
         if (distanceM > rMaxKm * 1000.0) s += OUT_OF_RANGE_PENALTY
         return s
