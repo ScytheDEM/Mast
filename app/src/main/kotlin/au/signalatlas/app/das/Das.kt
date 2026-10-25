@@ -32,7 +32,7 @@ data class DasEvent(val key: String, val text: String, val kind: SiteKind, val s
 
 /**
  * Decides when to announce a distributed antenna system (DAS):
- * - the matched serving tower is a DAS site: "DAS detected: {site name} ({networks})";
+ * - the matched serving tower is a DAS site within [BUILDING_SITE_RADIUS_M] of you: "DAS detected: {site name} ({networks})";
  * - or the vehicle is on a tunnel road (road map-matching, or GPS lost just after matching onto one) with RSRP >=
  *   [TUNNEL_MIN_RSRP]: "DAS detected: tunnel coverage", plus " · {site name}" when the serving site is a tunnel DAS site
  *   within [TUNNEL_SITE_RADIUS_M] of the vehicle.
@@ -57,7 +57,10 @@ class DasDetector(
                 "DAS detected: tunnel coverage" + (site?.let { " · ${it.name}" } ?: ""),
                 SiteKind.DAS_TUNNEL, site?.id,
             )
-        } else if (serving != null && serving.kind.isDas) {
+        } else if (serving != null && serving.kind.isDas &&
+            // You are inside a DAS building, so a known position far from it means the tower match is wrong.
+            (position == null || distanceM(position.first, position.second, serving.lat, serving.lon) <= BUILDING_SITE_RADIUS_M)
+        ) {
             val networks = serving.networks.sortedBy { it.ordinal }.joinToString(", ") { TripController.networkName(it) }
             DasEvent("site:${serving.id}", "DAS detected: ${serving.name} ($networks)", serving.kind, serving.id)
         } else {
@@ -77,6 +80,7 @@ class DasDetector(
         const val SUPPRESS_MS = 30 * 60_000L
         const val TUNNEL_MIN_RSRP = -105
         const val TUNNEL_SITE_RADIUS_M = 1_000.0
+        const val BUILDING_SITE_RADIUS_M = 400.0
     }
 }
 

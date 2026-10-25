@@ -36,13 +36,14 @@ class TowerStoreTest {
             c.prepare(query).use { st -> buildList { while (st.step()) add(read(st)) } }
         }
 
-    @Test fun siteKindIsReadIntoSummariesDetailAndTheDasFilter() {
+    @Test fun siteKindComesFromTheNameIntoSummariesDetailAndTheDasFilter() {
         assertThat(store.allSites(TowerFilter()).all { it.kind == au.signalatlas.core.model.SiteKind.MACRO }).isTrue()
         assertThat(store.allSites(TowerFilter(dasOnly = true))).isEmpty()
         val copy = File(tmp.newFolder(), "towers.db").also { db.copyTo(it) }
         BundledSQLiteDriver().open(copy.path).use { c ->
-            c.execSQL("UPDATE site SET site_kind = 2 WHERE id = 101160")
-            c.execSQL("UPDATE site SET site_kind = 1 WHERE id = 41428")
+            // The kind comes from the site name when read, so a tightened rule reaches an existing DB.
+            c.execSQL("UPDATE site SET name = 'Optus IBC Majura Tunnel' WHERE id = 101160")
+            c.execSQL("UPDATE site SET name = 'Westfield Belconnen' WHERE id = 41428")
         }
         TowerStore.open(copy).use { s ->
             assertThat(s.summary(101160)!!.kind).isEqualTo(au.signalatlas.core.model.SiteKind.DAS_TUNNEL)

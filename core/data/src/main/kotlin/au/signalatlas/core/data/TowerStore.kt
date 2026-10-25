@@ -16,6 +16,7 @@ import au.signalatlas.core.model.Sector
 import au.signalatlas.core.model.SectorIdentity
 import au.signalatlas.core.model.Site
 import au.signalatlas.core.model.SiteDetail
+import au.signalatlas.core.model.SiteClassifier
 import au.signalatlas.core.model.SiteKind
 import au.signalatlas.core.model.SiteSummary
 import au.signalatlas.core.model.Tech
@@ -113,7 +114,7 @@ class TowerStore private constructor(
             Site(
                 id = st.getLong(0).toInt(), lat = st.getDouble(1), lon = st.getDouble(2), name = st.getText(3),
                 state = st.textOrNull(4), postcode = st.textOrNull(5), elevationM = st.doubleOrNull(6),
-                kind = SiteKind.fromOrdinal(st.getLong(7).toInt()),
+                kind = SiteClassifier.classify(st.getText(3)),
             )
         }
 
@@ -328,7 +329,7 @@ class TowerStore private constructor(
                    FROM site s JOIN site_summary m ON m.site_id = s.id ORDER BY s.id""",
             ).use { st ->
                 while (st.step()) {
-                    val kind = SiteKind.fromOrdinal(st.getLong(5).toInt())
+                    val kind = SiteClassifier.classify(st.getText(3))
                     val nm = st.getLong(6).toInt()
                     val tm = st.getLong(7).toInt()
                     val bands = st.getText(8)

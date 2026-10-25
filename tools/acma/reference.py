@@ -132,27 +132,21 @@ def eirp_dbm(dev, antennas):
 
 # Rule 12: DAS site classification (tower DB schema v2 `site.site_kind`: 0 MACRO, 1 DAS_BUILDING, 2 DAS_TUNNEL).
 TUNNEL_RE = re.compile(r"\b(tunnel|tunl)\b", re.I | re.A)
+# Name-only and strict: low-power wide sites are outdoor small cells, and "station", "plaza", "hospital",
+# "university", "level N" or "tower N" mostly name rooftop macro sites.
 DAS_NAME_RE = re.compile(
-    r"\b(ibc|in[- ]?building|das|distributed antenna|shopping (centre|center)|westfield|stadium|arena|station"
-    r"|airport terminal|hospital|university|plaza|tower \d+(?!\.\d)|level \d+(?!\.\d)|carpark)\b",
-    re.I | re.A,
-)
-# Phrases blanked out of the name before DAS_NAME_RE: macro structure types ("Lattice Tower 21", "50m tower 39 ...")
-# and street / rural "station" uses ("Station Pier", "Repeater Station Road", "pump station").
-DAS_NAME_NEG_RE = re.compile(
-    r"\b(lattice|monopole|guyed|mast|pole|steel|\d+ ?m) tower\b"
-    r"|\bstation (road|rd|street|st|avenue|ave|pier|drive|dr|lane|ln|way|parade|pde|creek|hill|point)\b"
-    r"|\b(repeater|pump|pumping|fire|police|petrol|service|power|cattle|sheep|weather) station\b",
+    r"\b(ibc|in[- ]?building|das|distributed antenna|indoor coverage|shopping (centre|center)|westfield"
+    r"|stadium|arena|airport terminal|(railway|train|metro|underground) station|carpark|car park)\b",
     re.I | re.A,
 )
 MACRO, DAS_BUILDING, DAS_TUNNEL = 0, 1, 2
 
 
-def site_kind(name, max_height_m, max_eirp_dbm, all_wide):
-    """Rule 12. `all_wide`: every sector is omni (null azimuth) or has an antenna with H_BW >= 90."""
+def site_kind(name, max_height_m=None, max_eirp_dbm=None, all_wide=None):
+    """Rule 12 (name only; the other arguments are accepted and ignored)."""
     if TUNNEL_RE.search(name):
         return DAS_TUNNEL
-    if DAS_NAME_RE.search(DAS_NAME_NEG_RE.sub(" ", name)) or (max_height_m <= 6 and max_eirp_dbm <= 40 and all_wide):
+    if DAS_NAME_RE.search(name):
         return DAS_BUILDING
     return MACRO
 

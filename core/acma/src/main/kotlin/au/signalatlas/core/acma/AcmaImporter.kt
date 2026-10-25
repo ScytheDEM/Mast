@@ -446,7 +446,7 @@ private class ImportRun(
                LEFT JOIN antenna a ON a.id = sec.antenna_id GROUP BY s.id""",
         ).use { st ->
             while (st.step()) {
-                val kind = SiteClassifier.classify(st.getText(1), st.getDouble(2), st.getDouble(3), st.getLong(4) == 1L)
+                val kind = SiteClassifier.classify(st.getText(1))
                 if (kind != SiteKind.MACRO) das += st.getLong(0) to kind
             }
         }
