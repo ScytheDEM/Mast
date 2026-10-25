@@ -26,15 +26,24 @@ object DataSettings {
     @Volatile var mobileDataUnmetered: Boolean = false
         private set
 
+    /** Tower radiation patterns on the map account for terrain, buildings and antenna height (and packs include it). */
+    @Volatile var patternTerrain: Boolean = false
+        private set
+
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
     /** Terrain and buildings may be fetched automatically on a metered network. */
     val terrainOnAnyNetwork: Boolean get() = mobileDataUnmetered || quality == CoverageQuality.DETAILED
 
-    fun update(quality: CoverageQuality = this.quality, mobileDataUnmetered: Boolean = this.mobileDataUnmetered) {
-        if (quality == this.quality && mobileDataUnmetered == this.mobileDataUnmetered) return
+    fun update(
+        quality: CoverageQuality = this.quality,
+        mobileDataUnmetered: Boolean = this.mobileDataUnmetered,
+        patternTerrain: Boolean = this.patternTerrain,
+    ) {
+        if (quality == this.quality && mobileDataUnmetered == this.mobileDataUnmetered && patternTerrain == this.patternTerrain) return
         this.quality = quality
         this.mobileDataUnmetered = mobileDataUnmetered
+        this.patternTerrain = patternTerrain
         listeners.forEach { it() }
     }
 

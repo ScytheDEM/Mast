@@ -40,6 +40,8 @@ import au.signalatlas.app.ui.offline.OfflineViewModel
 import au.signalatlas.app.ui.storage.StorageScreen
 import au.signalatlas.app.ui.storage.StorageViewModel
 import au.signalatlas.app.ui.updates.UpdatesScreen
+import au.signalatlas.app.ui.settings.SettingsLinks
+import au.signalatlas.app.ui.settings.SettingsScreen
 import au.signalatlas.app.ui.trip.TripSettingsScreen
 import au.signalatlas.app.ui.trip.TripUi
 import au.signalatlas.app.ui.map.DasUi
@@ -62,6 +64,8 @@ fun AppScaffold(container: AppContainer) {
     var drawing by rememberSaveable { mutableStateOf(false) }
     var showCalibration by rememberSaveable { mutableStateOf(false) }
     var showTrip by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
+    val dataConfig by container.dataSettings.config.collectAsStateWithLifecycle()
     val tripConfig by container.tripSettings.config.collectAsStateWithLifecycle()
     val tripUi = remember(container) {
         TripUi(container.trip.state) { if (container.trip.isRunning) container.trip.stop() else container.trip.start() }
@@ -120,6 +124,7 @@ fun AppScaffold(container: AppContainer) {
                     calibration = calibrationHooks,
                     trip = tripUi,
                     onOpenOffline = { showOffline = true },
+                    onOpenSettings = { showSettings = true },
                     drawBox = DrawBoxHooks(drawing) { box ->
                         drawing = false
                         showOffline = true
@@ -131,6 +136,26 @@ fun AppScaffold(container: AppContainer) {
         }
 
         // Pushed over the map (instead of replacing it) so the MapView is not torn down.
+        // Settings sits under the pages it links to.
+        AnimatedVisibility(
+            visible = showSettings && root == Root.Map,
+            enter = slideInHorizontally { it },
+            exit = slideOutHorizontally { it } + fadeOut(),
+        ) {
+            SettingsScreen(
+                config = dataConfig,
+                onConfig = container.dataSettings::update,
+                links = SettingsLinks(
+                    onTrip = { showTrip = true },
+                    onCalibration = { showCalibration = true },
+                    onStorage = { showStorage = true },
+                    onOffline = { showOffline = true },
+                    onTowerData = { showUpdates = true },
+                ),
+                onBack = { showSettings = false },
+            )
+        }
+
         AnimatedVisibility(
             visible = showUpdates && root == Root.Map,
             enter = slideInHorizontally { it },
@@ -171,7 +196,7 @@ fun AppScaffold(container: AppContainer) {
         }
 
         AnimatedVisibility(
-            visible = showCalibration && showUpdates && root == Root.Map,
+            visible = showCalibration && (showUpdates || showSettings) && root == Root.Map,
             enter = slideInHorizontally { it },
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
@@ -186,7 +211,7 @@ fun AppScaffold(container: AppContainer) {
         }
 
         AnimatedVisibility(
-            visible = showTrip && showUpdates && root == Root.Map,
+            visible = showTrip && (showUpdates || showSettings) && root == Root.Map,
             enter = slideInHorizontally { it },
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
@@ -197,7 +222,7 @@ fun AppScaffold(container: AppContainer) {
         }
 
         AnimatedVisibility(
-            visible = showStorage && showUpdates && root == Root.Map,
+            visible = showStorage && (showUpdates || showSettings) && root == Root.Map,
             enter = slideInHorizontally { it },
             exit = slideOutHorizontally { it } + fadeOut(),
         ) {
@@ -211,6 +236,7 @@ fun AppScaffold(container: AppContainer) {
             )
         }
     }
+    BackHandler(enabled = showSettings && !showUpdates && !showOffline && !showStorage && !showCalibration && !showTrip) { showSettings = false }
     BackHandler(enabled = showUpdates && !showStorage && !showCalibration && !showTrip) { showUpdates = false }
     BackHandler(enabled = showTrip) { showTrip = false }
     BackHandler(enabled = showCalibration && !showTrip) { showCalibration = false }

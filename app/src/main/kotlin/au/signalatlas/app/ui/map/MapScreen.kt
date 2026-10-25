@@ -197,6 +197,7 @@ fun MapScreen(
     calibration: CalibrationHooks = CalibrationHooks.None,
     trip: TripUi = TripUi.None,
     onOpenOffline: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     /** Draw-a-box mode for offline regions (see [DrawBoxOverlay]); null = off. */
     drawBox: DrawBoxHooks? = null,
     das: DasUi = DasUi.None,
@@ -496,6 +497,7 @@ fun MapScreen(
                 onFilters = onFilters,
                 onOpenUpdates = onOpenUpdates,
                 onOpenOffline = onOpenOffline,
+                onOpenSettings = onOpenSettings,
                 onMyLocation = onMyLocation,
                 onIncrease = vm::openIncreaseResolution,
                 coverageOptionsOpen = coverageOptionsOpen,
@@ -772,6 +774,7 @@ private fun MapControls(
     onFilters: () -> Unit,
     onOpenUpdates: () -> Unit,
     onOpenOffline: () -> Unit,
+    onOpenSettings: () -> Unit,
     onMyLocation: () -> Unit,
     onIncrease: () -> Unit,
     coverageOptionsOpen: Boolean,
@@ -803,6 +806,7 @@ private fun MapControls(
                     onQueryChange = onQueryChange, onResultClick = onResultClick, onOpenUpdates = onOpenUpdates, onOpenOffline = onOpenOffline,
                     docked = docked, filterCount = filterCount, onFilters = onFilters, modifier = m,
                     updateAvailable = state.update is UpdateStatus.Available,
+                    onOpenSettings = onOpenSettings,
                 )
             }
             if (docked) {

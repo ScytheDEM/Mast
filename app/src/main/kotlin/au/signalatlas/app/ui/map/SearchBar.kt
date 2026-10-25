@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -75,6 +76,7 @@ fun TowerSearchBar(
     onFilters: () -> Unit = {},
     /** A tower data update is ready: a dot on the overflow icon and its menu item, instead of a chip on the map. */
     updateAvailable: Boolean = false,
+    onOpenSettings: () -> Unit = {},
 ) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -120,7 +122,7 @@ fun TowerSearchBar(
                     text.isNotEmpty() -> IconButton(onClick = { setText("") }) {
                         Icon(Icons.Filled.Close, stringResource(R.string.clear))
                     }
-                    !expanded -> OverflowMenu(onOpenUpdates, onOpenOffline, filterCount, onFilters, updateAvailable)
+                    !expanded -> OverflowMenu(onOpenUpdates, onOpenOffline, filterCount, onFilters, updateAvailable, onOpenSettings)
                 }
             },
         )
@@ -149,7 +151,10 @@ fun TowerSearchBar(
 }
 
 @Composable
-private fun OverflowMenu(onOpenUpdates: () -> Unit, onOpenOffline: () -> Unit, filterCount: Int, onFilters: () -> Unit, updateAvailable: Boolean) {
+private fun OverflowMenu(
+    onOpenUpdates: () -> Unit, onOpenOffline: () -> Unit, filterCount: Int, onFilters: () -> Unit, updateAvailable: Boolean,
+    onOpenSettings: () -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     val description = if (filterCount > 0) {
         stringResource(R.string.more_options) + ", " + pluralStringResource(R.plurals.filters_badge_description, filterCount, filterCount)
@@ -189,6 +194,12 @@ private fun OverflowMenu(onOpenUpdates: () -> Unit, onOpenOffline: () -> Unit, f
                 leadingIcon = { Icon(painterResource(R.drawable.ic_coverage), null) },
                 onClick = { open = false; onOpenOffline() },
                 modifier = Modifier.testTag("menu-offline"),
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.menu_settings)) },
+                leadingIcon = { Icon(Icons.Filled.Settings, null) },
+                onClick = { open = false; onOpenSettings() },
+                modifier = Modifier.testTag("menu-settings"),
             )
         }
     }
