@@ -1,0 +1,6 @@
+<resources>
+    <color name="car_primary">#0B5FA5</color>
+    <color name="car_primary_dark">#9CCBFF</color>
+    <color name="car_secondary">#2A9D8F</color>
+    <color name="car_secondary_dark">#7FD6C8</color>
+</resources>
