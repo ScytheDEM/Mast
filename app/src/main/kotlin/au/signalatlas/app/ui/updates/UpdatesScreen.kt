@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package au.signalatlas.app.ui.updates
 
 import androidx.compose.foundation.layout.Arrangement
@@ -21,7 +23,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -203,9 +205,9 @@ internal fun PatternsSection(patterns: HrpStatus, onDownload: () -> Unit, modifi
             Text(runningLabel(running), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
             if (running.isWaiting()) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
+                LinearWavyProgressIndicator(Modifier.fillMaxWidth())
             } else {
-                LinearProgressIndicator(progress = { running.overallFraction() }, modifier = Modifier.fillMaxWidth())
+                LinearWavyProgressIndicator(progress = { running.overallFraction() }, modifier = Modifier.fillMaxWidth())
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -249,9 +251,9 @@ private fun StatusLine(status: UpdateStatus) {
         if (status is UpdateStatus.Running) {
             Spacer(Modifier.height(10.dp))
             if (status.isWaiting()) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
+                LinearWavyProgressIndicator(Modifier.fillMaxWidth())
             } else {
-                LinearProgressIndicator(progress = { status.overallFraction() }, modifier = Modifier.fillMaxWidth())
+                LinearWavyProgressIndicator(progress = { status.overallFraction() }, modifier = Modifier.fillMaxWidth())
             }
         }
     }

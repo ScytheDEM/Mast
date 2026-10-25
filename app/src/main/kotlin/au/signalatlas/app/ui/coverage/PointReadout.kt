@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package au.signalatlas.app.ui.coverage
 
 import androidx.compose.foundation.layout.Arrangement
@@ -8,7 +10,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,7 +37,7 @@ fun PointReadout(result: ReadoutResult, modifier: Modifier = Modifier) {
     ) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             if (result == ReadoutResult.Calculating) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                CircularWavyProgressIndicator(Modifier.size(18.dp))
                 Spacer(Modifier.width(12.dp))
             }
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {

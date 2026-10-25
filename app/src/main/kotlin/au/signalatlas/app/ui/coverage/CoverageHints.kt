@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package au.signalatlas.app.ui.coverage
 
 import androidx.compose.foundation.layout.Arrangement
@@ -10,7 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -64,7 +66,7 @@ fun CalculatingPill(modifier: Modifier = Modifier) {
         Row(Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.coverage_calculating), style = MaterialTheme.typography.labelLarge)
             Spacer(Modifier.width(10.dp))
-            LinearProgressIndicator(Modifier.width(56.dp))
+            LinearWavyProgressIndicator(Modifier.width(56.dp))
         }
     }
 }

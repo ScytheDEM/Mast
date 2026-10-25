@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package au.signalatlas.app.ui.map
 
 import androidx.compose.foundation.layout.size
@@ -6,7 +8,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -36,10 +38,9 @@ fun UpdateChip(status: UpdateStatus, onClick: () -> Unit, modifier: Modifier = M
             onClick = onClick,
             label = { Text(runningLabel(status)) },
             leadingIcon = {
-                CircularProgressIndicator(
+                CircularWavyProgressIndicator(
                     progress = { status.overallFraction() },
                     modifier = Modifier.size(AssistChipDefaults.IconSize),
-                    strokeWidth = 2.dp,
                 )
             },
             colors = colors,

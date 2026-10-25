@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package au.signalatlas.app.ui.offline
 
 import androidx.compose.foundation.clickable
@@ -19,7 +21,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -160,7 +162,7 @@ private fun PackRow(res: android.content.res.Resources, pack: PackRecord, onUpda
         }
         Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (pack.state == PackState.DOWNLOADING || pack.state == PackState.QUEUED) {
-            LinearProgressIndicator(progress = { pack.progress }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+            LinearWavyProgressIndicator(progress = { pack.progress }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
         }
         Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
             if (pack.state == PackState.READY || pack.state == PackState.FAILED) {

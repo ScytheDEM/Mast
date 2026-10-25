@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package au.signalatlas.app.ui.coverage
 
 import androidx.compose.foundation.layout.Column
@@ -10,7 +12,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -97,7 +99,7 @@ fun IncreaseResolutionContent(
         if (ui.status == IncreaseStatus.FETCHING) {
             Text(stringResource(R.string.increase_fetching), style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.height(8.dp))
-            LinearProgressIndicator(progress = { ui.progress }, modifier = Modifier.fillMaxWidth())
+            LinearWavyProgressIndicator(progress = { ui.progress }, modifier = Modifier.fillMaxWidth())
         } else {
             val offline = ui.status == IncreaseStatus.OFFLINE
             Button(

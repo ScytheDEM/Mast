@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package au.signalatlas.app.ui.nearby
 
 import androidx.compose.foundation.clickable
@@ -13,7 +15,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -72,7 +74,7 @@ fun NearbyContent(
             !hasLocation -> item(key = "finding") {
                 Message(stringResource(R.string.nearby_finding)) {
                     Spacer(Modifier.height(16.dp))
-                    CircularProgressIndicator()
+                    CircularWavyProgressIndicator()
                 }
             }
             nearby.isEmpty() -> item(key = "empty") { Message(stringResource(R.string.nearby_empty)) }

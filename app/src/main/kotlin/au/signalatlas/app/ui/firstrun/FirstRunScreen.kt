@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package au.signalatlas.app.ui.firstrun
 
 import androidx.compose.animation.AnimatedContent
@@ -19,7 +21,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -115,7 +117,7 @@ private fun UpdateStatus.panel(noNetwork: Boolean): Panel = when {
 @Composable
 private fun WaitingPanel(running: UpdateStatus.Running?, onDownload: (Boolean) -> Unit, onCancel: () -> Unit) {
     Column(Modifier.widthIn(max = 360.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        LinearProgressIndicator(Modifier.widthIn(max = 320.dp).fillMaxWidth())
+        LinearWavyProgressIndicator(Modifier.widthIn(max = 320.dp).fillMaxWidth())
         Spacer(Modifier.height(12.dp))
         if (running != null) {
             Text(runningLabel(running), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -130,9 +132,9 @@ private fun ProgressPanel(running: UpdateStatus.Running?) {
     Column(Modifier.widthIn(max = 320.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         val indeterminate = running == null || running.phase == UpdateWork.PHASE_STARTING
         if (indeterminate) {
-            LinearProgressIndicator(Modifier.fillMaxWidth())
+            LinearWavyProgressIndicator(Modifier.fillMaxWidth())
         } else {
-            LinearProgressIndicator(progress = { running.overallFraction() }, modifier = Modifier.fillMaxWidth())
+            LinearWavyProgressIndicator(progress = { running.overallFraction() }, modifier = Modifier.fillMaxWidth())
         }
         Spacer(Modifier.height(12.dp))
         if (running != null) {
