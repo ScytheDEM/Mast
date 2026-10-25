@@ -139,8 +139,10 @@
 
     <!-- Accuracy chip and Increase resolution -->
     <string name="accuracy_quick">Quick estimate</string>
-    <string name="accuracy_partial">Terrain (partial)</string>
-    <string name="accuracy_terrain">Terrain</string>
+    <string name="accuracy_partial">Terrain for part of this view</string>
+    <string name="accuracy_terrain">Includes hills and valleys</string>
+    <string name="accuracy_quick_detail">Hills and valleys not included</string>
+    <string name="accuracy_improve">Improve accuracy</string>
     <string name="increase_title">Increase resolution</string>
     <string name="increase_title_about">Increase resolution · about %1$d MB</string>
     <string name="increase_title_small">Increase resolution · less than 1 MB</string>

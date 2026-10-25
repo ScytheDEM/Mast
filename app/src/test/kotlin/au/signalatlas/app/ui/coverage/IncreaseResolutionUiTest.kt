@@ -84,16 +84,19 @@ class IncreaseResolutionUiTest {
         compose.onNodeWithText("Download").assertIsEnabled()
     }
 
-    @Test fun chipLabelsAndTapBehaviour() {
+    @Test fun accuracyCardLabelsAndImproveButton() {
         var taps = 0
         var accuracy by androidx.compose.runtime.mutableStateOf(Accuracy.QUICK)
-        compose.setContent { SignalAtlasTheme { AccuracyChip(accuracy, onClick = { taps++ }) } }
-        compose.onNodeWithText("Quick estimate").assertIsDisplayed().performClick()
+        compose.setContent { SignalAtlasTheme { AccuracyCard(accuracy, onImprove = { taps++ }) } }
+        compose.onNodeWithText("Quick estimate").assertIsDisplayed()
+        compose.onNodeWithText("Hills and valleys not included").assertIsDisplayed()
+        compose.onNodeWithText("Improve accuracy").assertIsDisplayed().performClick()
         accuracy = Accuracy.PARTIAL
-        compose.onNodeWithText("Terrain (partial)").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Terrain for part of this view").assertIsDisplayed()
+        compose.onNodeWithText("Improve accuracy").performClick()
         assertThat(taps).isEqualTo(2)
         accuracy = Accuracy.TERRAIN
-        compose.onNodeWithText("Terrain").assertIsDisplayed().performClick()
-        assertThat(taps).isEqualTo(2)
+        compose.onNodeWithText("Includes hills and valleys").assertIsDisplayed()
+        compose.onNodeWithText("Improve accuracy").assertDoesNotExist()
     }
 }

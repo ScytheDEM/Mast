@@ -108,7 +108,7 @@ import au.signalatlas.app.data.UiHints
 import au.signalatlas.app.location.DeviceLocationSource
 import au.signalatlas.app.ui.coverage.CalculatingPill
 import au.signalatlas.app.ui.coverage.CoverageExplainerCard
-import au.signalatlas.app.ui.coverage.AccuracyChip
+import au.signalatlas.app.ui.coverage.AccuracyCard
 import au.signalatlas.app.ui.coverage.CoverageActions
 import au.signalatlas.app.ui.coverage.CoverageControlsCard
 import au.signalatlas.app.ui.coverage.CoverageLegend
@@ -831,12 +831,6 @@ private fun MapControls(
                         )
                     }
                 }
-                AnimatedVisibility(
-                    state.coverage.on && !state.coverage.needsZoom(state.zoom) && !state.coverage.showsCalculating(state.zoom),
-                    enter = fadeIn(), exit = fadeOut(),
-                ) {
-                    AccuracyChip(state.coverage.accuracy, onClick = onIncrease, modifier = Modifier.padding(start = 16.dp, top = 4.dp))
-                }
                 AnimatedVisibility(state.coverage.showsCalculating(state.zoom), enter = fadeIn(), exit = fadeOut()) {
                     CalculatingPill(Modifier.padding(start = 16.dp, top = 4.dp))
                 }
@@ -870,6 +864,9 @@ private fun MapControls(
                 ) {
                     AnimatedVisibility(coverageOptionsOpen && !sitePeek, enter = fadeIn(), exit = fadeOut()) {
                         CoverageControlsCard(state.coverage, coverage)
+                    }
+                    AnimatedVisibility(state.coverage.on && !state.coverage.needsZoom(state.zoom), enter = fadeIn(), exit = fadeOut()) {
+                        AccuracyCard(state.coverage.accuracy, onImprove = onIncrease)
                     }
                     CoverageLegend(state.coverage.view)
                     CoverageToolbar(

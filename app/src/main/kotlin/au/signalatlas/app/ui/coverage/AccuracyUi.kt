@@ -2,14 +2,17 @@
 
 package au.signalatlas.app.ui.coverage
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearWavyProgressIndicator
@@ -19,7 +22,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import au.signalatlas.app.R
@@ -33,25 +38,46 @@ private const val MIB = 1024L * 1024
 /** Whole MB for "about N MB"; 0 means "less than 1 MB". */
 internal fun roundedMb(bytes: Long): Int = if (bytes < MIB) 0 else (bytes.toDouble() / MIB).roundToInt()
 
-/** How the tiles in view were predicted. Quick and partial can be tapped to increase the resolution. */
+/**
+ * How the tiles in view were predicted, shown with the coverage controls so it is never missed. Quick and partial
+ * predictions leave out hills and valleys, so they carry an "Improve accuracy" button that downloads terrain.
+ */
 @Composable
-fun AccuracyChip(accuracy: Accuracy, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val label = when (accuracy) {
-        Accuracy.QUICK -> R.string.accuracy_quick
-        Accuracy.PARTIAL -> R.string.accuracy_partial
-        Accuracy.TERRAIN -> R.string.accuracy_terrain
-    }
-    if (accuracy == Accuracy.TERRAIN) {
-        // A label, not a chip: nothing to press (and nothing for TalkBack to offer).
-        Surface(color = MaterialTheme.colorScheme.surfaceContainerHigh, shape = MaterialTheme.shapes.small, modifier = modifier) {
-            Text(
-                stringResource(label),
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            )
+fun AccuracyCard(accuracy: Accuracy, onImprove: () -> Unit, modifier: Modifier = Modifier) {
+    val improvable = accuracy != Accuracy.TERRAIN
+    Surface(
+        color = if (improvable) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = if (improvable) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurface,
+        shape = MaterialTheme.shapes.large,
+        shadowElevation = 2.dp,
+        modifier = modifier.testTag("accuracy-card"),
+    ) {
+        Row(
+            Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp).heightIn(min = 40.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Column(Modifier.weight(1f, fill = false)) {
+                Text(
+                    stringResource(
+                        when (accuracy) {
+                            Accuracy.QUICK -> R.string.accuracy_quick
+                            Accuracy.PARTIAL -> R.string.accuracy_partial
+                            Accuracy.TERRAIN -> R.string.accuracy_terrain
+                        },
+                    ),
+                    style = MaterialTheme.typography.labelLarge,
+                )
+                if (improvable) {
+                    Text(stringResource(R.string.accuracy_quick_detail), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            if (improvable) {
+                FilledTonalButton(onClick = onImprove, modifier = Modifier.testTag("improve-accuracy")) {
+                    Text(stringResource(R.string.accuracy_improve))
+                }
+            }
         }
-    } else {
-        AssistChip(onClick = onClick, label = { Text(stringResource(label)) }, modifier = modifier)
     }
 }
 
