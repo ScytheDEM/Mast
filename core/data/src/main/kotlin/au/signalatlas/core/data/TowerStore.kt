@@ -44,6 +44,32 @@ class TowerStore private constructor(
 
     private val lock = Any()
     private var closed = false
+
+    /** Each network's licensed carrier frequencies (MHz, sorted), loaded on first use. */
+    private val networkFreqs: Map<Network, DoubleArray> by lazy {
+        synchronized(lock) {
+            if (closed) return@synchronized emptyMap()
+            val out = HashMap<Network, MutableList<Double>>()
+            conn.prepare("SELECT DISTINCT s.network, c.freq_hz FROM carrier c JOIN sector s ON s.id = c.sector_id").use { st ->
+                while (st.step()) {
+                    val n = Network.entries.getOrNull(st.getLong(0).toInt()) ?: continue
+                    out.getOrPut(n) { ArrayList() }.add(st.getLong(1) / 1e6)
+                }
+            }
+            out.mapValues { it.value.sorted().toDoubleArray() }
+        }
+    }
+
+    /**
+     * True when [network] holds a carrier anywhere in Australia whose frequency is within [toleranceMhz] of [mhz]: a
+     * cell on a frequency the network does not hold belongs to another network.
+     */
+    fun networkHoldsFrequency(network: Network, mhz: Double, toleranceMhz: Double = 0.15): Boolean {
+        val f = networkFreqs[network] ?: return false
+        var i = java.util.Arrays.binarySearch(f, mhz - toleranceMhz)
+        if (i < 0) i = -i - 1
+        return i < f.size && f[i] <= mhz + toleranceMhz
+    }
     private val buffers = ThreadLocal.withInitial { IntArray(summaries.size) }
 
     fun sitesIn(b: GeoBounds, f: TowerFilter): List<SiteSummary> {

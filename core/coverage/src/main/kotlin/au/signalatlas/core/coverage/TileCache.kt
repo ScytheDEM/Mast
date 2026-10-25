@@ -57,6 +57,7 @@ class TileCache(
             idx.clear()
             diskUsed = 0L
         }
+        bestDir.deleteRecursively()
     }
 
     fun getMemory(key: TileKey): RenderedTile? = synchronized(memory) { memory[key] }
@@ -83,11 +84,60 @@ class TileCache(
         return tile
     }
 
-    /** Memory immediately; the disk copy is written in the background. */
-    fun put(key: TileKey, tile: RenderedTile) {
+    /**
+     * Memory immediately; the disk copy is written in the background. With [accuracy], the tile also becomes the
+     * address's best render ([getBest]) when it beats the one recorded.
+     */
+    fun put(key: TileKey, tile: RenderedTile, accuracy: Accuracy? = null) {
         putMemory(key, tile)
-        writer.execute { writeDisk(key, tile) }
+        writer.execute { if (writeDisk(key, tile) && accuracy != null) recordBest(key, accuracy) }
     }
+
+    /**
+     * The best render saved for [key]'s address (same place, selection, tower data, patterns and engine; any terrain,
+     * calibration or buildings version) and its accuracy, or null. Lets a revisited area show its terrain render at
+     * once instead of a quick one while terrain is re-applied. Blocking file IO.
+     */
+    fun getBest(key: TileKey): Pair<RenderedTile, Accuracy>? {
+        val pointer = File(bestDir, baseName(key))
+        val (name, rank) = try {
+            pointer.readText().split(' ').takeIf { it.size == 2 } ?: return null
+        } catch (e: IOException) {
+            return null
+        }
+        val accuracy = Accuracy.entries.getOrNull(rank.toIntOrNull() ?: -1) ?: return null
+        synchronized(diskLock) { if (name !in index()) return null }
+        val tile = try {
+            decode(key, File(dir, name).readBytes())
+        } catch (e: IOException) {
+            null
+        } ?: return null
+        putMemory(key, tile)
+        return tile to accuracy
+    }
+
+    /** Runs on the writer thread. */
+    private fun recordBest(key: TileKey, accuracy: Accuracy) {
+        val pointer = File(bestDir, baseName(key))
+        val current = try {
+            pointer.readText().split(' ').getOrNull(1)?.toIntOrNull()
+        } catch (e: IOException) {
+            null
+        }
+        // A newer render of the same accuracy replaces the old one (newer calibration and buildings).
+        if (current != null && current > accuracy.ordinal) {
+            val currentName = pointer.readText().substringBefore(' ')
+            if (synchronized(diskLock) { currentName in index() }) return
+        }
+        try {
+            bestDir.mkdirs()
+            pointer.writeText("${fileName(key)} ${accuracy.ordinal}")
+        } catch (e: IOException) {
+            // Only the shortcut is lost.
+        }
+    }
+
+    private val bestDir = File(dir, "best")
 
     /** Blocks until every write queued so far has finished. */
     internal fun flush() {
@@ -111,7 +161,8 @@ class TileCache(
         return idx
     }
 
-    private fun writeDisk(key: TileKey, tile: RenderedTile) {
+    /** True once the file is in place. */
+    private fun writeDisk(key: TileKey, tile: RenderedTile): Boolean {
         val name = fileName(key)
         val bytes = encode(tile)
         val tmp = File(dir, name + TMP_SUFFIX)
@@ -121,16 +172,18 @@ class TileCache(
             val target = File(dir, name)
             if (!tmp.renameTo(target)) {
                 tmp.delete()
-                return
+                return false
             }
             synchronized(diskLock) {
                 val idx = index()
                 diskUsed += bytes.size - (idx.put(name, bytes.size.toLong()) ?: 0L)
                 trim(idx)
             }
+            return true
         } catch (e: IOException) {
             // Disk full or unwritable: the tile just stays memory-only; don't leave a partial file behind.
             tmp.delete()
+            return false
         }
     }
 
@@ -165,6 +218,13 @@ class TileCache(
             val id = "${key.z}/${key.x}/${key.y}/${key.selectionId}/${key.towerStamp}/${key.patternsEtag}/${key.terrainVersion}/${key.engineVersion}$cal$bld"
             val digest = MessageDigest.getInstance("SHA-256").digest(id.toByteArray())
             return digest.take(16).joinToString("") { "%02x".format(it) } + FILE_SUFFIX
+        }
+
+        /** [fileName] without the terrain, calibration and buildings versions: one place's renders share it. */
+        fun baseName(key: TileKey): String {
+            val id = "${key.z}/${key.x}/${key.y}/${key.selectionId}/${key.towerStamp}/${key.patternsEtag}/${key.engineVersion}"
+            val digest = MessageDigest.getInstance("SHA-256").digest(id.toByteArray())
+            return digest.take(16).joinToString("") { "%02x".format(it) }
         }
 
         fun encode(t: RenderedTile): ByteArray {

@@ -93,6 +93,7 @@ import au.signalatlas.core.update.UpdateDeps
 import au.signalatlas.core.update.UpdateManager
 import au.signalatlas.core.update.UpdateNotifications
 import au.signalatlas.core.update.UpdatePrefs
+import au.signalatlas.app.data.DataPrefs
 import au.signalatlas.app.data.TripPrefs
 import au.signalatlas.feature.trip.TripController
 import au.signalatlas.feature.trip.TripHooks
@@ -173,6 +174,15 @@ class AppContainer(context: Context) {
         override val notifications = this@AppContainer.notifications
     }
 
+    /**
+     * Coverage quality and "treat mobile data as unmetered". Created before anything downloads, so [DataSettings] holds
+     * the stored values from the start; a change re-schedules the update jobs and re-keys the coverage tiles.
+     */
+    val dataSettings = DataPrefs(app) {
+        updateManager.rescheduleForDataSettings()
+        coverage.onQualityChanged()
+    }
+
     /** Lazy: WorkManager initialises on first use, through SignalAtlasApp's configuration. */
     val updateManager: UpdateManager by lazy {
         UpdateManager(
@@ -196,7 +206,8 @@ class AppContainer(context: Context) {
     /** Forwards the calibration store's snapshots to the tile service (the store itself opens off the main thread). */
     private val calibrationSnapshot = MutableStateFlow(CalibrationSnapshot.EMPTY)
 
-    private val tileCache = TileCache(File(app.cacheDir, "coverage-tiles").apply { mkdirs() })
+    // 1 GiB: rendered coverage is kept so a revisited area shows its best render at once.
+    private val tileCache = TileCache(File(app.cacheDir, "coverage-tiles").apply { mkdirs() }, diskBytes = 1L shl 30)
     private val terrainTables = TerrainTableStore(File(app.cacheDir, "terrain"))
 
     /** Coverage overlay: tiles are rendered on demand for MapLibre's requests (see [CoverageInterceptor]). */
@@ -272,6 +283,7 @@ class AppContainer(context: Context) {
             startLogger = { loggerRun.acquire(MAP_USER) }, stopLogger = { loggerRun.release(MAP_USER) },
             radioStates = radio.states, dataSubId = radio.dataSubscriptionId,
             siteKind = { id -> repo.store.value?.summary(id)?.kind ?: SiteKind.MACRO },
+            holdsFrequency = { n, mhz -> repo.store.value?.networkHoldsFrequency(n, mhz) ?: false },
         )
     }
 
@@ -292,6 +304,7 @@ class AppContainer(context: Context) {
             startRadio = { radioRun.acquire(CAR_USER) }, stopRadio = { radioRun.release(CAR_USER) },
             startLogger = {}, stopLogger = {},
             radioStates = radio.states, dataSubId = radio.dataSubscriptionId,
+            holdsFrequency = { n, mhz -> repo.store.value?.networkHoldsFrequency(n, mhz) ?: false },
         )
     }
 

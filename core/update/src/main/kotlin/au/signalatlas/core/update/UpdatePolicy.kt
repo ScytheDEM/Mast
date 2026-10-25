@@ -2,6 +2,7 @@ package au.signalatlas.core.update
 
 import androidx.work.Constraints
 import androidx.work.NetworkType
+import au.signalatlas.core.model.DataSettings
 import java.time.Duration
 import java.time.Instant
 
@@ -10,16 +11,20 @@ object UpdatePolicy {
     val PERIOD: Duration = Duration.ofDays(7)
     val STALE_AFTER: Duration = Duration.ofDays(14)
 
+    /** Wi-Fi only, unless the user treats mobile data as unmetered (then any connection). */
+    private fun network(): NetworkType =
+        if (DataSettings.mobileDataUnmetered) NetworkType.CONNECTED else NetworkType.UNMETERED
+
     /** The weekly update: Wi-Fi (unmetered), charging, enough storage. */
     fun periodicConstraints(): Constraints = Constraints.Builder()
-        .setRequiredNetworkType(NetworkType.UNMETERED)
+        .setRequiredNetworkType(network())
         .setRequiresCharging(true)
         .setRequiresStorageNotLow(true)
         .build()
 
     /** Data older than [STALE_AFTER]: Wi-Fi (unmetered) and enough storage, charging not needed. */
     fun staleConstraints(): Constraints = Constraints.Builder()
-        .setRequiredNetworkType(NetworkType.UNMETERED)
+        .setRequiredNetworkType(network())
         .setRequiresStorageNotLow(true)
         .build()
 
@@ -34,7 +39,7 @@ object UpdatePolicy {
 
     /** "Download patterns now": Wi-Fi (unmetered) only; the worker itself checks [HRP_MIN_FREE_BYTES]. */
     fun hrpManualConstraints(): Constraints = Constraints.Builder()
-        .setRequiredNetworkType(NetworkType.UNMETERED)
+        .setRequiredNetworkType(network())
         .build()
 
     /** True when there is no data or it was imported more than [STALE_AFTER] before [now]. */

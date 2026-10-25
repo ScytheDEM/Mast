@@ -1,5 +1,9 @@
 package au.signalatlas.core.coverage
 
+import au.signalatlas.core.model.DataSettings
+
+import au.signalatlas.core.model.CoverageQuality
+
 import au.signalatlas.core.data.CarrierBatch
 import au.signalatlas.core.data.PatternStore
 import au.signalatlas.core.data.TowerRepository
@@ -289,8 +293,16 @@ class CoverageTileService internal constructor(
         selectionId: String, stamp: String, etag: String, z: Int, x: Int, y: Int, create: Boolean = false, recheck: Boolean = false,
     ): Long {
         val tc = terrain ?: return 0L
+        // Quick quality: every tile is the fast model, whatever terrain is cached.
+        if (DataSettings.quality == CoverageQuality.QUICK) return 0L
         val k = tc.keyFor(selectionId, stamp, etag, z, x, y)
         return if (create) tc.versionOf(k, recheck) else tc.peekVersion(k)
+    }
+
+    /** [DataSettings] changed: re-key and re-fetch the visible tiles. */
+    fun onQualityChanged() {
+        terrain?.onQualityChanged()
+        onTerrainChanged()
     }
 
     private fun onTerrainChanged() {
@@ -505,7 +517,8 @@ class CoverageTileService internal constructor(
                 val key = TileKey(z, x, y, sel.cacheId(), stamp, etag, terrainVersion(sel.cacheId(), stamp, etag, z, x, y), calVersion(z, x, y), bldVersion(z, x, y))
                 val tile = cache.getMemory(key) ?: return@mapNotNull Accuracy.QUICK
                 // A tile with no coverage has no prediction to label: it neither makes a terrain view partial nor proves it.
-                if (key.terrainVersion != 0L && tile.coveredPixels == 0) null else Accuracy.of(key, tile)
+                synchronized(promotedAccuracy) { promotedAccuracy[key] }
+                    ?: if (key.terrainVersion != 0L && tile.coveredPixels == 0) null else Accuracy.of(key, tile)
             },
         )
     }
@@ -631,7 +644,9 @@ class CoverageTileService internal constructor(
             }
             active[key] = cancel
             val tile = cache.getDisk(key)
-                ?: render(key, sel, cancel)?.takeIf { !cancel.isCancelled && isCurrent(key) }?.also { cache.put(key, it) }
+                ?: promoted(key)
+                ?: render(key, sel, cancel)?.takeIf { !cancel.isCancelled && isCurrent(key) }
+                    ?.also { cache.put(key, it, Accuracy.of(key, it)) }
             if (tile == null) future.completeExceptionally(TileCancelledException()) else future.complete(tile)
             if (tile != null) {
                 refreshAccuracy()
@@ -642,6 +657,24 @@ class CoverageTileService internal constructor(
         } finally {
             active.remove(key, cancel)
         }
+    }
+
+    /**
+     * A quick key whose place already has a better render saved: that render, so a revisited area shows its terrain
+     * prediction at once (terrain is re-applied in the background and replaces it under its own key). Not in Quick
+     * quality, where the user asked for the fast model.
+     */
+    private fun promoted(key: TileKey): RenderedTile? {
+        if (key.terrainVersion != 0L || DataSettings.quality == CoverageQuality.QUICK) return null
+        val (tile, accuracy) = cache.getBest(key) ?: return null
+        if (accuracy == Accuracy.QUICK) return null
+        synchronized(promotedAccuracy) { promotedAccuracy[key] = accuracy }
+        return tile
+    }
+
+    /** The accuracy of tiles served by [promoted] (their own key would say quick). */
+    private val promotedAccuracy = object : LinkedHashMap<TileKey, Accuracy>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<TileKey, Accuracy>) = size > 1024
     }
 
     /** Selection, tower stamp and patterns etag are still the current ones (the terrain version is not checked). */

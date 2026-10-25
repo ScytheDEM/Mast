@@ -12,6 +12,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.ForegroundInfo
 import androidx.work.ListenableWorker
 import androidx.work.NetworkType
+import au.signalatlas.core.model.DataSettings
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerFactory
@@ -111,7 +112,7 @@ class WorkManagerPackScheduler(private val context: Context) : PackScheduler {
             .setInputData(Data.Builder().putString(PackWorker.KEY_PACK, packId).putBoolean(PackWorker.KEY_METERED, allowMetered).build())
             .setConstraints(
                 Constraints.Builder()
-                    .setRequiredNetworkType(if (allowMetered) NetworkType.CONNECTED else NetworkType.UNMETERED)
+                    .setRequiredNetworkType(if (allowMetered || DataSettings.mobileDataUnmetered) NetworkType.CONNECTED else NetworkType.UNMETERED)
                     .setRequiresStorageNotLow(true)
                     .build(),
             )

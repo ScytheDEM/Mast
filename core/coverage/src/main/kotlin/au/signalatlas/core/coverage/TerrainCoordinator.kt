@@ -1,5 +1,9 @@
 package au.signalatlas.core.coverage
 
+import au.signalatlas.core.model.DataSettings
+
+import au.signalatlas.core.model.CoverageQuality
+
 import au.signalatlas.core.data.CarrierBatch
 import au.signalatlas.core.geo.ChunkId
 import au.signalatlas.core.geo.ChunkMath
@@ -530,6 +534,13 @@ internal class TerrainCoordinator(
         return need.filterTo(HashSet()) { !b.store.has(it) }
     }
 
+    /** The quality setting changed: tile keys change (Quick drops terrain), and Detailed may now fetch over any network. */
+    fun onQualityChanged() {
+        bumped()
+        autoFailed = null
+        autoCache()
+    }
+
     /** Building chunks were stored: tile keys near them changed (their buildings version), so MapLibre must refetch. */
     fun onBuildingsChanged() = bumped()
 
@@ -537,6 +548,7 @@ internal class TerrainCoordinator(
     private fun autoCache() {
         val v = view ?: return
         if (v.z < TERRAIN_ZOOM || !support.network.unmetered.value) return
+        if (DataSettings.quality == CoverageQuality.QUICK) return
         val dem = missingFor(v)
         val bld = buildingsMissingFor(v)
         // Building chunks are tagged apart so a DEM chunk and a building chunk with the same id never collide.

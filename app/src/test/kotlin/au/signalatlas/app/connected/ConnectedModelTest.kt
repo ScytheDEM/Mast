@@ -19,8 +19,8 @@ internal val FIX = Fix(-35.28, 149.13, 8.0, 1_000L)
 internal fun lte(rsrp: Int? = -94, sinr: Int? = 15, band: String? = "B28", registered: Boolean = true) =
     ObservedCell(Tech.LTE, 9410, 758.0, band, 101, 123L, 1, rsrp, -10, sinr, null, registered)
 
-internal fun nr(band: String = "n78", registered: Boolean = false) =
-    ObservedCell(Tech.NR, 630000, 3500.0, band, 20, null, 1, -100, -11, 10, null, registered)
+internal fun nr(band: String = "n78", registered: Boolean = true, freqMhz: Double = 3500.0) =
+    ObservedCell(Tech.NR, 630000, freqMhz, band, 20, null, 1, -100, -11, 10, null, registered)
 
 internal val TELSTRA = SimInfo(1, Network.TELSTRA, "Telstra", "50501", false)
 
@@ -37,6 +37,19 @@ internal fun match(conf: Confidence = Confidence.LIKELY, bandwidthMhz: Double = 
 )
 
 class ConnectedModelTest {
+    @Test fun anotherNetworksHeard5gCellIsNotOurSecondary() {
+        // Vodafone (TPG) SIM: an unregistered n7 at 2655 MHz is another network's; TPG holds 3500 MHz, not 2655.
+        val tpg = SimInfo(2, Network.TPG, "Vodafone", "50503", false)
+        val holds = { n: Network, mhz: Double -> n == Network.TPG && mhz == 3500.0 }
+        val heard = nr(band = "n7", registered = false, freqMhz = 2655.0)
+        val ui = connectedUi(radio(sim = tpg, nrSecondaries = listOf(heard), fiveG = true), null, FIX, holds)
+        assertThat(ui.bandList).containsExactly("B28")
+        // Unregistered but on our own frequency: still ours (Pixel lists the NSA leg unregistered).
+        val own = nr(registered = false)
+        assertThat(connectedUi(radio(sim = tpg, nrSecondaries = listOf(heard, own), fiveG = true), null, FIX, holds).bandList)
+            .containsExactly("B28", "n78").inOrder()
+    }
+
     @Test fun missingPermissionsExplainThemselves() {
         assertThat(connectedUi(radio(permission = Permission.MISSING_PHONE), null, FIX).status).isEqualTo(ConnectedStatus.NEEDS_PHONE)
         assertThat(connectedUi(radio(permission = Permission.MISSING_LOCATION), null, FIX).status).isEqualTo(ConnectedStatus.NEEDS_LOCATION)

@@ -30,7 +30,7 @@ object GeoNetwork {
     /** True when the active network is metered, or when that cannot be determined (the safe answer). */
     fun isActiveNetworkMetered(context: Context): Boolean = try {
         val cm = context.getSystemService(ConnectivityManager::class.java)
-        cm == null || cm.isActiveNetworkMetered
+        (cm == null || cm.isActiveNetworkMetered) && !au.signalatlas.core.model.DataSettings.terrainOnAnyNetwork
     } catch (_: SecurityException) {
         true
     }

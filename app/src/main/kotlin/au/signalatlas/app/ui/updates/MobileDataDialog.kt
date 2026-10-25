@@ -31,7 +31,8 @@ fun Context.currentNetworkKind(): NetworkKind {
     val network = cm.activeNetwork ?: return NetworkKind.Offline
     val caps = cm.getNetworkCapabilities(network) ?: return NetworkKind.Offline
     if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return NetworkKind.Offline
-    return if (cm.isActiveNetworkMetered) NetworkKind.Metered else NetworkKind.Unmetered
+    // "Treat mobile data as unmetered": no "Use mobile data?" question.
+    return if (cm.isActiveNetworkMetered && !au.signalatlas.core.model.DataSettings.mobileDataUnmetered) NetworkKind.Metered else NetworkKind.Unmetered
 }
 
 /** "about 68 MB", from ACMA's Content-Length when a check has seen it. */

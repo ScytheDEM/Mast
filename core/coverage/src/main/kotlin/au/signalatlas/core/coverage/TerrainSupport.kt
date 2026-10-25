@@ -1,5 +1,7 @@
 package au.signalatlas.core.coverage
 
+import au.signalatlas.core.model.DataSettings
+
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -67,6 +69,8 @@ class ConnectivityNetworkMonitor(context: Context) : NetworkMonitor {
     @Volatile private var metered = true
 
     init {
+        // "Treat mobile data as unmetered" and Detailed quality let terrain come over any network.
+        DataSettings.addListener { update(online, metered) }
         val cm = context.applicationContext.getSystemService(ConnectivityManager::class.java)
         if (cm != null) {
             try {
@@ -90,11 +94,11 @@ class ConnectivityNetworkMonitor(context: Context) : NetworkMonitor {
     private fun update(online: Boolean, metered: Boolean) {
         this.online = online
         this.metered = metered
-        _unmetered.value = online && !metered
+        _unmetered.value = online && !isMetered()
     }
 
     override fun isOnline() = online
-    override fun isMetered() = metered
+    override fun isMetered() = metered && !DataSettings.terrainOnAnyNetwork
 }
 
 /**

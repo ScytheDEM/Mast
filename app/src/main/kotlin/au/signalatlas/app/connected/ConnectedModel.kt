@@ -76,7 +76,11 @@ data class CellDetails(
 )
 
 /** The info bar's model from the radio state and the (optional) tower match. Pure. */
-fun connectedUi(state: RadioState, match: MatchResult?, fix: Fix?): ConnectedUi {
+fun connectedUi(
+    state: RadioState, match: MatchResult?, fix: Fix?,
+    /** Whether a network holds a frequency (ACMA); null = unknown, then only registered 5G cells are shown as yours. */
+    holdsFrequency: ((Network, Double) -> Boolean)? = null,
+): ConnectedUi {
     when (state.permission) {
         Permission.MISSING_PHONE -> return ConnectedUi(ConnectedStatus.NEEDS_PHONE)
         Permission.MISSING_LOCATION -> return ConnectedUi(ConnectedStatus.NEEDS_LOCATION)
@@ -89,14 +93,19 @@ fun connectedUi(state: RadioState, match: MatchResult?, fix: Fix?): ConnectedUi 
     )
     if (sim.roaming) return base.copy(status = ConnectedStatus.ROAMING)
     val serving = state.serving ?: return base
+    // The phone lists every 5G cell it can hear, other networks' included: only one registered to us, or on a
+    // frequency our network holds, is our secondary (an Optus n7 next door is not a Vodafone n7).
+    val nr = state.nrSecondaries.filter { c ->
+        c.registered || (sim.network != null && c.freqMhz != null && holdsFrequency?.invoke(sim.network!!, c.freqMhz!!) == true)
+    }.sortedByDescending { it.registered }
     val withCell = base.copy(
         status = if (sim.network == null) ConnectedStatus.UNTRACKED else ConnectedStatus.CONNECTED,
         fiveG = state.displayFiveG || serving.tech == Tech.NR,
-        bands = bandsOf(serving, state.nrSecondaries),
+        bands = bandsOf(serving, nr),
         rsrpDbm = serving.rsrp,
-        bandList = listOfNotNull(serving.band, state.nrSecondaries.firstOrNull()?.band?.takeIf { serving.tech == Tech.LTE }).distinct(),
+        bandList = listOfNotNull(serving.band, nr.firstOrNull()?.band?.takeIf { serving.tech == Tech.LTE }).distinct(),
         cells = CellDetails(
-            serving, state.nrSecondaries,
+            serving, nr,
             state.neighbours.sortedWith(compareByDescending<ObservedCell> { it.rsrp != null }.thenByDescending { it.rsrp ?: Int.MIN_VALUE }),
         ),
     )

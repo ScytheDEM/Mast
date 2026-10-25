@@ -45,6 +45,8 @@ class ConnectedController(
     private val radioStates: StateFlow<Map<Int, RadioState>> = MutableStateFlow(emptyMap()),
     /** The SIM that carries mobile data; null = unknown (the primary is [radioState]'s). */
     private val dataSubId: StateFlow<Int?> = MutableStateFlow(null),
+    /** Whether a network holds a frequency (from the tower DB); null = unknown. */
+    private val holdsFrequency: ((au.signalatlas.core.model.Network, Double) -> Boolean)? = null,
     /** The DAS kind of a tower DB site (for the phone card's DAS badge); MACRO when unknown. */
     private val siteKind: (Int) -> SiteKind = { SiteKind.MACRO },
 ) {
@@ -113,7 +115,7 @@ class ConnectedController(
         } else {
             null
         }
-        val ui = connectedUi(state, match, fix)
+        val ui = connectedUi(state, match, fix, holdsFrequency)
         val kind = ui.tower?.siteId?.let(siteKind)?.takeIf { it.isDas }
         return if (kind != null) ui.copy(dasKind = kind) else ui
     }

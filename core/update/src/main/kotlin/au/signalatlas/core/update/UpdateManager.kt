@@ -137,10 +137,18 @@ class UpdateManager(
     }
 
     /** Weekly update on Wi-Fi + charging; plus a one-off Wi-Fi update when the live data is stale. */
-    fun schedulePeriodic() {
+    fun schedulePeriodic() = schedulePeriodic(ExistingPeriodicWorkPolicy.KEEP)
+
+    /** The data settings changed: the scheduled jobs take the new network rule (their timing is kept). */
+    fun rescheduleForDataSettings() {
+        schedulePeriodic(ExistingPeriodicWorkPolicy.UPDATE)
+        scheduleHrp(ExistingPeriodicWorkPolicy.UPDATE)
+    }
+
+    private fun schedulePeriodic(policy: ExistingPeriodicWorkPolicy) {
         workManager.enqueueUniquePeriodicWork(
             PERIODIC_WORK,
-            ExistingPeriodicWorkPolicy.KEEP,
+            policy,
             PeriodicWorkRequestBuilder<AcmaDownloadWorker>(UpdatePolicy.PERIOD)
                 .setConstraints(UpdatePolicy.periodicConstraints())
                 .setInputData(workDataOf(UpdateWork.KEY_THEN_IMPORT to true))
@@ -181,10 +189,12 @@ class UpdateManager(
      * The monthly antenna-pattern job on Wi-Fi + charging + storage-not-low (KEEP). It downloads only
      * when ACMA's HRP ETag differs from the installed patterns'.
      */
-    fun scheduleHrp() {
+    fun scheduleHrp() = scheduleHrp(ExistingPeriodicWorkPolicy.KEEP)
+
+    private fun scheduleHrp(policy: ExistingPeriodicWorkPolicy) {
         workManager.enqueueUniquePeriodicWork(
             HRP_WORK,
-            ExistingPeriodicWorkPolicy.KEEP,
+            policy,
             PeriodicWorkRequestBuilder<HrpWorker>(UpdatePolicy.HRP_PERIOD)
                 .setConstraints(UpdatePolicy.hrpConstraints())
                 .addTag(UpdateWork.TAG_HRP)
