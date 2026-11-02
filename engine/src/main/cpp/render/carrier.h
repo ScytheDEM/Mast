@@ -46,7 +46,7 @@ Carrier prepareCarrier(const CarrierArrays& c, const PatternTable& patterns, int
 
 struct CarrierEval {
     double rsrp;      // dBm, including L_terr and the calibration terms (not the residual raster)
-    float sigmaDb;    // shadowing sigma after rule 6
+    float sigmaDb;    // total sigma (shadowing and model error, rule 8) after rule 6
     bool incomplete;  // L_terr was not a complete table lookup
 };
 
@@ -62,7 +62,8 @@ inline CarrierEval evaluateCarrier(const Carrier& cr, double bearingDeg, double 
     if (cr.terrainTable != nullptr) {
         lTerr = terrainLookup(cr.terrainTable, cr.terrainMask, static_cast<float>(bearingDeg), static_cast<float>(d2M), &inc);
     }
-    return {cr.eirpRe - aDb - pl.plDb - lTerr + cr.cal.db(d2M), cr.cal.sigma(pl.sigmaDb), inc};
+    const float sigma = static_cast<float>(totalSigmaDb(pl.sigmaDb, !inc, d2M / 1000.0));
+    return {cr.eirpRe - aDb - pl.plDb - lTerr + cr.cal.db(d2M), cr.cal.sigma(sigma), inc};
 }
 
 }  // namespace sa

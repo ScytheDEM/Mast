@@ -88,7 +88,7 @@ class TileCacheTest {
         val fresh = TileCache(dir)
         assertThat(fresh.getDisk(key(1, stamp = "s2"))).isNull()
         assertThat(fresh.getDisk(key(1).copy(patternsEtag = "e"))).isNull()
-        assertThat(fresh.getDisk(key(1).copy(engineVersion = 3))).isNull()
+        assertThat(fresh.getDisk(key(1).copy(engineVersion = 99))).isNull()
         assertThat(fresh.getDisk(key(1).copy(selectionId = "other"))).isNull()
         assertThat(fresh.getDisk(key(1).copy(terrainVersion = 7))).isNull()
         assertThat(fresh.getDisk(key(1))).isNotNull()

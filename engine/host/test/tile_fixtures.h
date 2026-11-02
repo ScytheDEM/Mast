@@ -176,9 +176,10 @@ inline int32_t renderWithRasters(Vec& v, Out& o, sa::PatternTable pat = kNoPatte
 
 // Asserts every pixel is within +-1 of the reference and at most 0.1% differ (SINR: 2%, because the engine truncates the
 // interference sum at 1e-3 of noise + interference, which lifts SINR by up to 0.0043 dB and so moves the codes of pixels
-// that sit on a rounding edge; RSRP, probability and the best server are exact).
+// that sit on a rounding edge; probability shares it since rule 8 was amended to include an SINR condition; RSRP and
+// the best server are exact).
 inline void compareCodes(const char* what, const std::vector<uint8_t>& got, const std::vector<double>& ref) {
-    const double share = std::string(what) == "sinr" ? 0.02 : 0.001;
+    const double share = std::string(what) == "sinr" || std::string(what) == "prob" ? 0.02 : 0.001;
     ASSERT_EQ(ref.size(), got.size());
     size_t diff = 0;
     int worst = 0;

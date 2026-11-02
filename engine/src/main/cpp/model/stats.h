@@ -22,6 +22,26 @@ inline float indoorSigmaDb(float sigmaDb) {
     return static_cast<float>(std::sqrt(s * s + kO2iSigmaDb * kO2iSigmaDb));
 }
 
+// Rule 8 (amended 2026-11-02, reliability): the prediction's own error adds to the shadowing in quadrature, 6 dB
+// where the best server's terrain loss came from a complete table and 9 dB where it did not (quick model), growing
+// by 0.2 dB per km past 10 km up to 4 dB more. Calibration (rule 6) then scales the total.
+constexpr double kModelSigmaTerrainDb = 6.0;
+constexpr double kModelSigmaQuickDb = 9.0;
+constexpr double kModelSigmaGrowStartKm = 10.0;
+constexpr double kModelSigmaGrowDbPerKm = 0.2;
+constexpr double kModelSigmaGrowMaxDb = 4.0;
+
+inline double totalSigmaDb(double shadowSigmaDb, bool terrainComplete, double d2Km) {
+    const double s = sane(shadowSigmaDb, 0.0, 100.0, 8.0);
+    const double grow = std::fmin(kModelSigmaGrowMaxDb, kModelSigmaGrowDbPerKm * std::fmax(0.0, sane(d2Km, 0.0, 1.0e4, 80.0) - kModelSigmaGrowStartKm));
+    const double m = (terrainComplete ? kModelSigmaTerrainDb : kModelSigmaQuickDb) + grow;
+    return std::sqrt(s * s + m * m);
+}
+
+// Rule 8: usable service also needs SINR >= -3 dB; its prediction error is taken as 3 dB.
+constexpr double kSinrMinDb = -3.0;
+constexpr double kSinrSigmaDb = 3.0;
+
 // Rule 8: P(RSRP + shadowing >= thr) for shadowing ~ N(0, sigma). Result in [0, 1].
 inline float coverageProbability(float rsrpDbm, float thrDbm, float sigmaDb) {
     const double rsrp = sane(rsrpDbm, -1000.0, 1000.0, -200.0);

@@ -317,6 +317,22 @@ def noise_dbm(scs_hz):
     return -174.0 + 10.0 * math.log10(scs_hz) + 7.0
 
 
+# Rule 8 (amended 2026-11-02): model error in quadrature with the shadowing, and an SINR condition.
+MODEL_SIGMA_TERRAIN_DB = 6.0
+MODEL_SIGMA_QUICK_DB = 9.0
+MODEL_SIGMA_GROW_START_KM = 10.0
+MODEL_SIGMA_GROW_DB_PER_KM = 0.2
+MODEL_SIGMA_GROW_MAX_DB = 4.0
+SINR_MIN_DB = -3.0
+SINR_SIGMA_DB = 3.0
+
+
+def total_sigma(shadow_sigma_db, terrain_complete, d2_km):
+    grow = min(MODEL_SIGMA_GROW_MAX_DB, MODEL_SIGMA_GROW_DB_PER_KM * max(0.0, d2_km - MODEL_SIGMA_GROW_START_KM))
+    m = (MODEL_SIGMA_TERRAIN_DB if terrain_complete else MODEL_SIGMA_QUICK_DB) + grow
+    return math.sqrt(shadow_sigma_db * shadow_sigma_db + m * m)
+
+
 def coverage_probability(rsrp_dbm, thr_dbm, sigma_db):
     return 0.5 * math.erfc((thr_dbm - rsrp_dbm) / (sigma_db * math.sqrt(2.0)))
 
@@ -500,6 +516,7 @@ def carrier_rsrp(carriers, i, patterns, lat, lon, area, indoor, terrain=None, en
     cal = calibration_db(_cal(carriers, "calOffsetDb", i), _cal(carriers, "calSlope", i),
                          _cal(carriers, "calDmedKm", i), d2)
     rsrp = carriers["eirpRe"][i] - a - pl - l_terr + cal    # Terrain rule 5, Calibration rule 4
+    sg = total_sigma(sg, full, d2 / 1000.0)    # Rule 8 (amended)
     return rsrp, calibrated_sigma(sg, _cal(carriers, "calSigmaScale", i)), full
 
 
@@ -543,7 +560,7 @@ def _sample(carriers, idx, patterns, lat, lon, area, indoor, thr, terrain=None, 
             interference += 0.5 * 10.0 ** (rsrp[k] / 10.0)
     scs = scs_khz("NR" if carriers["tech"][best] == 1 else "LTE", carriers["freqMhz"][best]) * 1000
     sinr = rsrp[b] - 10.0 * math.log10(interference + 10.0 ** (noise_dbm(scs) / 10.0))
-    prob = coverage_probability(rsrp[b], thr, sigma[b])
+    prob = coverage_probability(rsrp[b], thr, sigma[b]) * coverage_probability(sinr, SINR_MIN_DB, SINR_SIGMA_DB)
     return rsrp[b], sinr, prob, best, complete[b]
 
 

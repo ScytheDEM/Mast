@@ -456,7 +456,9 @@ int32_t renderTile(const CarrierArrays& c, const PatternTable& patterns, const R
                     }
                     rsrp = bestR;
                     sinr = bestR - 10.0 * std::log10(interf + b.noiseMw);
-                    prob = coverageProbability(static_cast<float>(bestR), p.thrDbm, bestSigma);
+                    // Rule 8: enough signal and enough SINR.
+                    prob = coverageProbability(static_cast<float>(bestR), p.thrDbm, bestSigma) *
+                           coverageProbability(static_cast<float>(sinr), static_cast<float>(kSinrMinDb), static_cast<float>(kSinrSigmaDb));
                     bestIdx = static_cast<uint16_t>(b.orig);
                 }
                 const size_t at = static_cast<size_t>(j) * static_cast<size_t>(N) + static_cast<size_t>(i);

@@ -918,6 +918,7 @@ class CoverageTileService internal constructor(
         private const val SAME_SITE_M = 30.0
         private const val TAG = "CoverageTileService"
         internal const val REGION_MARGIN_M = 80_000.0
-        private const val THRESHOLD_DBM = -118f
+        /** Rule 8 (amended): "reliable" means usable service, not the bare edge of attach. */
+        private const val THRESHOLD_DBM = -110f
     }
 }

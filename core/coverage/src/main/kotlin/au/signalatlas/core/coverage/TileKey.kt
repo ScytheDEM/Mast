@@ -36,7 +36,7 @@ data class TileKey(
     val engineVersion: Int = ENGINE_VERSION,
 ) {
     companion object {
-        const val ENGINE_VERSION = 2
+        const val ENGINE_VERSION = 3
     }
 }
 

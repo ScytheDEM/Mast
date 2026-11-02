@@ -124,7 +124,13 @@ tag `v1.17.0`, host build with Apple clang), and `org.maplibre.gl:android-sdk-vu
    `5 − 10·log10(0.3·10^(−(2+0.2f)/10) + 0.7·10^(−(5+4f)/10)) + 2.5` (f in GHz). Combine σ in quadrature: `σ = √(σ² + 4.4²)` (TR 38.901 §7.4.3: independent Gaussian O2I variation).
 8. **RSRP** = `eirpRe − A − PL`. Best-server RSRP = max over the selected carriers at the pixel.
    - **SINR:** `S / (Σ_{same freq, other sectors} 0.5·10^(RSRP_i/10) + N)`, where `N = −174 + 10·log10(SCS_Hz) + 7` dBm.
-   - **Coverage probability:** `P = 0.5·erfc((thr − RSRP)/(σ·√2))`, with default `thr = −118` dBm.
+   - **Coverage probability (amended 2026-11-02, "reliability"):**
+     `P = Q((thr − RSRP)/σ_t) · Q((−3 − SINR)/3)`, with `Q(x) = 0.5·erfc(x/√2)` and the map's `thr = −110` dBm (usable
+     service, was −118).
+     - `σ_t = √(σ² + m²)`: the shadowing σ plus model error `m` = 6 dB where the best server's terrain loss came from a
+       complete table, 9 dB where it did not, plus `min(4, 0.2·max(0, d_km − 10))`.
+     - Calibration rule 6 scales `σ_t`.
+     - Why: the old P treated the prediction as exact and the threshold as usable, so −100 dBm read 99 %.
 9. **Tile grid:**
    - Grid size: 128×128 sample points at z ≤ 13, 256×256 at z ≥ 14. Pixel centres follow Web-Mercator; the 128 grid is
      upsampled bilinearly to 256. The outermost pixel rows and columns lie a quarter sample outside the outermost
